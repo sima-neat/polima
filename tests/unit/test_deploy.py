@@ -23,7 +23,6 @@ from polima.deploy.smoke import (
     compare_against_reference,
 )
 
-
 # ------------------------------------------------------------------- config
 
 
@@ -43,10 +42,10 @@ def test_board_paths():
 
 
 def test_board_address_and_user():
-    board = BoardConfig(host="sima@192.168.91.211")
+    board = BoardConfig(host="sima@192.0.2.10")
     assert board.user == "sima"
-    assert board.address == "192.168.91.211"
-    assert BoardConfig(host="192.168.91.211").address == "192.168.91.211"
+    assert board.address == "192.0.2.10"
+    assert BoardConfig(host="192.0.2.10").address == "192.0.2.10"
 
 
 def test_trailing_slashes_do_not_double_up():
@@ -272,6 +271,32 @@ def test_mla_reset_tries_passwordless_sudo_before_sending_a_password():
     assert "-p ''" in sudo, "the prompt must be suppressed so it cannot reach a log"
 
 
+def test_mla_reset_without_a_password_only_tries_passwordless_sudo(monkeypatch, caplog):
+    """No password ships with PoLiMa: without POLIMA_MLA_SUDO_PASSWORD the reset
+    uses `sudo -n` alone and, if it fails, says how to fix it."""
+    from polima.deploy import mla
+
+    monkeypatch.delenv(mla.SUDO_PASSWORD_ENV, raising=False)
+    session = _FakeSession(present=("/usr/bin/fix_devkit_runtime.sh",),
+                           fail=("fix_devkit_runtime.sh",))
+    with caplog.at_level("WARNING", logger="polima"):
+        report = mla.reset(session, BoardConfig())
+    sudo = [c for c in session.commands if c.startswith("sudo")]
+    assert sudo == ["sudo -n /usr/bin/fix_devkit_runtime.sh"]
+    assert report.ok is False
+    assert mla.SUDO_PASSWORD_ENV in caplog.text
+
+
+def test_mla_reset_takes_the_password_from_the_environment(monkeypatch):
+    from polima.deploy import mla
+
+    monkeypatch.setenv(mla.SUDO_PASSWORD_ENV, "hunter2")
+    session = _FakeSession(present=("/usr/bin/fix_devkit_runtime.sh",))
+    mla.reset(session, BoardConfig())
+    sudo = next(c for c in session.commands if c.startswith("sudo"))
+    assert "sudo -S" in sudo and "hunter2" in sudo
+
+
 def test_mla_reset_reports_reclaimed_cma():
     from polima.deploy import mla
 
@@ -337,3 +362,36 @@ def test_service_start_reraises_the_load_error_when_the_reset_fails(monkeypatch)
 
 def _raise_mla_wedge(session, board, **kwargs):
     raise RuntimeError("errCode=1001 name=MLA_LOAD_FAILED")
+
+
+def test_there_is_no_default_board_address(monkeypatch):
+    """A board address is site configuration, never a shipped literal."""
+    from polima.config.loader import load
+
+    monkeypatch.delenv("POLIMA_BOARD", raising=False)
+    monkeypatch.delenv("POLIMA_BOARD_HOST", raising=False)
+    assert BoardConfig().host == ""
+    monkeypatch.setenv("POLIMA_BOARD", "sima@192.0.2.10")
+    assert load(use_env=True).board.host == "sima@192.0.2.10"
+
+
+def test_the_example_site_config_loads(tmp_path):
+    pytest.importorskip("yaml")
+    from polima.config.loader import load
+    from polima.util.paths import package_root
+
+    example = tmp_path / "site.yaml"
+    example.write_text((package_root() / ".polima.yaml.example").read_text())
+    config = load(config_file=example, use_env=False)
+    assert config.board.host == "sima@<board-address>"
+    assert config.board.root == "/media/nvme/polima"
+
+
+def test_deploy_without_a_board_says_how_to_name_one(monkeypatch, capsys):
+    from polima.cli import deploy as deploy_cli
+
+    monkeypatch.delenv("POLIMA_BOARD", raising=False)
+    monkeypatch.delenv("POLIMA_BOARD_HOST", raising=False)
+    monkeypatch.setattr("polima.config.loader.config_file_candidates", list)
+    assert deploy_cli.run(["--status"]) == 2
+    assert "POLIMA_BOARD" in capsys.readouterr().err

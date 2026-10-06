@@ -27,6 +27,13 @@ BUNDLE_FORMAT = "polima-bundle-v1"
 BUNDLE_ID_RE = re.compile(r"^(?P<policy>[a-z0-9]+)-(?P<dataset>.+)-(?P<steps>\d+)-(?P<sha>[0-9a-f]{8})$")
 
 
+READABLE_ID_RE = re.compile(
+    r"^(?P<policy>[a-z0-9]+)-(?P<robot>so101|mycobot|gr1)-"
+    r"(?P<dataset>.+?)(?:-v(?P<version>\d+(?:\.\d+)+))?-"
+    r"(?P<steps>\d+)(?P<unit>k?)-(?P<precision>[a-z0-9]+)-(?P<sha>[0-9a-f]{8})$"
+)
+
+
 def slug(value: str) -> str:
     """Filesystem- and ssh-safe token. Keeps dataset names readable."""
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value)).strip("_.-")
@@ -40,6 +47,9 @@ def compute_bundle_id(
     steps: int | str,
     graph_digests: dict[str, str],
     plan: dict | None = None,
+    robot: str | None = None,
+    version: str | None = None,
+    precision: str | None = None,
 ) -> str:
     """Deterministic id from the *content* of the build.
 
@@ -52,10 +62,21 @@ def compute_bundle_id(
     if plan is not None:
         parts.append("plan=" + dumps_compact(plan))
     digest = sha256_text("\n".join(parts))
+    if robot and precision:
+        count = int(steps)
+        step_label = f"{count // 1000}k" if count > 0 and count % 1000 == 0 else str(count)
+        version_label = f"-v{slug(version)}" if version else ""
+        task = slug(dataset).replace("_", "-").lower()
+        return f"{slug(policy)}-{slug(robot)}-{task}{version_label}-{step_label}-{slug(precision)}-{short(digest)}"
     return f"{slug(policy)}-{slug(dataset)}-{int(steps)}-{short(digest)}"
 
 
 def parse_bundle_id(bundle_id: str) -> dict:
+    readable = READABLE_ID_RE.match(bundle_id)
+    if readable:
+        parts = readable.groupdict()
+        parts["steps"] = int(parts["steps"]) * (1000 if parts.pop("unit") else 1)
+        return parts
     match = BUNDLE_ID_RE.match(bundle_id)
     if not match:
         raise ValueError(f"not a PoLiMa bundle id: {bundle_id!r}")
@@ -81,6 +102,14 @@ class GraphArtifact:
     logical_width: int | None = None
     logical_channels: int | None = None
     external_dram_layout: str = "compiler"
+    int8_inputs: list[dict] = field(default_factory=list)
+    int8_output: dict | None = None
+    #: Element counts of the separately bound inputs of a persistent-DiT ELF
+    #: (hidden, timestep embedding, backbone features, mask), consumed by run_dit_chain.
+    persistent_input_elements: list[int] = field(default_factory=list)
+    #: Named persistent MLA bindings ({"inputs": [...], "outputs": [...]}, each {name, elements,
+    #: binding}) of a run_bound_chain graph; read by the native Plan, carried through unchanged.
+    persistent_bindings: dict | None = None
 
     def to_dict(self) -> dict:
         result = {
@@ -94,10 +123,17 @@ class GraphArtifact:
             "dram_layout": self.dram_layout,
             "external_dram_layout": self.external_dram_layout,
         }
+        if self.int8_inputs:
+            result["int8_inputs"] = self.int8_inputs
+            result["int8_output"] = self.int8_output
         if self.logical_width is not None:
             result["logical_width"] = self.logical_width
         if self.logical_channels is not None:
             result["logical_channels"] = self.logical_channels
+        if self.persistent_input_elements:
+            result["persistent_input_elements"] = self.persistent_input_elements
+        if self.persistent_bindings is not None:
+            result["persistent_bindings"] = self.persistent_bindings
         return result
 
 
@@ -122,6 +158,8 @@ class Bundle:
     #: The policy's smoke thresholds, copied here so the board can apply the
     #: same bar as the host without shipping the Python policy package.
     smoke: dict = field(default_factory=dict)
+    tasks: list[str] = field(default_factory=list)
+    default_task: int = 0
     format: str = BUNDLE_FORMAT
 
     # ---- on-disk layout; every consumer goes through these, never globs ----
@@ -188,6 +226,8 @@ class Bundle:
             "sidecars": sorted(self.sidecars),
             "tool_versions": self.tool_versions,
             "smoke": self.smoke,
+            "tasks": self.tasks,
+            "default_task": self.default_task,
             "total_elf_bytes": self.total_elf_bytes,
         }
 
@@ -204,5 +244,7 @@ class Bundle:
             legacy_source_dir=data.get("legacy_source_dir"),
             tool_versions=data.get("tool_versions", {}),
             smoke=data.get("smoke", {}),
+            tasks=list(data.get("tasks", [])),
+            default_task=int(data.get("default_task", 0)),
             format=data.get("format", BUNDLE_FORMAT),
         )

@@ -1,14 +1,17 @@
 """Path resolution.
 
-The `$HOME/MLSandbox -> SDK/NEAT/workspace/MLSandbox` symlink is load-bearing in
-the legacy tree: SmolVLA/train_smolvla_local.sh hardcodes `$HOME/MLSandbox/...`,
-and ACT/lerobot's git remote points at `/home/timothydo/MLSandbox/SmolVLA/lerobot`
--- i.e. through the symlink at its own sibling. Deleting the symlink silently
-breaks a clone that is otherwise fine.
+PoLiMa never stores a machine-specific path. Everything resolves from this
+file's own location, which is the convention every existing script already
+follows via BASH_SOURCE, or from an environment variable:
 
-PoLiMa never stores that literal. Everything resolves from this file's own
-location, which is the convention every existing script already follows via
-BASH_SOURCE. `polima doctor` reports the resolved root and flags the symlink.
+  POLIMA_REPO_ROOT        the workspace that holds the model stacks (ACT/,
+                          SmolVLA/, GR00T-N1.6/, lerobot_sima/ ...); default:
+                          the parent of this checkout.
+  POLIMA_WORKSPACE_LINK   optional convenience symlink that should point at
+                          that workspace (some training scripts reach the
+                          stacks through one). `polima doctor` checks it.
+  POLIMA_OUTPUTS          build and bundle outputs; default <checkout>/outputs.
+  POLIMA_DATASET_PARENT   where LeRobot datasets live; default /ml_datasets.
 """
 
 from __future__ import annotations
@@ -26,7 +29,10 @@ def package_root() -> Path:
 
 
 def repo_root() -> Path:
-    """MLSandbox/ -- the parent holding ACT/, SmolVLA/, GR00T-N1.6/, lerobot_sima/."""
+    """The workspace holding the model stacks (ACT/, SmolVLA/, GR00T-N1.6/, ...).
+
+    $POLIMA_REPO_ROOT when set, else the parent of this checkout.
+    """
     override = os.environ.get("POLIMA_REPO_ROOT")
     if override:
         return Path(override).resolve()
@@ -55,9 +61,19 @@ def default_dataset_parent() -> Path:
 
 
 def symlink_report() -> dict:
-    """Facts about $HOME/MLSandbox for `polima doctor`."""
-    link = Path.home() / "MLSandbox"
+    """Facts about the optional $POLIMA_WORKSPACE_LINK symlink for `polima doctor`."""
+    configured = os.environ.get("POLIMA_WORKSPACE_LINK")
     resolved = repo_root()
+    if not configured:
+        return {
+            "home_symlink": None,
+            "exists": False,
+            "is_symlink": False,
+            "target": None,
+            "resolved_repo_root": str(resolved),
+            "consistent": True,
+        }
+    link = Path(os.path.expanduser(configured))
     return {
         "home_symlink": str(link),
         "exists": link.exists(),
@@ -69,6 +85,6 @@ def symlink_report() -> dict:
 
 
 def expand(path: str | Path) -> Path:
-    """`~` and `$VAR` expansion, then resolve. Never resolves through to a literal
-    $HOME/MLSandbox in stored config -- callers store what the user typed."""
+    """`~` and `$VAR` expansion, then resolve. Callers store what the user typed,
+    never the resolved path."""
     return Path(os.path.expandvars(os.path.expanduser(str(path)))).resolve()

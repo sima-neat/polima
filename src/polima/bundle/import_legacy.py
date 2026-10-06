@@ -7,8 +7,8 @@ correct. If the imported bundle serves correct actions, every failure after that
 belongs to the compiler, not the runtime.
 
 Verified against ACT/outputs/modalix_rcwb_f_t_act_100000_llima: the six ELFs
-selected here are byte-identical to the six currently running on
-sima@192.168.91.211 under /media/nvme/ACT_rcwb_f_t_100000.
+selected here were byte-identical to the six then running on the lab board
+under /media/nvme/ACT_rcwb_f_t_100000.
 
 The tree is messier than it looks. `retained/` holds 16 ELFs in 11 directories,
 six of them abandoned experiments (`vision_backbone_rejected_rank4`,
@@ -19,8 +19,10 @@ resolved against the PolicySpec's declared graph names.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 
 from polima.bundle import retained as retained_module
@@ -49,6 +51,7 @@ class LegacyBuild:
     checkpoint: str = ""
     dataset_root: str = ""
     graphs: tuple[str, ...] = ()
+    precisions: dict[str, str] = dataclass_field(default_factory=dict)
     verification: dict | None = None
 
     @property
@@ -102,8 +105,33 @@ def detect(build_dir: str | Path) -> LegacyBuild:
         checkpoint=contract.get("checkpoint") or manifest.get("checkpoint") or "",
         dataset_root=contract.get("dataset_root", ""),
         graphs=tuple(_declared_graphs(contract)),
+        precisions=_compiled_precisions(manifest),
         verification=report,
     )
+
+
+def _compiled_precisions(manifest: dict) -> dict[str, str]:
+    """Actual successful precision per graph from PoLiMa's compile report.
+
+    This cannot be inferred from the policy declaration: a graph may have used
+    a fallback. Losing this map made an INT8 ACT build claim BF16 in
+    ``bundle.json``, hiding the exact reason its ELF failed on hardware.
+    """
+    precisions: dict[str, str] = {}
+    for graph in manifest.get("graphs", []):
+        if not isinstance(graph, dict):
+            continue
+        name = graph.get("name")
+        precision = graph.get("precision")
+        if isinstance(name, str) and isinstance(precision, str):
+            from polima.compile.precision import effective_precision_label
+
+            precisions[name] = effective_precision_label(
+                precision,
+                graph.get("activation_precision"),
+                graph.get("weight_precision"),
+            )
+    return precisions
 
 
 def _has_models(root: Path) -> bool:
@@ -149,7 +177,9 @@ def resolve_elfs(build: LegacyBuild, spec: PolicySpec) -> dict[str, ElfCandidate
         absent = sorted(set(spec.compile.names) - declared)
         log.warning(
             "manifest graphs differ from policy %s: extra=%s missing=%s",
-            spec.name, extra, absent,
+            spec.name,
+            extra,
+            absent,
         )
 
     resolved: dict[str, ElfCandidate] = {}
@@ -169,8 +199,11 @@ def resolve_elfs(build: LegacyBuild, spec: PolicySpec) -> dict[str, ElfCandidate
             raise FileNotFoundError(
                 f"no ELF for graph {graph!r} under {build.root}; looked in "
                 f"{', '.join(DEPLOYED_TREES)}, retained/, and *_mpk.tar.gz"
-                + (f" (also tried {list(spec_graph.legacy_names)})"
-                   if spec_graph.legacy_names else "")
+                + (
+                    f" (also tried {list(spec_graph.legacy_names)})"
+                    if spec_graph.legacy_names
+                    else ""
+                )
             )
         resolved[graph] = candidate
         log.info("  %-24s %s (%s)", graph, candidate.sha256[:12], candidate.variant)
@@ -197,8 +230,11 @@ def _resolve_one(root: Path, graph: str) -> ElfCandidate | None:
         from polima.util.hashing import sha256_file
 
         return ElfCandidate(
-            graph=graph, path=elf, variant=f"mpk:{archive.name}",
-            sha256=sha256_file(elf), size=elf.stat().st_size,
+            graph=graph,
+            path=elf,
+            variant=f"mpk:{archive.name}",
+            sha256=sha256_file(elf),
+            size=elf.stat().st_size,
         )
     return None
 
@@ -233,6 +269,12 @@ def collect_fixtures(build: LegacyBuild, spec: PolicySpec) -> dict[str, Path]:
                 source = direct / f"{graph}_{kind}.f32"
                 if source.is_file():
                     fixtures[f"stages/{graph}_{kind}.f32"] = source
+        # Iterative policies emit one golden per invocation, for example
+        # suffix_00_output.f32 through suffix_09_output.f32. Preserve them so
+        # --dump-stages can bisect hardware drift against the verified ONNX chain.
+        for graph in spec.compile.names:
+            for source in sorted(direct.glob(f"{graph}_[0-9][0-9]_output.f32")):
+                fixtures[f"stages/{source.name}"] = source
         for index in (0, 1):
             source = direct / f"vision_output_{index}.f32"
             if source.is_file():
@@ -250,8 +292,9 @@ def collect_fixtures(build: LegacyBuild, spec: PolicySpec) -> dict[str, Path]:
         import numpy as np
 
         normalization: dict[str, np.ndarray] = {}
+        raw_state = None
         stats_path = build.root / "normalization_stats.npz"
-        if spec.name == "smolvla" and stats_path.is_file():
+        if spec.name in ("smolvla", "groot") and stats_path.is_file():
             with np.load(stats_path, allow_pickle=False) as stats:
                 normalization = {
                     name: np.asarray(stats[name], dtype="<f4").copy()
@@ -263,9 +306,7 @@ def collect_fixtures(build: LegacyBuild, spec: PolicySpec) -> dict[str, Path]:
                 if f"inputs/{tensor.name}.f32" in fixtures:
                     continue
                 if tensor.name not in archive:
-                    raise ValueError(
-                        f"{fixture_archive.name} has no wire tensor {tensor.name!r}"
-                    )
+                    raise ValueError(f"{fixture_archive.name} has no wire tensor {tensor.name!r}")
                 values = np.asarray(archive[tensor.name], dtype="<f4")
                 # SmolVLA's ONNX vision graph is NCHW, while its TCP client
                 # deliberately sends prepared camera frames as HWC.  Fixtures
@@ -283,15 +324,22 @@ def collect_fixtures(build: LegacyBuild, spec: PolicySpec) -> dict[str, Path]:
                 # denormalization inside the server plan.  Its exporter records
                 # the already-normalized model input, so convert it back to the
                 # raw wire value before materializing a runnable fixture.
-                if spec.name == "smolvla" and tensor.name == "state":
+                if spec.name in ("smolvla", "groot") and tensor.name == "state":
                     if not normalization:
                         raise FileNotFoundError(
-                            f"{stats_path} is required to materialize raw SmolVLA state"
+                            f"{stats_path} is required to materialize raw {spec.name} state"
                         )
-                    values = (
-                        values.reshape(-1) * normalization["state_std"]
-                        + normalization["state_mean"]
-                    )
+                    if "raw_state" in archive:
+                        values = np.asarray(archive["raw_state"], dtype="<f4").reshape(-1)
+                    elif spec.runtime_context.get("state_encoding"):
+                        raise ValueError(
+                            f"{fixture_archive.name}: sincos fixture requires original raw_state; "
+                            "encoded BF16 state cannot be affine-denormalized"
+                        )
+                    else:
+                        values = values.reshape(-1)[: spec.dataset.state_dim]
+                        values = values * normalization["state_std"] + normalization["state_mean"]
+                    raw_state = values.copy()
                 values = values.reshape(-1)
                 if values.size != tensor.elements:
                     raise ValueError(
@@ -305,19 +353,38 @@ def collect_fixtures(build: LegacyBuild, spec: PolicySpec) -> dict[str, Path]:
             expected_names = (
                 ("action", "normalized_actions", "normalized_action")
                 if spec.name == "smolvla"
-                else ("normalized_actions", "normalized_action")
+                else (
+                    ("final_action", "normalized_actions", "normalized_action")
+                    if spec.name == "groot"
+                    else ("normalized_actions", "normalized_action")
+                )
             )
             expected_key = next((name for name in expected_names if name in archive), None)
             if expected_key and "expected/normalized_actions.f32" not in fixtures:
                 expected = np.asarray(archive[expected_key], dtype="<f4").reshape(-1)
-                if spec.name == "smolvla" and expected_key != "action":
+                if spec.name == "groot":
+                    if not normalization or raw_state is None:
+                        raise FileNotFoundError(
+                            f"{stats_path} and raw state are required to decode GR00T actions"
+                        )
+                    horizon = spec.robot.actions_per_chunk
+                    action_dim = spec.dataset.action_dim
+                    expected = np.asarray(archive[expected_key], dtype="<f4")
+                    model_width = spec.graph("action_tail").outputs[0].shape[-1]
+                    expected = expected.reshape(-1, model_width)[:horizon, :action_dim]
+                    expected = np.clip(expected, -1.0, 1.0)
+                    expected = expected * normalization["action_std"] + normalization["action_mean"]
+                    relative_dim = int(spec.runtime_context.get("relative_action_dim", 0))
+                    if relative_dim:
+                        expected[:, :relative_dim] += raw_state[:relative_dim]
+                    expected = expected.reshape(-1)
+                elif spec.name == "smolvla" and expected_key != "action":
                     if not normalization:
                         raise FileNotFoundError(
                             f"{stats_path} is required to materialize raw SmolVLA actions"
                         )
                     expected = (
-                        expected.reshape(-1, spec.dataset.action_dim)
-                        * normalization["action_std"]
+                        expected.reshape(-1, spec.dataset.action_dim) * normalization["action_std"]
                         + normalization["action_mean"]
                     ).reshape(-1)
                 if expected.size != spec.wire.response_elements:
@@ -383,54 +450,157 @@ def collect_sidecars(build: LegacyBuild, spec: PolicySpec) -> dict[str, Path]:
         offset = 0
         for name, width in zip(normalization_names, widths):
             target = staged / name
-            target.write_bytes(values[offset:offset + width].tobytes())
+            target.write_bytes(values[offset : offset + width].tobytes())
             collected[name] = target
             offset += width
 
     missing = [name for name in names if name not in collected]
     if missing:
-        raise FileNotFoundError(
-            f"missing runtime sidecar(s) {missing} under {constants_dir}"
-        )
+        raise FileNotFoundError(f"missing runtime sidecar(s) {missing} under {constants_dir}")
     return collected
 
 
-def collect_robot_files(spec: PolicySpec) -> dict[str, Path]:
-    """The proven board-side LeRobot client for this compiled policy.
+#: PoLiMa's SO-101 launchers. GR00T and SmolVLA bundles run the established
+#: ACT control loop with polima.robot.so101 as its transport; ACT bundles run
+#: polima.robot.so101_loop through the same start.sh.
+SO101_CLIENT = Path(__file__).resolve().parents[1] / "robot/assets/so101"
+#: Files ACT's client used to be copied as, removed when an old ACT bundle is upgraded.
+RETIRED_CLIENT = ("run_robot_client_with_live_view.py", "scripts/act_som_client.py")
+
+
+_MYCOBOT_DRIVER_FILES = (
+    "config_mycobot280.py",
+    "control_loop.py",
+    "gripper_completion.py",
+    "mycobot280.py",
+    "runtime_profile.py",
+    "shared.py",
+)
+
+
+def _mycobot_driver_root() -> Path:
+    from polima.util.paths import package_root, repo_root
+
+    configured = os.environ.get("POLIMA_MYCOBOT_DRIVER")
+    candidates = (
+        Path(configured) if configured else None,
+        package_root() / "src/polima/robot/assets/mycobot",
+        repo_root() / "lerobot_robot_mycobot280",
+    )
+    for candidate in candidates:
+        try:
+            if candidate is not None and candidate.is_dir() and all(
+                candidate.joinpath(name).is_file() for name in _MYCOBOT_DRIVER_FILES
+            ):
+                return candidate
+        except OSError:
+            continue
+    raise FileNotFoundError(
+        "MyCobot driver not found at $POLIMA_REPO_ROOT/lerobot_robot_mycobot280; "
+        "copy it there or set POLIMA_MYCOBOT_DRIVER"
+    )
+
+
+def _mycobot_robot_files() -> dict[str, Path]:
+    from polima.util.paths import package_root
+
+    assets = package_root() / "src/polima/robot/assets/mycobot"
+    driver = _mycobot_driver_root()
+    files = {
+        "start.sh": assets / "start.sh",
+        "preview_robot_cameras.py": assets / "preview_robot_cameras.py",
+        "calibration/mycobot280.json": assets / "calibration/mycobot280.json",
+        "lerobot_robot_mycobot280/__init__.py": assets / "__init__.py",
+    }
+    for name in _MYCOBOT_DRIVER_FILES:
+        files[f"lerobot_robot_mycobot280/{name}"] = driver / name
+    return files
+
+
+def _is_so101_act(spec: PolicySpec) -> bool:
+    return spec.robot.calibration_id != "mycobot280" and spec.dataset.state_dim == 6
+
+
+def collect_robot_files(
+    spec: PolicySpec, source: LegacyBuild | Path | None = None
+) -> dict[str, Path]:
+    """The board-side robot client to pack with a compiled policy.
 
     These files used to be copied only by the legacy deploy scripts, which
     meant a PoLiMa bundle could serve inference but could not drive the arm.
     Keeping them inside the bundle makes ``polima robot run`` independent of
     whichever hand-built model trees happen to remain on a particular board.
+
+    `source` is the build being packed (its dataset gives ACT its rest pose) or
+    the tree that already holds a dataset-derived
+    ``robot_client/robot_rest_position.json`` (GR00T and SmolVLA).
     """
+    build = source if isinstance(source, LegacyBuild) else None
+    asset_root = build.root if build is not None else source
     from polima.util.paths import repo_root
 
-    stack_name = (spec.train.repo_dir_hint or "").split("/", 1)[0]
-    stack = repo_root() / stack_name
-    if spec.name == "act":
+    if spec.robot.calibration_id == "mycobot280":
+        candidates = _mycobot_robot_files()
+    elif spec.name == "act" and _is_so101_act(spec):
+        # ACT on the SO-101 runs PoLiMa's own loop (polima.robot.so101_loop,
+        # reached through polima.robot.so101): two launchers plus the rest pose,
+        # computed from the training dataset when the build records one. The
+        # arm's calibration is never packed: it belongs to the arm, so each
+        # board makes its own (`polima robot calibrate`, or Studio).
+        files = {name: SO101_CLIENT / name for name in ("start.sh", "preview_robot_cameras.py")}
+        dataset = Path(build.dataset_root) if build and build.dataset_root else None
+        if dataset and (dataset / "meta/info.json").is_file():
+            from polima.export.robot import write_rest_pose
+
+            files["robot_rest_position.json"] = write_rest_pose(
+                dataset, build.root / "robot_rest_position.json",
+                spec.robot.joint_names, spec.robot.calibration_id)
+        else:
+            log.warning("no training dataset recorded; the bundle needs a rest pose "
+                        "(robot_client/robot_rest_position.json) before it can drive the arm")
+        return files
+    elif spec.name == "act":
+        return {}
+    elif (
+        spec.name in ("groot", "smolvla")
+        and spec.robot.calibration_id == "so-arm101"
+        and spec.dataset.state_dim == 6
+    ):
+        from polima.util.paths import package_root
+
+        assets = package_root() / "src/polima/robot/assets/so101"
+        # Keep the established ACT robot lifecycle byte-for-byte. Its transport
+        # import is satisfied by a tiny compatibility shim for the shared adapter.
+        # SmolVLA uses the same loop as GR00T; its legacy hand-built client
+        # (SmolVLA/scripts/smolvla_som_client.py) is not part of this path.
+        act = repo_root() / "ACT"
+        rest = asset_root / "robot_client/robot_rest_position.json" if asset_root else None
+        if rest is None or not rest.is_file():
+            raise FileNotFoundError(
+                f"SO101 {spec.name} needs dataset-derived robot_client/robot_rest_position.json "
+                "in the export tree; regenerate robot metadata before packing"
+            )
+        def loop_file(relative: str, stack_path: Path) -> Path:
+            # A prebuilt bundle already carries the ACT loop's files. Where this
+            # machine has no ACT stack, keep the bundle's own copy unchanged.
+            packed = asset_root / "robot_client" / relative
+            return packed if not stack_path.is_file() and packed.is_file() else stack_path
+
         candidates = {
-            "start.sh": stack / "scripts/start_act_robot_client_on_som.sh",
-            "preview_robot_cameras.py": stack / "preview_robot_cameras.py",
-            "run_robot_client_with_live_view.py": stack / "run_robot_client_with_live_view.py",
-            "scripts/act_som_client.py": stack / "scripts/act_som_client.py",
-            "robot_rest_position.json": stack / "robot_rest_position.json",
-            "camera_focus_config.json": stack / ".camera_focus_config.json",
-            "calibration/so-arm101.json": (
-                stack / "calibration/robots/so_follower/so-arm101.json"
-            ),
+            "start.sh": assets / "start.sh",
+            "scripts/act_som_client.py": assets / "act_som_client.py",
+            "run_robot_client_with_live_view.py": loop_file(
+                "run_robot_client_with_live_view.py", act / "run_robot_client_with_live_view.py"),
+            "preview_robot_cameras.py": loop_file(
+                "preview_robot_cameras.py", act / "preview_robot_cameras.py"),
+            "camera_focus_config.json": loop_file(
+                "camera_focus_config.json", act / ".camera_focus_config.json"),
+            # No arm calibration: each arm has its own. A run uses the bundle's (set in
+            # Studio) or else the DevKit's (`polima robot calibrate`); see robot/so101.py.
+            "robot_rest_position.json": rest,
         }
-    elif spec.name == "smolvla":
-        candidates = {
-            "start.sh": stack / "scripts/start_smolvla_robot_client_on_som.sh",
-            "preview_robot_cameras.py": stack / "preview_robot_cameras.py",
-            "run_robot_client_with_live_view.py": stack / "run_robot_client_with_live_view.py",
-            "scripts/smolvla_som_client.py": stack / "scripts/smolvla_som_client.py",
-            "robot_rest_position.json": stack / "robot_rest_position.json",
-            "camera_focus_config.json": stack / ".camera_focus_config.json",
-            "calibration/so-arm101.json": (
-                stack / "calibration/robots/so_follower/so-arm101.json"
-            ),
-        }
+    elif spec.name in ("smolvla", "groot"):
+        return {}
     else:
         return {}
 
@@ -443,27 +613,33 @@ def collect_robot_files(spec: PolicySpec) -> dict[str, Path]:
 
 
 def hydrate_robot_client(bundle: Bundle, spec: PolicySpec) -> bool:
-    """Upgrade an already-packed local bundle with the board client.
+    """Bring an already-packed bundle's robot client up to date.
 
-    Bundle ids intentionally describe model arithmetic, not operational
-    launchers. This lets a deploy made with a newer PoLiMa add the completed
-    device client without recompiling identical ELFs or changing their id.
-    Returns whether the manifest changed.
+    Bundle ids describe model arithmetic, not launchers, so a newer PoLiMa can
+    replace the client without recompiling identical ELFs or changing the id.
+    The bundle's own rest pose and calibration are kept. Returns whether the
+    manifest changed.
     """
     import shutil
 
-    files = collect_robot_files(spec)
     recorded = set(bundle.sidecars)
     changed = False
-    for relative, source in files.items():
+    for relative, source in collect_robot_files(spec, bundle.root).items():
         destination = bundle.root / "robot_client" / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not destination.is_file() or sha256_file(destination) != sha256_file(source):
             shutil.copy2(source, destination)
             changed = True
         recorded.add(str(destination.relative_to(bundle.root)))
-
-    if spec.name == "act":
+    if spec.name == "act" and _is_so101_act(spec):
+        # SO-101 ACT now runs PoLiMa's own loop: retire the copied ACT client.
+        for relative in (*(f"robot_client/{name}" for name in RETIRED_CLIENT),
+                         "normalization_stats.npz"):
+            if (bundle.root / relative).is_file():
+                (bundle.root / relative).unlink()
+                changed = True
+            recorded.discard(relative)
+    elif spec.name == "act":
         fixture = bundle.root / "fixtures/normalization_stats.npz"
         destination = bundle.root / "normalization_stats.npz"
         if fixture.is_file():
@@ -501,6 +677,10 @@ def hydrate_runtime_metadata(bundle: Bundle, spec: PolicySpec) -> bool:
             "logical_channels": output.logical_channels,
             "external_dram_layout": graph.external_dram_layout,
         }
+        if artifact.persistent_input_elements:
+            # A persistent-binding ELF (run_dit_chain) was compiled with its own
+            # external layout; the generic policy declaration does not describe it.
+            del values["external_dram_layout"]
         for field, value in values.items():
             if getattr(artifact, field) != value:
                 setattr(artifact, field, value)
@@ -536,7 +716,7 @@ def import_legacy(
     elfs = resolve_elfs(build, spec)
     fixtures = collect_fixtures(build, spec)
     constants = collect_sidecars(build, spec)
-    robot_files = collect_robot_files(spec)
+    robot_files = collect_robot_files(spec, build)
 
     tool_versions = {"source_format": build.format}
     if build.verification:
@@ -555,6 +735,7 @@ def import_legacy(
             source=source,
             legacy_source_dir=str(build.root),
             tool_versions=tool_versions,
+            precisions=build.precisions,
         ),
         output_root,
     )

@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PoLiMa Workbench</title>
+<link rel="icon" href="/logo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: PoLiMa Studio's shell (header + left nav + work area), reused so the computer and board halves read as one product. */
+:root {
+  --page:#f4f6f8; --header:rgba(255,255,255,.94); --sidebar:#fafbfc;
+  --surface:#fff; --surface-2:#f7f9fa; --surface-3:#edf1f4; --line:#dfe4ea;
+  --text:#18202a; --muted:#5f6b78; --faint:#8a94a0; --accent:#0f9d8f;
+  --accent-dark:#08776d; --accent-soft:#e4f5f2; --ok:#23966c; --ok-soft:#e3f4ec;
+  --warn:#b8700f; --warn-soft:#fbf1e1; --danger:#d64950; --danger-soft:#fbe9ea;
+  --info:#3a6fd8; --info-soft:#e8effc;
+  --spectrum:linear-gradient(90deg,#16c8a6,#4bb54a,#a9c81c,#3a86ec,#f2801d);
+  --shadow:0 1px 2px rgba(20,30,40,.05),0 8px 24px rgba(20,30,40,.06);
+  --sans:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --page:#0c0f14; --header:rgba(21,26,33,.94); --sidebar:#11161d;
+  --surface:#151a21; --surface-2:#1b212a; --surface-3:#222a35; --line:#29323d;
+  --text:#e9edf2; --muted:#a7b0bd; --faint:#76818f; --accent:#2fd4c0;
+  --accent-dark:#4fdccb; --accent-soft:#10322f; --ok:#35c489; --ok-soft:#12301f;
+  --warn:#e0a84a; --warn-soft:#33270f; --danger:#ef5b62; --danger-soft:#3a1719;
+  --info:#7aa2f2; --info-soft:#17233d;
+  --shadow:0 1px 2px rgba(0,0,0,.35),0 10px 28px rgba(0,0,0,.3); color-scheme:dark; } }
+:root[data-theme="dark"] {
+  --page:#0c0f14; --header:rgba(21,26,33,.94); --sidebar:#11161d;
+  --surface:#151a21; --surface-2:#1b212a; --surface-3:#222a35; --line:#29323d;
+  --text:#e9edf2; --muted:#a7b0bd; --faint:#76818f; --accent:#2fd4c0;
+  --accent-dark:#4fdccb; --accent-soft:#10322f; --ok:#35c489; --ok-soft:#12301f;
+  --warn:#e0a84a; --warn-soft:#33270f; --danger:#ef5b62; --danger-soft:#3a1719;
+  --info:#7aa2f2; --info-soft:#17233d;
+  --shadow:0 1px 2px rgba(0,0,0,.35),0 10px 28px rgba(0,0,0,.3); color-scheme:dark; }
+
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+html,body { height:100%; }
+body { margin:0; font:14px/1.5 var(--sans); color:var(--text); background:var(--page); }
+body::before { content:""; position:fixed; inset:0 0 auto; height:3px; z-index:30; background:var(--spectrum); }
+button,select,input { font:inherit; color:inherit; }
+button { cursor:pointer; }
+:focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 35%,transparent); outline-offset:2px; }
+h1,h2,h3 { text-wrap:balance; margin:0; }
+code,.mono { font-family:var(--mono); font-size:12px; }
+.num { font-variant-numeric:tabular-nums; }
+
+.shell { min-height:100%; display:grid; grid-template:60px 1fr / 232px minmax(0,1fr); }
+header { position:sticky; top:env(safe-area-inset-top,0px); z-index:20; grid-column:1/-1; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 20px; border-bottom:1px solid var(--line); background:var(--header); backdrop-filter:blur(10px); }
+.brand { display:flex; align-items:center; gap:11px; }
+.mark { width:auto; height:34px; object-fit:contain; filter:drop-shadow(0 2px 7px color-mix(in srgb,var(--accent) 24%,transparent)); }
+.brand h1 { font-size:15px; font-weight:700; letter-spacing:-.01em; }
+.brand small { display:block; color:var(--faint); font-size:11px; }
+.chip { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border:1px solid var(--line); border-radius:999px; background:var(--surface-2); color:var(--muted); font:600 10.5px var(--mono); letter-spacing:.04em; text-transform:uppercase; white-space:nowrap; }
+.chip i { width:7px; height:7px; border-radius:50%; background:var(--faint); }
+.chip.ok { color:var(--ok); background:var(--ok-soft); border-color:transparent; } .chip.ok i { background:var(--ok); }
+.chip.warn { color:var(--warn); background:var(--warn-soft); border-color:transparent; } .chip.warn i { background:var(--warn); }
+.chip.bad { color:var(--danger); background:var(--danger-soft); border-color:transparent; } .chip.bad i { background:var(--danger); }
+.chip.info { color:var(--info); background:var(--info-soft); border-color:transparent; } .chip.info i { background:var(--info); }
+.hdr-right { display:flex; align-items:center; gap:8px; }
+.icon-btn { width:32px; height:32px; display:grid; place-items:center; border:1px solid var(--line); border-radius:9px; background:var(--surface-2); color:var(--muted); }
+
+aside { position:sticky; top:60px; align-self:start; height:calc(100vh - 60px); padding:20px 12px; border-right:1px solid var(--line); background:var(--sidebar); display:flex; flex-direction:column; justify-content:space-between; gap:16px; }
+.nav-label { margin:0 12px 8px; color:var(--faint); font-size:10px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; }
+nav { display:grid; gap:3px; }
+nav a { display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:9px; color:var(--muted); font-size:13px; font-weight:600; text-decoration:none; }
+nav a span.n { width:20px; height:20px; display:grid; place-items:center; }
+nav a span.n svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+nav a:hover { color:var(--accent-dark); background:var(--accent-soft); }
+nav a[aria-current="page"] { color:var(--accent-dark); background:var(--accent-soft); }
+
+.machine { padding:12px; border:1px solid var(--line); border-radius:11px; background:var(--surface); font-size:12px; display:grid; gap:6px; }
+.machine b { font-size:12px; }
+.machine .row { display:flex; justify-content:space-between; gap:8px; color:var(--muted); }
+
+main { min-width:0; padding:28px clamp(16px,3vw,40px) 60px; }
+.mock-note { display:flex; gap:10px; align-items:flex-start; margin-bottom:22px; padding:10px 14px; border:1px dashed color-mix(in srgb,var(--info) 50%,var(--line)); border-radius:10px; background:var(--info-soft); color:var(--text); font-size:12.5px; max-width:980px; }
+.mock-note b { color:var(--info); }
+.view { display:none; max-width:1180px; }
+.view.active { display:grid; gap:20px; }
+#v-compare { max-width:none; }
+td.nw { white-space:nowrap; }
+.eyebrow { margin:0 0 4px; color:var(--accent-dark); font:700 10.5px var(--sans); letter-spacing:.14em; text-transform:uppercase; }
+.view-head h2 { font-size:22px; letter-spacing:-.015em; }
+.view-head p { margin:6px 0 0; color:var(--muted); max-width:68ch; }
+
+.panel { border:1px solid var(--line); border-radius:12px; background:var(--surface); box-shadow:var(--shadow); min-width:0; }
+.panel-h { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; padding:14px 18px; border-bottom:1px solid var(--line); }
+.panel-h h3 { font-size:14px; }
+.panel-h small { color:var(--faint); font-size:12px; }
+.panel-b { padding:16px 18px; }
+.grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)); gap:20px; }
+
+.btn { display:inline-flex; align-items:center; gap:8px; padding:8px 14px; border:1px solid var(--line); border-radius:9px; background:var(--surface-2); font-weight:600; font-size:13px; }
+.btn:hover { border-color:var(--accent); color:var(--accent-dark); }
+.btn.primary { background:var(--accent); border-color:var(--accent); color:var(--surface); }
+.btn.primary:hover { background:var(--accent-dark); color:var(--surface); }
+.btn:disabled { opacity:.45; cursor:not-allowed; }
+a.btn { color:inherit; text-decoration:none; }
+.manifest-export { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; padding:12px 18px; border-bottom:1px solid var(--line); font-size:13px; }
+.manifest-export:empty { display:none; }
+.stage-mark { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); white-space:nowrap; }
+.stage-mark i { width:9px; height:9px; border-radius:50%; background:var(--faint); }
+.stage-mark.done i { background:var(--ok); } .stage-mark.needs_action i { background:var(--warn); }
+.stage-mark.unavailable { color:var(--faint); } .stage-mark.unavailable i { background:transparent; border:1.5px solid var(--faint); }
+.readiness-table td { vertical-align:middle; }
+.manifest-export a:not(.btn) { color:var(--accent-dark); }
+a.btn.primary { color:var(--surface); }
+code { font-family:var(--mono); font-size:12px; }
+
+/* Pipeline (home) */
+.pipeline { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:0; }
+.stage { position:relative; padding:16px 14px 16px 18px; border-right:1px solid var(--line); display:grid; gap:6px; align-content:start; }
+.stage:last-child { border-right:0; }
+.stage .k { color:var(--faint); font:600 10.5px var(--mono); letter-spacing:.06em; text-transform:uppercase; }
+.stage b { font-size:14px; }
+.stage p { margin:0; color:var(--muted); font-size:12.5px; }
+.stage .where { font:600 10px var(--mono); color:var(--faint); }
+.stage.done { background:linear-gradient(var(--ok-soft),transparent 70%); }
+.stage.next { background:linear-gradient(var(--accent-soft),transparent 70%); }
+.stage .go { justify-self:start; margin-top:4px; }
+
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; color:var(--faint); font:600 10.5px var(--sans); letter-spacing:.08em; text-transform:uppercase; padding:9px 12px; border-bottom:1px solid var(--line); white-space:nowrap; }
+td { padding:11px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+tr:last-child td { border-bottom:0; }
+td.r,th.r { text-align:right; }
+tbody tr.sel { background:var(--accent-soft); }
+.scroll { overflow-x:auto; }
+.sub { display:block; color:var(--faint); font-size:11.5px; }
+
+/* Compile */
+.form { display:grid; gap:14px; }
+.field { display:grid; gap:6px; }
+.field label { font-size:12px; font-weight:600; color:var(--muted); }
+.field select,.field input { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); }
+.seg { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.seg label { display:grid; gap:2px; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--surface-2); cursor:pointer; font-size:13px; font-weight:600; }
+.seg label small { color:var(--faint); font-weight:500; font-size:11.5px; }
+.seg input { position:absolute; opacity:0; pointer-events:none; }
+.seg label:has(input:checked) { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-dark); }
+.callout { display:flex; gap:10px; padding:10px 12px; border-radius:10px; font-size:12.5px; }
+.callout.warn { background:var(--warn-soft); color:var(--text); border:1px solid color-mix(in srgb,var(--warn) 40%,transparent); }
+.callout.warn b { color:var(--warn); }
+.callout.ok { background:var(--ok-soft); border:1px solid color-mix(in srgb,var(--ok) 35%,transparent); }
+.checks { display:grid; gap:6px; margin:0; padding:0; list-style:none; font-size:12.5px; }
+.checks li { display:flex; justify-content:space-between; gap:10px; padding:7px 10px; border-radius:8px; background:var(--surface-2); }
+.steps { list-style:none; margin:0; padding:0; display:grid; gap:2px; }
+.steps li { display:grid; grid-template-columns:22px 1fr auto; gap:10px; align-items:center; padding:9px 4px; border-bottom:1px dashed var(--line); font-size:13px; }
+.steps li:last-child { border-bottom:0; }
+.dot { width:16px; height:16px; border-radius:50%; border:2px solid var(--line); }
+.steps li.done .dot { border-color:var(--ok); background:var(--ok); box-shadow:inset 0 0 0 3px var(--surface); }
+.steps li.run .dot { border-color:var(--accent); border-top-color:transparent; animation:spin .8s linear infinite; }
+.steps li.fail .dot { border-color:var(--danger); background:var(--danger); }
+.steps li .detail { color:var(--faint); font:500 11.5px var(--mono); text-align:right; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.bar { height:6px; border-radius:99px; background:var(--surface-3); overflow:hidden; }
+.bar > i { display:block; height:100%; width:0; background:var(--accent); transition:width .4s; }
+.log { margin:0; max-height:170px; overflow:auto; padding:10px 12px; border-radius:9px; background:var(--surface-3); color:var(--muted); font:11.5px/1.55 var(--mono); white-space:pre-wrap; }
+
+/* Compare */
+.legend { display:flex; gap:14px; flex-wrap:wrap; color:var(--muted); font-size:12px; }
+.hbars { display:grid; gap:10px; }
+.hbar { display:grid; grid-template-columns:150px minmax(0,1fr) 70px; gap:12px; align-items:center; font-size:12.5px; }
+.hbar .track { height:18px; border-radius:5px; background:var(--surface-3); position:relative; }
+.hbar .track i { position:absolute; inset:0 auto 0 0; border-radius:5px; background:var(--accent); }
+.hbar.slow .track i { background:var(--warn); }
+.hbar .v { text-align:right; font:600 12px var(--mono); }
+.graphs { display:grid; gap:6px; }
+.graph { display:grid; grid-template-columns:minmax(0,1fr) 120px 70px; gap:12px; align-items:center; font-size:12.5px; padding:6px 8px; border-radius:7px; }
+.graph.worst { background:var(--danger-soft); }
+.graph .mono { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* Boards & runs */
+.board { display:grid; gap:12px; }
+.kv { display:grid; grid-template-columns:auto 1fr; gap:6px 16px; font-size:12.5px; }
+.kv dt { color:var(--faint); } .kv dd { margin:0; }
+.drop { display:grid; place-items:center; gap:4px; padding:22px; border:1.5px dashed var(--line); border-radius:11px; color:var(--muted); text-align:center; font-size:12.5px; background:var(--surface-2); }
+.score { font:700 15px var(--mono); }
+.soon { opacity:.6; }
+
+@media (max-width:860px) {
+  .shell { grid-template:auto auto 1fr / minmax(0,1fr); }
+  aside { position:static; height:auto; border-right:0; border-bottom:1px solid var(--line); padding:10px 12px; }
+  aside .nav-label,.machine { display:none; }
+  nav { grid-auto-flow:column; grid-auto-columns:max-content; overflow-x:auto; }
+  .pipeline { grid-template-columns:minmax(0,1fr); }
+  .stage { border-right:0; border-bottom:1px solid var(--line); }
+  .hbar { grid-template-columns:96px minmax(0,1fr) 60px; }
+  .hdr-right .chip.hide-sm { display:none; }
+}
+@media (prefers-reduced-motion:reduce) { *,*::before { animation:none!important; transition:none!important; } }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <header>
+    <div class="brand"><img class="mark" src="/logo.svg" alt="PoLiMa"><div><h1>PoLiMa Workbench</h1><small>On this computer · compile, compare, send to a Modalix board</small></div></div>
+    <div class="hdr-right">
+      <span id="chip-compiler"></span>
+      <span id="chip-boards"></span>
+      <button class="icon-btn" id="theme" aria-label="Switch light or dark theme" title="Switch theme">◐</button>
+    </div>
+  </header>
+
+  <aside>
+    <div>
+      <p class="nav-label">Workflow</p>
+      <nav id="nav">
+        <a href="#home" data-v="home"><span class="n"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9M10 19v-5h4v5"/></svg></span>Overview</a>
+        <a href="#models" data-v="models"><span class="n"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M7 10l5 5 5-5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></span>Models</a>
+        <a href="#compile" data-v="compile"><span class="n"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></svg></span>Compile</a>
+        <a href="#compare" data-v="compare"><span class="n"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18a8 8 0 1 1 16 0"/><path d="m12 18 4-6M7 18h10"/></svg></span>Compare</a>
+        <a href="#boards" data-v="boards"><span class="n"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19v-7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7"/><path d="M8 10V7a4 4 0 0 1 8 0v3M9 15h6M12 12v6"/></svg></span>Boards</a>
+        <a href="#runs" data-v="runs"><span class="n"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/></svg></span>Robot runs</a>
+      </nav>
+    </div>
+    <div class="machine">
+      <b>This computer</b>
+      <div class="row"><span>Host</span><span class="mono" id="host"></span></div>
+      <div class="row"><span>Checkpoints</span><span class="num" id="machine-ck"></span></div>
+      <div class="row"><span>Builds</span><span class="num" id="machine-bd"></span></div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="callout warn" id="error" hidden></div>
+
+    <!-- OVERVIEW -->
+    <section class="view" id="v-home">
+      <div class="view-head"><p class="eyebrow">Overview</p><h2>From checkpoint to a measured robot policy</h2><p>The first three steps happen on this computer; running the arm happens on the Modalix board, through its Studio.</p></div>
+      <div class="panel">
+        <div class="panel-h"><h3>Where things stand</h3><span><small id="updated"></small> <button class="btn" id="refresh">Refresh</button></span></div>
+        <div class="pipeline" id="pipeline"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><h3>Policy readiness</h3><small>Each bundle, checkpoint to measured skill</small></div>
+        <div class="scroll"><table class="readiness-table">
+          <thead><tr><th>Bundle</th><th>Installed</th><th>Benchmark</th><th>Robot run</th><th>Reviewed</th><th>Compared</th><th>Export</th><th>Next</th><th>Evidence</th></tr></thead>
+          <tbody id="policy-readiness"></tbody></table></div>
+      </div>
+      <div class="grid2">
+        <div class="panel"><div class="panel-h"><h3>Latest builds</h3></div><div class="panel-b"><ul class="checks" id="recent"></ul></div></div>
+        <div class="panel"><div class="panel-h"><h3>Before you start</h3></div><div class="panel-b"><ul class="checks" id="readiness"></ul></div></div>
+      </div>
+    </section>
+
+    <!-- MODELS -->
+    <section class="view" id="v-models">
+      <div class="view-head"><p class="eyebrow">Step 1 · Models</p><h2>Trained checkpoints</h2><p>Checkpoints found in this computer's model folders. PoLiMa does not train: train with LeRobot (or GR00T's own scripts) and point PoLiMa at the result.</p></div>
+      <div class="panel">
+        <div class="panel-h"><h3>Checkpoints</h3><small id="model-folders"></small></div>
+        <div class="scroll"><table>
+          <thead><tr><th>Policy</th><th>Training run</th><th class="r">Step</th><th>Saved</th><th></th></tr></thead>
+          <tbody id="checkpoints"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- COMPILE -->
+    <section class="view" id="v-compile">
+      <div class="view-head"><p class="eyebrow">Step 2 · Compile</p><h2>Compile for the Modalix accelerator</h2><p>Export to ONNX, check it against PyTorch, compile each part, package it, and test the package on stored inputs. A failed check stops the build and says why.</p></div>
+      <div class="grid2">
+        <div class="panel"><div class="panel-h"><h3>Settings</h3></div><div class="panel-b form">
+          <div class="field"><label for="ckpt">Checkpoint</label><select id="ckpt"></select></div>
+          <div class="callout ok" id="compile-note"><span>Compiling from this page comes next. Until then, run the command on the right in a terminal on this computer.</span></div>
+        </div></div>
+        <div class="panel"><div class="panel-h"><h3>Command</h3><button class="btn" id="copy">Copy</button></div><div class="panel-b">
+          <pre class="log" id="command"></pre>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- COMPARE -->
+    <section class="view" id="v-compare">
+      <div class="view-head"><p class="eyebrow">Step 3 · Compare</p><h2>Compiled builds</h2><p>Every bundle in this computer's bundle folders. Accuracy and speed comparisons will sit next to each build.</p></div>
+      <div class="panel">
+        <div class="panel-h"><h3>Bundles</h3><small id="bundle-folders"></small></div>
+        <div class="manifest-export" id="manifest-export"></div>
+        <div class="scroll"><table>
+          <thead><tr><th>Build</th><th>Policy</th><th>Precision</th><th class="r">Size</th><th class="r">Median</th><th class="r">p99</th><th class="r">Rate</th><th>Check</th><th>Latest robot run</th><th>Reviewed</th><th>Success</th><th>Partial+</th><th>Top failures</th><th>Robot latency</th></tr></thead>
+          <tbody id="bundles"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- BOARDS -->
+    <section class="view" id="v-boards">
+      <div class="view-head"><p class="eyebrow">Step 4 · Boards</p><h2>Modalix DevKits</h2><p>Your DevKits, on the network or cabled straight to this computer. PoLiMa reaches each one over ssh; its Studio page installs builds and runs the arm.</p></div>
+      <div class="panel"><div class="panel-h"><h3>Add a DevKit</h3></div><div class="panel-b form">
+        <div class="grid2">
+          <div class="field"><label for="dk-host">Address</label><input id="dk-host" placeholder="sima@192.168.1.20" autocomplete="off"></div>
+          <div class="field"><label for="dk-name">Name (optional)</label><input id="dk-name" placeholder="lab-devkit" autocomplete="off"></div>
+        </div>
+        <div class="field"><label for="dk-key">SSH key on this computer (optional)</label><input id="dk-key" placeholder="~/.ssh/id_ed25519" autocomplete="off"></div>
+        <p class="sub">ssh must log in without a password. Saved DevKits also work as <code>polima deploy --board &lt;name&gt;</code>.</p>
+        <div><button class="btn primary" id="dk-add">Add and check</button> <span class="sub" id="dk-msg"></span></div>
+      </div></div>
+      <div class="grid2" id="boards"></div>
+    </section>
+
+    <!-- RUNS -->
+    <section class="view" id="v-runs">
+      <div class="view-head"><p class="eyebrow">Step 5 · Robot runs</p><h2>What happened on the arm</h2><p>Runs are started and stopped from the board's Studio, where the safety check and Emergency Halt live. Their history shows here.</p></div>
+      <div class="panel">
+        <div class="panel-h"><h3>Recent runs</h3></div>
+        <div class="scroll"><table>
+          <thead><tr><th>Board</th><th>Build</th><th>Task</th><th>Result</th><th>When</th></tr></thead>
+          <tbody id="runs"></tbody></table></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+(function () {
+  var views = ["home", "models", "compile", "compare", "boards", "runs"], data = null;
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = function (v) { return String(v == null ? "" : v).replace(/[&<>"]/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]; }); };
+  var chip = function (kind, text) { return '<span class="chip ' + kind + '"><i></i>' + esc(text) + "</span>"; };
+  var size = function (b) { return b > 1e9 ? (b / 1e9).toFixed(1) + " GB" : (b / 1e6).toFixed(0) + " MB"; };
+  var when = function (t) { var d = new Date(t * 1000); return d.toLocaleDateString(undefined, {month: "short", day: "numeric"}) + " " + d.toLocaleTimeString(undefined, {hour: "2-digit", minute: "2-digit"}); };
+  var empty = function (cols, text) { return '<tr><td colspan="' + cols + '" class="sub">' + esc(text) + "</td></tr>"; };
+
+  function show(v) {
+    if (views.indexOf(v) < 0) v = "home";
+    views.forEach(function (x) { $("v-" + x).classList.toggle("active", x === v); });
+    document.querySelectorAll("#nav a").forEach(function (a) { a.toggleAttribute("aria-current", a.dataset.v === v); if (a.dataset.v === v) a.setAttribute("aria-current", "page"); });
+  }
+  window.addEventListener("hashchange", function () { show(location.hash.slice(1)); });
+  show(location.hash.slice(1));
+
+  $("theme").addEventListener("click", function () {
+    var r = document.documentElement, cur = r.getAttribute("data-theme");
+    var dark = cur ? cur === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    r.setAttribute("data-theme", dark ? "light" : "dark");
+  });
+
+  function render() {
+    var c = data.computer, ck = data.checkpoints, bd = data.bundles, boards = data.boards;
+    var online = boards.filter(function (b) { return b.online; });
+    $("updated").textContent = "Folders read at " + new Date(data.generated * 1000).toLocaleTimeString();
+    $("chip-compiler").innerHTML = c.compiler ? chip("ok hide-sm", "ModelSDK found") : chip("warn hide-sm", "ModelSDK not found");
+    $("chip-boards").innerHTML = boards.length ? chip(online.length ? "ok" : "bad", online.length + " of " + boards.length + " boards online") : chip("", "No board added");
+    $("host").textContent = c.host;
+    $("machine-ck").textContent = ck.length;
+    $("machine-bd").textContent = bd.length;
+
+    var steps = [
+      ["Step 1 · Model", ck.length + " checkpoints", "Found in " + c.model_folders.length + " folder(s).", ck.length ? "done" : "next", "models"],
+      ["Step 2 · Compile", bd.length + " builds", c.compiler ? "Model compiler ready." : "Install the SiMa ModelSDK to compile.", bd.length ? "done" : "next", "compile"],
+      ["Step 3 · Compare", "Builds side by side", "Accuracy and speed per build.", "", "compare"],
+      ["Step 4 · Board", boards.length ? online.length + " online" : "No board yet", boards.length ? "Install builds from the board's Studio." : "Add one under Boards.", online.length ? "done" : "next", "boards"],
+      ["Step 5 · Run", "On the arm", "Calibrate, check and run in the board's Studio.", "", "runs"]
+    ];
+    $("pipeline").innerHTML = steps.map(function (s) {
+      return '<div class="stage ' + s[3] + '"><span class="k">' + s[0] + "</span><b>" + esc(s[1]) + "</b><p>" + esc(s[2]) + '</p><a class="btn go" href="#' + s[4] + '">Open</a></div>';
+    }).join("");
+
+    $("recent").innerHTML = bd.slice(0, 4).map(function (b) {
+      return "<li><span>" + esc(b.policy) + " · " + esc(b.id) + "</span>" + (b.robot_client ? chip("ok", "Robot client included") : chip("", "Inference only")) + "</li>";
+    }).join("") || "<li><span>No builds yet</span></li>";
+    $("readiness").innerHTML =
+      "<li><span>Model compiler (ModelSDK)</span>" + (c.compiler ? chip("ok", "Found") : chip("warn", "Not found")) + "</li>" +
+      "<li><span>Checkpoint folders</span>" + chip(ck.length ? "ok" : "warn", ck.length + " checkpoints") + "</li>" +
+      "<li><span>Boards</span>" + chip(online.length ? "ok" : (boards.length ? "bad" : ""), boards.length ? online.length + " of " + boards.length + " online" : "None added") + "</li>";
+
+    $("model-folders").textContent = c.model_folders.join(" · ");
+    $("checkpoints").innerHTML = ck.map(function (m) {
+      return "<tr><td>" + esc(m.policy) + '</td><td><b>' + esc(m.run) + '</b><span class="sub mono">' + esc(m.path) + '</span></td><td class="r num">' + esc(m.step) + "</td><td>" + when(m.modified) + '</td><td><a class="btn" href="#compile" data-path="' + esc(m.path) + '">Compile</a></td></tr>';
+    }).join("") || empty(5, "No checkpoints found. Start the Workbench with --models <folder>.");
+    document.querySelectorAll("#checkpoints a[data-path]").forEach(function (a) {
+      a.addEventListener("click", function () { $("ckpt").value = a.dataset.path; command(); });
+    });
+
+    var selected = $("ckpt").value;
+    $("ckpt").innerHTML = ck.map(function (m) { return '<option value="' + esc(m.path) + '">' + esc(m.policy + " · " + m.run + " · step " + m.step) + "</option>"; }).join("");
+    if (selected) $("ckpt").value = selected;
+    command();
+
+    $("bundle-folders").textContent = c.bundle_folders.join(" · ");
+    $("manifest-export").innerHTML = manifestExport(boards);
+    $("policy-readiness").innerHTML = readinessRows(bd);
+    $("bundles").innerHTML = bd.map(function (b) {
+      var e = b.evidence, ms = function (v) { return v == null ? "—" : v.toFixed(v < 100 ? 1 : 0) + " ms"; };
+      var check = !e ? '<span class="sub">Not benchmarked</span>' : e.check === "pass" ? chip("ok", "Pass · cosine " + e.cosine.toFixed(5))
+        : e.check === "fail" ? chip("bad", "Fail · cosine " + e.cosine.toFixed(5)) : chip("", "No reference");
+      return '<tr><td class="nw"><b class="mono">' + esc(b.id) + '</b><span class="sub">' + esc(b.tasks[0] || "") + '</span></td><td class="nw">' + esc(b.policy) + "</td><td>" + esc(b.precision.join(", ")) +
+        '</td><td class="r num nw">' + size(b.bytes) + '</td><td class="r num nw">' + ms(e && e.median_ms) + '</td><td class="r num nw">' + ms(e && e.p99_ms) +
+        '</td><td class="r num nw">' + (e && e.rate_hz ? e.rate_hz.toFixed(1) + " Hz" : "—") + "</td><td>" + check + "</td><td>" + robotRun(b.robot_run) + "</td>" + robotStats(b.robot_labels) + "</tr>";
+    }).join("") || empty(14, "No bundles found. Start the Workbench with --bundles <folder>.");
+
+    $("boards").innerHTML = boards.map(boardCard).join("");
+
+    var runs = [];
+    online.forEach(function (b) { (b.runs || []).forEach(function (r) { runs.push([b, r]); }); });
+    $("runs").innerHTML = runs.map(function (p) {
+      var r = p[1];
+      return "<tr><td>" + esc(p[0].address) + '</td><td class="mono">' + esc(r.bundle) + "</td><td>" + esc(r.task) + "</td><td>" + esc(r.status) + "</td><td>" + (r.started_at ? when(r.started_at) : "") + "</td></tr>";
+    }).join("") || empty(5, online.length ? "No runs recorded on the boards yet." : "Robot runs appear here once a board is online.");
+  }
+
+  // One DevKit: ssh (saved DevKits) and Studio are reported separately, so a DevKit without Studio still shows.
+  function boardCard(b) {
+    var s = b.ssh, rows = [], heads = [];
+    if (s) heads.push(!s.reachable ? chip("bad", "ssh: " + s.error) : chip(s.modalix ? "ok" : "bad", s.modalix ? "ssh ok" : "ssh ok · not a Modalix"));
+    heads.push(b.online ? chip("ok", "Studio · " + (b.state || "idle")) : chip(s && s.reachable ? "" : "bad", "Studio off"));
+    if (s && s.reachable) rows.push(["PoLiMa", s.polima ? "installed" : "not installed: run scripts/install_polima_modalix.sh on it"]);
+    if (b.online) rows.push(["Active build", b.active || "none"], ["Builds installed", b.bundles.length]);
+    if (b.online || (s && s.reachable)) rows.push(["Policy server", (b.online ? b.server && b.server.running : s.server) ? "running" : "stopped"],
+      ["Free space", b.online && b.storage && b.storage.free_bytes ? size(b.storage.free_bytes) : s && s.free_gb != null ? s.free_gb + " GB" : "—"]);
+    var note = b.online ? "" : '<p class="sub">' + (s && s.reachable ? "Start Studio on it: <code>polima studio start</code>" : s ? "Check the address, the network and that ssh logs in without a password." : "Studio is not answering. On the board run <code>polima studio start</code>.") + "</p>";
+    var actions = (b.online ? '<a class="btn primary" target="_blank" rel="noopener" href="' + esc(b.address) + '">Open Studio</a> ' : "") +
+      (b.name ? '<button class="btn" data-remove="' + esc(b.name) + '">Remove</button>' : "");
+    return '<div class="panel"><div class="panel-h"><h3 class="mono">' + esc(b.name || b.address) + "</h3>" + heads.join(" ") + '</div><div class="panel-b board">' +
+      (b.host ? '<span class="sub mono">' + esc(b.host) + "</span>" : "") + (rows.length ? '<dl class="kv">' + rows.map(function (r) { return "<dt>" + esc(r[0]) + "</dt><dd>" + esc(r[1]) + "</dd>"; }).join("") + "</dl>" : "") +
+      note + (actions ? "<div>" + actions + "</div>" : "") + "</div></div>";
+  }
+
+  // Writes carry the session's CSRF token (header + SameSite cookie), as in Studio.
+  var session = null;
+  function post(path, body) {
+    session = session || fetch("/api/v1/session").then(function (r) { return r.json(); });
+    return session.then(function (s) {
+      return fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-CSRF-Token": s.csrf_token}, body: JSON.stringify(body)});
+    }).then(function (r) {
+      return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || "failed"); return d; });
+    });
+  }
+  $("dk-add").addEventListener("click", function () {
+    var button = this, msg = $("dk-msg");
+    button.disabled = true; msg.textContent = "Checking over ssh…";
+    post("/api/v1/devkits", {host: $("dk-host").value, name: $("dk-name").value, key: $("dk-key").value}).then(function (d) {
+      msg.textContent = "Saved " + d.name + (d.ssh.reachable ? " · ssh ok" : " · ssh failed: " + d.ssh.error);
+      ["dk-host", "dk-name", "dk-key"].forEach(function (id) { $(id).value = ""; });
+      load();
+    }).catch(function (e) { msg.textContent = e.message; }).then(function () { button.disabled = false; });
+  });
+  $("boards").addEventListener("click", function (e) {
+    var name = e.target.getAttribute("data-remove");
+    if (name && confirm("Remove " + name + " from this Workbench? Nothing on the DevKit changes.")) post("/api/v1/devkits/remove", {name: name}).then(function () { load(); });
+  });
+
+  function robotRun(r) {
+    if (!r) return '<span class="sub">No robot run</span>';
+    var kind = {completed: "ok", running: "ok", failed: "bad", interrupted: "warn"}[r.status] || "";
+    var parts = [when(r.started_at), r.cycles + " cycles", r.actions + " actions"];
+    if (r.model_ms_p50 != null) parts.push(r.model_ms_p50 + " ms model");
+    var outcome = {success: "ok", partial: "warn", failed: "bad"}[r.outcome];
+    var review = r.needs_review ? chip("warn", "Needs review") : outcome ? chip(outcome, "Reviewed: " + r.outcome) : "";
+    var tags = (r.failure_tags || []).map(function (t) { return t.replace(/_/g, " "); }).join(", ");
+    return chip(kind, r.status) + " " + review + '<span class="sub">' + esc(parts.join(" · ")) + "</span>" +
+      (tags ? '<span class="sub">Why: ' + esc(tags) + "</span>" : "") +
+      (r.notes ? '<span class="sub">' + esc(r.notes.length > 120 ? r.notes.slice(0, 117) + "…" : r.notes) + "</span>" : "");
+  }
+
+  // Readiness is decided on the server (polima.workbench.app.readiness), where its rules are tested.
+  function readinessRows(bd) {
+    var words = {done: "Done", needs_action: "To do", unavailable: "Not yet"};
+    return bd.map(function (b) {
+      var r = b.readiness, s = r.summary;
+      var marks = r.stages.map(function (st) {
+        var tip = st.note || (st.action ? "Next: " + st.action : "");
+        return '<td><span class="stage-mark ' + st.status + '" title="' + esc(tip) + '"><i></i>' + words[st.status] + "</span></td>";
+      }).join("");
+      var next = r.next_action ? (r.next_action === "Export failures" ? '<a class="btn" href="#compare">Export failures</a>'
+        : r.next_action === "Compare policies" ? '<a class="btn" href="#compare">Compare policies</a>'
+        : r.next_action === "Add a DevKit" ? '<a class="btn" href="#boards">Add a DevKit</a>' : chip("warn", r.next_action))
+        : r.complete ? chip("ok", "Up to date") : "—";
+      var lines = [s.benchmark, s.robot_run, s.reviews].concat(s.failures ? ["Why: " + s.failures] : []);
+      return '<tr><td class="nw"><b class="mono">' + esc(b.id) + '</b><span class="sub">' + esc(b.policy) + "</span></td>" + marks +
+        '<td class="nw">' + next + "</td><td>" + lines.map(function (l) { return '<span class="sub">' + esc(l) + "</span>"; }).join("") + "</td></tr>";
+    }).join("") || empty(9, "No bundles found. Start the Workbench with --bundles <folder>.");
+  }
+
+  // One row per online board: a download of its reviewed failures, read through this server.
+  function manifestExport(boards) {
+    return boards.map(function (b, i) {
+      if (!b.online) return "";
+      var where = '<span class="mono">' + esc(b.address) + "</span>";
+      var pending = b.runs_needing_review ? ' <span class="sub">Some runs still need review</span>' : "";
+      if (!b.manifest) return "<div>" + where + ' <span class="sub">This board\'s Studio cannot export yet; update PoLiMa on the board.</span></div>';
+      if (!b.manifest.exported_runs) return "<div>" + where + " No reviewed failures to export" + pending + "</div>";
+      return '<div><a class="btn" href="/api/v1/improvement-manifest?board=' + i + '">Export failures (' + b.manifest.exported_runs +
+        ")</a> " + where + " · " + b.manifest.failed + " failed, " + b.manifest.partial + " partial" +
+        ' · <a href="/api/v1/improvement-manifest?board=' + i + '&all=1">with successes</a>' + pending + "</div>";
+    }).join("");
+  }
+
+  // Labels come from the server (polima.workbench.app.stat_labels), so the counting is tested there.
+  function robotStats(l) {
+    var reviewed = l.reviewed === "Needs review" ? chip("warn", l.reviewed) : esc(l.reviewed);
+    return "<td>" + reviewed + '</td><td class="num nw">' + esc(l.success) + '</td><td class="num nw">' + esc(l.partial_plus) +
+      "</td><td>" + esc(l.failures).replace(/ x(\d)/g, "&nbsp;x$1") + '</td><td class="num nw">' + esc(l.latency) + "</td>";
+  }
+
+  function command() {
+    var m = (data.checkpoints || []).find(function (c) { return c.path === $("ckpt").value; });
+    if (!m) { $("command").textContent = "Choose a checkpoint."; return; }
+    var slug = (m.run + "-" + m.step).replace(/[^A-Za-z0-9._-]+/g, "-"), cmd;
+    if (m.policy === "ACT") {
+      cmd = "polima compile --policy act \\\n  --checkpoint " + m.path + " \\\n  --build-dir ~/polima-builds/" + slug;
+    } else if (m.policy.indexOf("GR00T") === 0) {
+      cmd = "Compiling GR00T yourself comes in the next PoLiMa version.\nUse a prebuilt GR00T bundle for now.";
+    } else {
+      cmd = m.policy + " comes in a later PoLiMa version.";
+    }
+    $("command").textContent = cmd;
+  }
+  $("ckpt").addEventListener("change", command);
+  $("copy").addEventListener("click", function () {
+    var text = $("command").textContent, b = this;
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy"; }, 1500); }, function () {});
+  });
+
+  $("refresh").addEventListener("click", function () { load(true); });
+  function load(refresh) {
+    fetch("/api/v1/snapshot" + (refresh === true ? "?refresh=1" : "")).then(function (r) { return r.json(); }).then(function (d) {
+      data = d; $("error").hidden = true; render();  // a drawing error is logged, never reported as a dead server
+    }, function () { $("error").hidden = false; $("error").textContent = "The Workbench server is not answering. Is `polima workbench` still running?"; });
+  }
+  load();
+  setInterval(load, 15000);
+})();
+</script>
+</body>
+</html>

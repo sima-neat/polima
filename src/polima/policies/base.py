@@ -65,9 +65,9 @@ class TensorSpec:
 
     `dram_layout` describes how the MLA lays this tensor out in DRAM when it
     crosses the accelerator boundary. 'hwc16' means the 16-lane byte-planed
-    tessellated form that TensorDRAMLayout.HWC16 produces and that
-    smolvla_som_server.cpp currently un-packs by hand; the runtime needs
-    logical_width/logical_channels to reverse it.
+    tessellated form that TensorDRAMLayout.HWC16 produces; the runtime needs
+    logical_width/logical_channels to reverse it. Bare ModelSDK ELFs can expose
+    plain output even when a legacy MPK-based application applied this transform.
     """
 
     name: str
@@ -106,8 +106,8 @@ class DatasetConverter:
     conda_env: str
     entrypoint: tuple[str, ...]
     target_codebase_version: str
-    post_copy: tuple[tuple[str, str], ...] = ()   # (src_in_repo, dst_relative_to_dataset)
-    space_factor: float = 2.2                     # convert needs ~2.2x the source size
+    post_copy: tuple[tuple[str, str], ...] = ()  # (src_in_repo, dst_relative_to_dataset)
+    space_factor: float = 2.2  # convert needs ~2.2x the source size
 
 
 @dataclass(frozen=True)
@@ -123,7 +123,7 @@ class DatasetContract:
     state_dim: int
     action_dim: int
     camera_keys: tuple[str, ...]
-    camera_shape: tuple[int, int, int]            # HWC, as stored in meta/info.json
+    camera_shape: tuple[int, int, int]  # HWC, as stored in meta/info.json
     fps: int
     #: LeRobot feature names. Standard across every policy here, but named rather
     #: than hardcoded because export and normalization both index by them, and a
@@ -131,8 +131,8 @@ class DatasetContract:
     state_key: str = "observation.state"
     action_key: str = "action"
     codebase_version: str = "v3.0"
-    single_task: bool = True                      # False => language-conditioned
-    task_canonicalizer: str | None = None         # dotted path
+    single_task: bool = True  # False => language-conditioned
+    task_canonicalizer: str | None = None  # dotted path
     rename_map: Mapping[str, str] = field(default_factory=dict)
     empty_cameras: int = 0
     converter: DatasetConverter | None = None
@@ -174,10 +174,10 @@ class TrainSpec:
     backend: Literal["lerobot-train", "groot-launch-finetune"]
     conda_env: str
     entrypoint: tuple[str, ...]
-    build_args: str                               # dotted path -> (cfg, spec) -> list[str]
+    build_args: str  # dotted path -> (cfg, spec) -> list[str]
     defaults: Mapping[str, Any] = field(default_factory=dict)
-    repo_dir_hint: str | None = None              # cwd for the invocation, e.g. "ACT/lerobot"
-    augmentation_tfs: str | None = None           # the ColorJitter/RandomAffine JSON blob
+    repo_dir_hint: str | None = None  # cwd for the invocation, e.g. "ACT/lerobot"
+    augmentation_tfs: str | None = None  # the ColorJitter/RandomAffine JSON blob
     checkpoint_glob: str = "checkpoints/*/pretrained_model"
     requires_offline_env: bool = True
 
@@ -202,7 +202,7 @@ class GraphSpec:
     """
 
     name: str
-    builder: str                                  # dotted path -> nn.Module factory
+    builder: str  # dotted path -> nn.Module factory
     inputs: tuple[TensorSpec, ...]
     outputs: tuple[TensorSpec, ...]
     layout: Layout = "NCHW"
@@ -244,8 +244,7 @@ class GraphSpec:
 
     @property
     def precisions(self) -> tuple[Precision, ...]:
-        """Try `precision` first, then each fallback -- ACT's and GR00T's
-        controllers both do `for precision in ("int8", "bf16")`."""
+        """Try `precision` first, followed by each explicitly declared fallback."""
         return (self.precision, *self.precision_fallback)
 
     def validate(self, where: str) -> None:
@@ -261,19 +260,16 @@ class GraphSpec:
                 f"{where}: mla_tessellation and external_dram_layout are mutually exclusive"
             )
         if self.promote_rank3_hwc and self.external_dram_layout == "compiler":
-            raise SpecError(
-                f"{where}: promote_rank3_hwc requires an explicit external_dram_layout"
-            )
+            raise SpecError(f"{where}: promote_rank3_hwc requires an explicit external_dram_layout")
         if (
             self.promote_rank3_hwc
             and self.layout != "NHWC"
             and any(len(tensor.shape) == 3 for tensor in self.inputs)
         ):
-            raise SpecError(
-                f"{where}: promoting a rank-3 input requires layout='NHWC'"
-            )
+            raise SpecError(f"{where}: promoting a rank-3 input requires layout='NHWC'")
         if self.promote_rank3_hwc and (
-            len(self.inputs) != 1 or len(self.outputs) != 1
+            len(self.inputs) != 1
+            or len(self.outputs) != 1
             or len(self.inputs[0].shape) not in (3, 4)
             or len(self.outputs[0].shape) not in (3, 4)
             or (len(self.inputs[0].shape) == 4 and len(self.outputs[0].shape) == 4)
@@ -285,7 +281,7 @@ class GraphSpec:
 
 @dataclass(frozen=True)
 class CompilePlan:
-    graphs: tuple[GraphSpec, ...]                 # ordered; also the export order
+    graphs: tuple[GraphSpec, ...]  # ordered; also the export order
     export_entry: str
     verify_entry: str | None = None
     fixture_entry: str | None = None
@@ -316,18 +312,20 @@ class CompilePlan:
 #: ACT needs only run_elf/pack/gather_strided -- that is the whole Phase-1
 #: interpreter. The rest land with SmolVLA in Phase 4.
 OPCODES = (
-    "run_elf",          # Runner[graph].run(in -> out)
-    "run_elf_chain",    # one upload/download around compatible device-resident ELFs
-    "pack",             # scatter sub-spans into one zeroed buffer at fixed offsets
-    "slice",            # contiguous copy-out
-    "gather_strided",   # for i<count: copy(src + i*stride, take)
+    "run_elf",  # Runner[graph].run(in -> out)
+    "run_elf_chain",  # one upload/download around compatible device-resident ELFs
+    "pack",  # scatter sub-spans into one zeroed buffer at fixed offsets
+    "slice",  # contiguous copy-out
+    "gather_strided",  # for i<count: copy(src + i*stride, take)
     "pixel_unshuffle",  # fold a grid x grid x C map into (grid/f)^2 x C*f^2
-    "scale",            # multiply by a scalar
-    "matvec",           # y[o] = b[o] + sum_i W[o*K+i] * x[i], from .f32 sidecars
-    "sincos_time",      # min/max-period sin/cos time embedding
-    "euler",            # loop body xN with x -= dt*v
-    "normalize",        # (x - mean) / std
-    "denormalize",      # x * std + mean
+    "scale",  # multiply by a scalar
+    "clip_unit",  # clamp each value to [-1, 1]
+    "matvec",  # y[o] = b[o] + sum_i W[o*K+i] * x[i], from .f32 sidecars
+    "sincos_time",  # min/max-period sin/cos time embedding
+    "sincos_state",  # grouped raw-angle sin/cos state encoding
+    "euler",  # loop body xN with x -= dt*v
+    "normalize",  # (x - mean) / std
+    "denormalize",  # x * std + mean
 )
 
 
@@ -371,9 +369,7 @@ class RuntimePlan:
                     else tuple(step.args.get("graphs", ()))
                 )
                 if not graphs or any(not isinstance(graph, str) for graph in graphs):
-                    raise SpecError(
-                        f"{where}.steps[{index}]: {step.op} needs graph name(s)"
-                    )
+                    raise SpecError(f"{where}.steps[{index}]: {step.op} needs graph name(s)")
                 if compile_plan is not None:
                     unknown = [graph for graph in graphs if graph not in compile_plan.names]
                     if unknown:
@@ -435,8 +431,8 @@ class WireSpec:
     magic: int
     version: int = 1
     default_port: int = 8092
-    request_header: str = "<IIII"                 # magic, version, request_id, flags
-    response_header: str = "<IIIIfI"              # magic, version, request_id, status, ms, count
+    request_header: str = "<IIII"  # magic, version, request_id, flags
+    response_header: str = "<IIIIfI"  # magic, version, request_id, status, ms, count
     request_tensors: tuple[TensorSpec, ...] = ()
     response_shape: tuple[int, ...] = ()
     normalization_side: Literal["client", "server"] = "client"
@@ -460,20 +456,25 @@ class WireSpec:
 
 @dataclass(frozen=True)
 class RobotSpec:
-    camera_roles: tuple[tuple[str, str], ...]     # (lerobot camera key, UI label)
+    camera_roles: tuple[tuple[str, str], ...]  # (lerobot camera key, UI label)
     joint_names: tuple[str, ...]
     actions_per_chunk: int
     default_fps: int = 30
-    max_relative_target: int = 12                 # degrees; the safety clamp
+    max_relative_target: int = 12  # degrees; the safety clamp
     aggregate_fn: str = "weighted_average"
+    #: Ask for the next plan once the queue falls to this fraction of a chunk.
+    chunk_threshold: float = 0.5
     task_string: str | None = None
-    image_preprocessor: str | None = None         # dotted path; None => identity
-    #: Camera pixel format. MJPG is not cosmetic: two 640x480@30 USB cameras on
-    #: one controller exceed the bus budget in uncompressed YUYV, so the stream
-    #: silently drops to a lower rate. Both legacy launchers were fixed to pass
-    #: `fourcc: MJPG` in --robot.cameras; PoLiMa must emit it too or the robot
-    #: client regresses in a way that only shows up as degraded control.
+    image_preprocessor: str | None = None  # dotted path; None => identity
+    #: Default camera pixel format for the legacy SO-101 rigs. MyCobot profile
+    #: specialization overrides this with its separately measured dual-camera
+    #: contract; format is hardware/topology-specific, not a universal policy
+    #: constant.
     camera_fourcc: str = "MJPG"
+    #: Per-role hardware capture rates. These are independent of the policy
+    #: control rate: the reference MyCobot cameras expose different valid V4L2
+    #: rates even though observations are consumed at 20 Hz.
+    camera_capture_fps: Mapping[str, int] = field(default_factory=dict)
     #: role -> substring of the /dev/v4l/by-id name identifying that camera.
     #: Discovery matches on these instead of falling back on enumeration order:
     #: /dev/videoN is assigned in plug order, so two cameras can silently swap
@@ -491,10 +492,11 @@ class RobotSpec:
         One place builds this string; the legacy stacks each hand-wrote it, which
         is how the MJPG fix had to be applied twice.
         """
-        rate = fps or self.default_fps
         entries = ", ".join(
             f"{key}: {{type: opencv, index_or_path: '{devices[key]}', "
-            f"width: 640, height: 480, fps: {rate}, fourcc: {self.camera_fourcc}}}"
+            f"width: 640, height: 480, "
+            f"fps: {fps or self.camera_capture_fps.get(key, self.default_fps)}, "
+            f"fourcc: {self.camera_fourcc}}}"
             for key, _ in self.camera_roles
             if key in devices
         )
@@ -503,6 +505,47 @@ class RobotSpec:
     @property
     def camera_keys(self) -> tuple[str, ...]:
         return tuple(key for key, _ in self.camera_roles)
+
+
+def camera_hints_for_profile(
+    calibration_id: str,
+    roles: tuple[str, ...],
+    inherited: Mapping[str, str],
+) -> Mapping[str, str]:
+    """Return stable camera identities for a specialized robot profile.
+
+    The reference MyCobot capture rig was trained with the WSD camera as the
+    fixed/front view and the Generic camera as the arm-mounted/wrist view. Use
+    stable serial substrings, not enumeration order or broad product names. A
+    different rig therefore asks the operator instead of silently swapping two
+    otherwise valid image tensors.
+    """
+
+    if calibration_id == "mycobot280":
+        known = {"front": "202406051510", "wrist": "20220523"}
+        return {role: known[role] for role in roles if role in known}
+    return {role: hint for role, hint in inherited.items() if role in roles}
+
+
+def camera_capture_for_profile(
+    calibration_id: str,
+    roles: tuple[str, ...],
+    inherited_fourcc: str,
+    inherited_fps: Mapping[str, int],
+) -> tuple[str, Mapping[str, int]]:
+    """Return the verified capture contract for a specialized robot.
+
+    The MyCobot rig has two cameras on a shared USB 2.0 path. After correcting
+    their semantic roles, the reproducible combination is WSD/front at 30 FPS
+    and Generic/wrist at 25 FPS, both YUYV. The policy loop remains 20 Hz.
+    """
+
+    if calibration_id == "mycobot280":
+        known = {"front": 30, "wrist": 25}
+        return "YUYV", {role: known[role] for role in roles if role in known}
+    return inherited_fourcc, {
+        role: int(inherited_fps[role]) for role in roles if role in inherited_fps
+    }
 
 
 # ------------------------------------------------------------------- the spec
@@ -535,6 +578,15 @@ class PolicySpec:
     robot: RobotSpec
     runtime_plan_builder: str
     checkpoint_validator: str | None = None
+    #: Optional pure-Python adapter that specializes a shared policy architecture
+    #: for the robot profile recorded by a checkpoint/build contract. ACT uses
+    #: this to keep one policy name while serving both 6-DoF SO-101 and 7-DoF
+    #: MyCobot checkpoints.
+    profile_entry: str | None = None
+    #: Policy-specific shape/runtime facts discovered from a checkpoint trace.
+    #: GR00T uses this for prompt length and image-token windows; keeping them
+    #: here lets a build contract restore the exact runtime plan at pack time.
+    runtime_context: Mapping[str, Any] = field(default_factory=dict)
     bundle_format: str = "polima-bundle-v1"
     #: What the deployed pipeline must match to be called good. Per-policy
     #: because the default is ACT's, and ACT is a small all-BF16 graph whose
@@ -546,6 +598,14 @@ class PolicySpec:
 
     def build_runtime_plan(self, context: Any = None) -> RuntimePlan:
         return resolve(self.runtime_plan_builder)(self, context)
+
+    def specialize_profile(self, **context: Any) -> PolicySpec:
+        """Return the robot-profile variant selected by checkpoint metadata."""
+        if not self.profile_entry:
+            return self
+        specialized = resolve(self.profile_entry)(self, **context)
+        specialized.validate()
+        return specialized
 
     def validate(self) -> None:
         """Cross-field consistency. Called by the registry at import time, so a
@@ -595,8 +655,7 @@ class PolicySpec:
             if step.op not in ("run_elf", "run_elf_chain"):
                 continue
             graph_names = (
-                (step.args["graph"],)
-                if step.op == "run_elf" else tuple(step.args["graphs"])
+                (step.args["graph"],) if step.op == "run_elf" else tuple(step.args["graphs"])
             )
             first = self.compile.graph(graph_names[0])
             last = self.compile.graph(graph_names[-1])

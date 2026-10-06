@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "polima"
-version = "0.1.0"
+version = "0.2.0"
 description = "PoLiMa - unified compile/deploy/control framework for robot policies on SiMa.ai Modalix"
 readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
 
 # HARD FLOOR: numpy only.
 #
@@ -43,7 +44,7 @@ deploy  = ["pyyaml"]
 data    = ["pyarrow"]
 host    = ["polima[data,export,compile,deploy]"]
 # Board-side. Deliberately excludes torch/afe: the board never compiles.
-robot   = ["flask", "waitress", "opencv-python-headless"]
+robot   = ["flask", "waitress", "opencv-python-headless", "pillow"]
 board   = ["polima[robot]"]
 dev     = ["pytest", "ruff"]
 
@@ -64,7 +65,7 @@ polima-doctor = "polima.cli.entry:doctor"
 where = ["src"]
 
 [tool.setuptools.package-data]
-polima = ["robot/templates/*.html", "patches/*.patch", "studio/static/*.html", "studio/static/assets/*"]
+polima = ["robot/templates/*.html", "robot/assets/mycobot/*", "robot/assets/so101/*", "patches/*.patch", "studio/static/*.html", "studio/static/assets/*", "workbench/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]

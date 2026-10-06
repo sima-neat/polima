@@ -4,9 +4,9 @@ SiMa.ai Modalix.
 Mirrors LLiMa's shape (llima-compile / llima-deploy / llima-run) as subcommands:
 
     polima compile  --policy act --checkpoint <path>
-    polima deploy   --bundle <id> --board sima@192.168.91.211
+    polima deploy   --bundle <id> --board sima@<board-address>
     polima run      --bundle <id> --fixture
-    polima robot    install | ports | doctor | preview | calibrate | run
+    polima robot    install | ports | doctor | preview | calibrate | run | export-improvement-manifest
     polima doctor
     polima data     validate <roots...>
     polima list
@@ -41,12 +41,7 @@ COMMANDS = {
     "run": ("polima.cli.run", "run inference against a deployed bundle"),
     "robot": ("polima.cli.robot", "robot control: teleop, diagnostics, live view"),
     "studio": ("polima.cli.studio", "manage the SOM web control cockpit"),
-}
-
-_NOT_YET = {
-    "compile": "Phase 1b",
-    "deploy": "Phase 1a",
-    "run": "Phase 1a",
+    "workbench": ("polima.cli.workbench", "open the build computer's page (localhost:8686)"),
 }
 
 
@@ -103,16 +98,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
-        phase = _NOT_YET.get(command)
-        if phase:
-            print(
-                f"polima {command}: not implemented yet (planned for {phase}).\n"
-                f"Until then use the legacy scripts under "
-                f"{'ACT/' if command != 'robot' else 'lerobot_sima/'}.",
-                file=sys.stderr,
-            )
-            return 2
-        print(f"polima {command}: cannot load {module_name}: {exc}", file=sys.stderr)
+        # Show the real missing dependency rather than a generic message.
+        print(f"polima {command}: cannot load {module_name}: {exc}\n"
+              f"Install the missing package (see Install in README.md).", file=sys.stderr)
         return 2
 
     denial = role.check(command, rest, module)
@@ -129,7 +117,7 @@ def _version() -> str:
 
         return version("polima")
     except Exception:  # noqa: BLE001
-        return "0.1.0+src"
+        return "0.2.0+src"
 
 
 if __name__ == "__main__":

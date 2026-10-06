@@ -61,9 +61,11 @@ def _checkpoint(tmp_path, root="/ml_datasets/rcwb_f_t", repo_id="local/rcwb_f_t"
 
 def test_dataset_comes_from_the_checkpoint(tmp_path):
     """So calibration cannot silently use a different dataset than training."""
-    repo_id, root = sampling.resolve_dataset(_checkpoint(tmp_path))
+    dataset = tmp_path / "ml_datasets" / "rcwb_f_t"
+    repo_id, root = sampling.resolve_dataset(_checkpoint(tmp_path, root=str(dataset)))
     assert repo_id == "local/rcwb_f_t"
-    assert str(root) == "/ml_datasets/rcwb_f_t"
+    # Resolved, so a symlinked dataset parent names the real directory.
+    assert root == dataset.resolve()
 
 
 def test_dataset_root_can_be_overridden(tmp_path):

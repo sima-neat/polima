@@ -26,7 +26,6 @@ import torch
 from torch import nn
 
 from polima.policies.smolvla.runtime import (
-    ACTION_DIM,
     ACTION_LANE,
     CHUNK,
     DENOISE_STEPS,
@@ -37,7 +36,6 @@ from polima.policies.smolvla.runtime import (
     IMAGE_SCALE,
     LANGUAGE_TOKENS,
     PREFIX_TOKENS,
-    STATE_DIM,
     STATE_TOKEN_INDEX,
     SUFFIX_TOKEN,
 )
@@ -180,7 +178,7 @@ class VisionTower(nn.Module):
 class PrefixCache(nn.Module):
     """Static 16-layer VLM prefill producing 32 packed K/V buffers."""
 
-    def __init__(self, model):
+    def __init__(self, model, language_tokens: int = 10):
         super().__init__()
         owner = model.vlm_with_expert
         self.layers = owner.get_vlm_model().text_model.layers
@@ -193,7 +191,7 @@ class PrefixCache(nn.Module):
 
         pad = torch.zeros(1, PREFIX_TOKENS, dtype=torch.bool)
         pad[:, :128] = True
-        pad[:, 192:202] = True
+        pad[:, 192:192 + language_tokens] = True
         pad[:, STATE_TOKEN_INDEX] = True
         attention_types = torch.zeros(1, PREFIX_TOKENS, dtype=torch.bool)
         attention_types[:, STATE_TOKEN_INDEX] = True
@@ -275,7 +273,7 @@ class SuffixProjection(nn.Module):
 class DenoiseCore(nn.Module):
     """The 16-layer action expert with explicit prefix-cache tensors."""
 
-    def __init__(self, model):
+    def __init__(self, model, language_tokens: int = 10):
         super().__init__()
         owner = model.vlm_with_expert
         self.expert = owner.lm_expert
@@ -289,7 +287,7 @@ class DenoiseCore(nn.Module):
 
         prefix_pad = torch.zeros(1, PREFIX_TOKENS, dtype=torch.bool)
         prefix_pad[:, :128] = True
-        prefix_pad[:, 192:202] = True
+        prefix_pad[:, 192:192 + language_tokens] = True
         prefix_pad[:, STATE_TOKEN_INDEX] = True
         suffix_causal = torch.tril(torch.ones(1, CHUNK, CHUNK, dtype=torch.bool))
         prefix_mask = prefix_pad[:, None, :].expand(1, CHUNK, PREFIX_TOKENS)
@@ -299,8 +297,9 @@ class DenoiseCore(nn.Module):
             persistent=False,
         )
         self.register_buffer("cross_attention_bias", self._bias(prefix_mask), persistent=False)
-        self._register_rope("self", torch.arange(139, 139 + CHUNK))
+        valid_prefix = 128 + language_tokens + 1
         self._register_rope("cross", torch.arange(CHUNK))
+        self._register_rope("self", torch.arange(valid_prefix, valid_prefix + CHUNK))
 
     @staticmethod
     def _bias(mask):
@@ -362,7 +361,7 @@ class DenoiseCore(nn.Module):
 
 
 class DenoiseExpert(nn.Module):
-    def __init__(self, model):
+    def __init__(self, model, language_tokens: int = 10):
         super().__init__()
         self.core = DenoiseCore(model)
         self.action_out = model.action_out_proj
@@ -423,24 +422,37 @@ def _denoise_input(cache: torch.Tensor, suffix: torch.Tensor) -> torch.Tensor:
 
 def trace(modules: dict[str, nn.Module], sample: dict, image_keys: Sequence[str]) -> dict:
     policy = modules["_policy"]
+    state_dim = int(sample["observation.state"].shape[-1])
+    action_dim = int(policy.config.action_feature.shape[0])
+    if not 0 < state_dim <= ACTION_LANE or not 0 < action_dim <= ACTION_LANE:
+        raise ValueError(
+            f"SmolVLA sample dimensions {state_dim}/{action_dim} do not fit "
+            f"the {ACTION_LANE}-wide model lane"
+        )
     with torch.inference_mode():
         images, masks = policy.prepare_images(sample)
         state_lane = policy.prepare_state(sample)
         tokens = sample["observation.language.tokens"]
         language_mask = sample["observation.language.attention_mask"]
+        valid_language = int(language_mask.sum())
+        if not 0 < valid_language <= LANGUAGE_TOKENS:
+            raise ValueError(
+                f"SmolVLA task must occupy 1..{LANGUAGE_TOKENS} language tokens, "
+                f"got {valid_language}"
+            )
+        # The attention masks and suffix RoPE positions are constants in the
+        # exported graphs, so specialize both modules to this deployment task.
+        modules["prefix"] = PrefixCache(policy.model, valid_language).eval()
+        modules["denoise"] = DenoiseExpert(policy.model, valid_language).eval()
         prefix_reference, pad_mask, _ = policy.model.embed_prefix(
             images, masks, tokens, language_mask, state=state_lane
         )
         expected_pad = torch.zeros_like(pad_mask)
         expected_pad[:, :128] = True
-        expected_pad[:, 192:202] = True
+        expected_pad[:, 192:192 + valid_language] = True
         expected_pad[:, STATE_TOKEN_INDEX] = True
         if not torch.equal(pad_mask.bool(), expected_pad.bool()):
-            valid_language = int(language_mask.sum())
-            raise ValueError(
-                "the compiled prefix mask expects 10 language tokens; "
-                f"this task produced {valid_language}"
-            )
+            raise ValueError("compiled prefix mask does not match the processed task mask")
 
         vision = [modules["vision"](images[index]) for index in range(2)]
         empty = prefix_reference[:, 128:192]
@@ -489,7 +501,9 @@ def trace(modules: dict[str, nn.Module], sample: dict, image_keys: Sequence[str]
         "suffix_inputs": suffix_inputs,
         "denoise_inputs": denoise_inputs,
         "velocities": velocities,
-        "normalized_action": actions[:, :, :ACTION_DIM],
+        "normalized_action": actions[:, :, :action_dim],
+        "state_dim": state_dim,
+        "action_dim": action_dim,
         "empty_image_embedding": empty,
         "language_embedding": language,
         "state_project_weight": policy.model.state_proj.weight.detach().float(),
@@ -570,7 +584,7 @@ def write_fixtures(output: Path, sample: dict, traced: dict,
         output / FIXTURE_FILE,
         image0=traced["prepared_images"][0].numpy(),
         image1=traced["prepared_images"][1].numpy(),
-        state=traced["state_lane"][..., :STATE_DIM].numpy(),
+        state=traced["state_lane"][..., :traced["state_dim"]].numpy(),
         noise=traced["noise"].numpy(),
         normalized_action=normalized.numpy(),
         action=raw.numpy(),
@@ -622,10 +636,13 @@ def verify_chain(onnx_dir: Path, fixture_path: Path, report_path: Path,
         vision_session.run(None, {"image": fixture[f"image{i}"].astype(np.float32)})[0]
         for i in range(2)
     ]
+    for index, value in enumerate(vision):
+        dump(f"vision_{index:02d}_output", value)
     prefix = fixture["prefix_embeddings"].astype(np.float32).copy()
     prefix[:, :64] = vision[0] * IMAGE_SCALE
     prefix[:, 64:128] = vision[1] * IMAGE_SCALE
     cache = session("prefix").run(None, {"prefix_embeddings": prefix[:, None]})[0]
+    dump("prefix_00_output", cache)
     actions = fixture["noise"].astype(np.float32).copy()
     suffix_session, denoise_session = session("suffix"), session("denoise")
     for index in range(DENOISE_STEPS):
@@ -640,8 +657,8 @@ def verify_chain(onnx_dir: Path, fixture_path: Path, report_path: Path,
         dump(f"suffix_{index:02d}_output", suffix)
         dump(f"denoise_{index:02d}_output", velocity)
         actions -= velocity * (1.0 / DENOISE_STEPS)
-    action = actions[:, :, :ACTION_DIM]
     reference = fixture["normalized_action"].astype(np.float32)
+    action = actions[:, :, :reference.shape[-1]]
     difference = np.abs(action - reference)
     report = {
         "ok": bool(np.allclose(action, reference, atol=atol, rtol=rtol)),

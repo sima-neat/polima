@@ -22,6 +22,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -29,6 +30,9 @@
 #include <vector>
 
 #include "polima/runner.hpp"
+#include "polima/dit_chain.hpp"
+#include "polima/device_chain.hpp"
+#include "polima/bound_chain.hpp"
 #include "polima/sidecar.hpp"
 
 namespace polima {
@@ -36,13 +40,18 @@ namespace polima {
 enum class Opcode {
   RunElf,
   RunElfChain,
+  RunDiTChain,
+  RunDeviceChain,
+  RunBoundChain,   // named persistent bindings (GR00T DiT)
   Pack,
   Slice,
   GatherStrided,
   PixelUnshuffle,
   Scale,
+  ClipUnit,
   MatVec,
   SincosTime,
+  SincosState,
   Euler,
   Normalize,
   Denormalize,
@@ -55,6 +64,11 @@ struct PackPart {
   std::string source;
   size_t destination_offset = 0;
   size_t count = 0;
+  // Optional request-flags-indexed source window. GR00T stores one flattened
+  // prompt per trained task in a single sidecar.
+  size_t source_offset = 0;
+  size_t source_stride = 0;
+  size_t selector_count = 0;
   // Read from a constants/ sidecar rather than a plan buffer. SmolVLA's prefix
   // is built from two of these -- the empty-image and language embeddings are
   // fixed for a checkpoint, so they ship with the bundle instead of being
@@ -68,15 +82,25 @@ struct Step {
   std::string graph;                 // run_elf
   std::vector<std::string> graphs;   // run_elf_chain
   std::string chain;                 // internal SharedRunnerChain key
+  std::vector<std::string> prelude;  // run_bound_chain: run once per input change
+  std::vector<std::string> binds;    // run_bound_chain: logical name of each in[]
+  std::string carry;                 // run_bound_chain: carried (ping-pong) binding
   std::string source;                // args["src"] -- slice, gather_strided, scale, ...
   std::vector<std::string> inputs;   // args["in"]  -- run_elf and friends
   std::vector<PackPart> parts;       // pack
+  std::vector<size_t> group_widths;  // sincos_state in checkpoint order
   size_t offset = 0;                 // slice
   size_t stride = 0;                 // gather_strided: source stride; 0 broadcasts
   size_t take = 0;
   size_t destination_stride = 0;     // gather_strided: defaults to `take`
   size_t destination_offset = 0;
   bool clear = false;                // zero the output before scattering
+  // pack whose parts are all sidecars, writing a buffer nothing else writes:
+  // after the first request its output already holds exactly these values.
+  bool constant_pack = false;
+  // run_elf: per input, whether other run_elf steps read the same contents
+  // (no write in between), so one quantized copy can serve them all.
+  std::vector<bool> shared_inputs;
   size_t count = 0;
   size_t size = 0;
   float scalar = 0.0f;               // scale, euler dt, sincos timestep
@@ -91,7 +115,8 @@ struct Step {
   float clip_max = 0.0f;             //   which is where GR00T's min/max scaling clips
   size_t rows = 0;
   size_t cols = 0;
-  size_t grid = 0;                   // pixel_unshuffle: input side, in tokens
+  size_t height = 0;                 // pixel_unshuffle: input token-grid height
+  size_t width = 0;                  // pixel_unshuffle: input token-grid width
   size_t channels = 0;               // pixel_unshuffle: input channels
   size_t factor = 0;                 // pixel_unshuffle: fold factor
   std::string raw;                   // original JSON, for error messages
@@ -119,6 +144,7 @@ class Plan {
   // avoids copying the request payload a second time, which for ACT is 7.4 MB
   // (two 480x640x3 images) on every single inference.
   const std::vector<float>& execute();
+  const std::vector<float>& execute(uint32_t request_flags);
 
   // Writable pointer to a declared buffer, for filling inputs in place.
   float* input_buffer(const std::string& name);
@@ -137,6 +163,7 @@ class Plan {
   // work on the request path -- so it is off unless asked for, and `stages`
   // turns it on for exactly one run rather than requiring a restart.
   void set_collect_timings(bool on) { collect_timings_ = on; }
+  void set_dump_stages(const std::filesystem::path& directory) { dump_stages_ = directory; }
 
  private:
   std::vector<float>& buffer(const std::string& name);
@@ -153,6 +180,7 @@ class Plan {
   std::filesystem::path root_;
   bool verbose_;
   bool collect_timings_ = false;
+  std::filesystem::path dump_stages_;
   std::string bundle_id_;
   std::string policy_;
   double smoke_cosine_min_ = 0.999;
@@ -164,9 +192,57 @@ class Plan {
   std::map<std::string, size_t> buffer_sizes_;
   std::map<std::string, std::unique_ptr<Runner>> runners_;
   std::map<std::string, std::unique_ptr<SharedRunnerChain>> chains_;
+  std::map<std::string, std::unique_ptr<DiTRunnerChain>> dit_chains_;
+  // run_device_chain: plan-wide device buffers, then the programs bound to
+  // them (declared after the arena so programs are freed first).
+  std::unique_ptr<DeviceArena> device_arena_;
+  std::map<std::string, std::unique_ptr<DeviceChain>> device_chains_;
+  std::map<std::string, std::unique_ptr<BoundRunnerChain>> bound_chains_;
+  std::map<std::string, size_t> buffer_versions_;
   std::vector<Step> steps_;
+  // Reuse tokens: a buffer's token changes whenever a step writes it and at
+  // every request; graphs skip re-converting an input whose token they have
+  // already uploaded.
+  uint64_t token(const std::string& name);
+  std::map<std::string, uint64_t> buffer_tokens_;
+  uint64_t next_token_ = 0;
+  std::vector<InputPart> parts_;
+  QuantizedInputCache quantized_inputs_;
+  // Set by graph steps: whether their decode already checked every output
+  // value, and the first non-finite index it found.
+  bool graph_checked_ = false;
+  size_t graph_first_nonfinite_ = 0;
+  // Constant packs already materialised: output buffer -> (request flags they
+  // were packed for, reuse token). Survives across requests, so graphs keep
+  // the converted copy of these inputs too.
+  std::map<std::string, std::pair<uint32_t, uint64_t>> constant_packs_;
   Sidecars sidecars_;
   std::vector<std::string> timings_;
+  uint32_t request_flags_ = 0;
+  // Raw codes are valid only until another RunElf or a write to their plan buffer.
+  Runner* last_int8_runner_ = nullptr;
+  std::string last_int8_buffer_;
+
+  // Two adjacent step sequences that do the same work on independent data
+  // (GR00T's two cameras). They run interleaved: while the MLA executes one
+  // lane's graph on the worker thread, this thread decodes the other lane's
+  // previous output and encodes its next input. Lane 1 uses its own instance
+  // of every graph (same ELF, separate MLA buffers), so nothing it writes can
+  // reach lane 0. Each step computes exactly what it computes sequentially.
+  struct TwinBlock {
+    size_t begin = 0;   // first step of lane 0
+    size_t length = 0;  // steps per lane; lane 1 starts at begin + length
+  };
+  bool lanes_match(size_t begin, size_t length) const;
+  void run_twin_block(const TwinBlock& block);
+  // Bookkeeping every step gets after it has written its output.
+  void finish_step(const Step& step);
+  // Every plan buffer a step writes: its output, plus a device program's downloads.
+  std::vector<std::string> written_buffers(const Step& step) const;
+  void prepare_parts(const Step& step, size_t expected_elements);
+  std::vector<TwinBlock> twin_blocks_;
+  std::map<std::string, std::unique_ptr<Runner>> twin_runners_;
+  std::unique_ptr<MlaWorker> mla_worker_;
 
 };
 

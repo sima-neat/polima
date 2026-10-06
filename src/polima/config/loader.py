@@ -23,6 +23,7 @@ from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from polima.config import devkits
 from polima.config.base import SiteConfig
 from polima.config.schema import ConfigError, from_dict, merge, to_dict
 from polima.util.jsonio import read_json
@@ -85,7 +86,9 @@ def load(
     if overrides:
         data = merge(data, _expand_dotted(overrides))
 
-    return from_dict(SiteConfig, data)
+    config = from_dict(SiteConfig, data)
+    devkits.apply(config.board)  # --board NAME: a DevKit saved in the Workbench
+    return config
 
 
 def save(config: SiteConfig, path: str | Path) -> Path:

@@ -17,9 +17,9 @@
 //      by width, so the logical index is
 //          logical[x * C + cb * 16 + lane] = physical[(cb * W + x) * 16 + lane]
 //
-// ACT does not need this: all six of its graphs use the plain layout, and the
-// verified per-stage goldens confirm it. It is here because polima_core is
-// shared, and SmolVLA (Phase 4) does need it.
+// Keep this implementation for bundles whose measured bare-ELF contract is
+// genuinely HWC16. ACT, GR00T, and the current SmolVLA graphs have all been
+// measured as plain at their host-visible output boundaries.
 #pragma once
 
 #include <cstddef>

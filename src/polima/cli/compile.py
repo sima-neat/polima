@@ -33,25 +33,32 @@ exit 2.
 from __future__ import annotations
 
 import argparse
+import itertools
+import json
 import sys
 from pathlib import Path
 
 from polima.cli import wizard
+from polima.compile.precision import PRECISION_PROFILES, apply_precision_profile
 from polima.config.loader import load
 from polima.policies.registry import get_policy
 from polima.util import table
 
 
 def needs_capability(argv: list[str]) -> str | None:
-    """`--import-legacy` only copies already-built ELFs, so it runs anywhere.
+    """Return the external capability needed by the requested terminal stage.
 
-    Anything else needs the SiMa model-compiler venv. Note that "needs" here
-    means *reachable as a subprocess*, not importable in this interpreter: the
-    compiler venv has afe but no torch, the training env has torch but no afe,
-    so the two can never be the same interpreter. `role.detect` checks for the
-    venv accordingly.
+    Importing legacy artifacts and stopping after checkpoint-to-ONNX export do
+    not need ModelSDK. Quantization, compilation, and packing fresh artifacts
+    still require the compiler venv to be reachable as a subprocess.
     """
     if any(a == "--import-legacy" or a.startswith("--import-legacy=") for a in argv):
+        return None
+    export_only = "--stop-after=export" in argv or any(
+        current == "--stop-after" and following == "export"
+        for current, following in itertools.pairwise(argv)
+    )
+    if export_only:
         return None
     # A bare call opens the interactive session, which offers packing (no
     # compiler needed) alongside the compile paths and reports the gap itself.
@@ -59,6 +66,7 @@ def needs_capability(argv: list[str]) -> str | None:
     if not argv:
         return None
     return "compile"
+
 
 
 def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
@@ -71,8 +79,7 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     parser = argparse.ArgumentParser(prog="polima-compile")
     parser.add_argument("--policy", default="act")
     parser.add_argument(
-        "--import-legacy", metavar="BUILD_DIR",
-        help="adopt an existing compiler build tree instead of recompiling",
+        "--import-legacy", metavar="BUILD_DIR", help=argparse.SUPPRESS,
     )
     parser.add_argument("--build-dir", metavar="DIR",
                         help="build tree holding onnx/ and calibration/ to compile")
@@ -80,7 +87,17 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
                         help="export this checkpoint into --build-dir first")
     parser.add_argument("--dataset-root", metavar="PATH",
                         help="override the dataset named in the checkpoint")
+    parser.add_argument(
+        "--embodiment-tag",
+        help="explicit base-checkpoint embodiment (required for multi-embodiment GR00T)",
+    )
     parser.add_argument("--calibration-samples", type=int, default=8)
+    parser.add_argument(
+        "--precision-profile",
+        choices=PRECISION_PROFILES,
+        default="policy",
+        help="named activation/weight precision recipe (default: policy declaration)",
+    )
     parser.add_argument("--skip-verify", action="store_true",
                         help="skip the onnxruntime-vs-PyTorch check after export")
     parser.add_argument("--graph", action="append", metavar="NAME",
@@ -122,9 +139,7 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
 
     if not args.import_legacy:
         print(
-            "polima-compile: nothing to do. Choose one:\n"
-            "  --build-dir <dir>            compile onnx/ + calibration/ into ELFs\n"
-            "  --import-legacy <build_dir>  adopt an existing compiler build tree",
+            "polima-compile: nothing to do. Pass --checkpoint <path> and --build-dir <dir>.",
             file=sys.stderr,
         )
         return 2
@@ -168,11 +183,34 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
 
     spec = get_policy(args.policy)
     build_dir = Path(args.build_dir).resolve()
+    try:
+        spec = apply_precision_profile(
+            _specialize_spec(
+                spec,
+                checkpoint=args.checkpoint,
+                dataset_root=args.dataset_root,
+                embodiment_tag=args.embodiment_tag,
+                build_dir=build_dir,
+            ),
+            args.precision_profile,
+        )
+    except (OSError, TypeError, ValueError) as error:
+        print(f"polima-compile: {error}", file=sys.stderr)
+        return 2
 
     if args.checkpoint:
         code = _export(args, spec, build_dir, dry_run)
         if code or args.stop_after == "export":
             return code
+        # Export can discover checkpoint-specific prompt geometry (notably
+        # GR00T's camera token windows). Restore the contract it just wrote so
+        # Model Compiler receives those exact shapes in this same invocation.
+        if not dry_run:
+            spec = apply_precision_profile(
+                _specialize_spec(get_policy(args.policy), build_dir=build_dir),
+                args.precision_profile,
+            )
+
 
     try:
         compiler_python = require_compiler_python(config)
@@ -191,9 +229,8 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
     # venv is built for the Palette `modelsdk` container, and mounting it into a
     # different image gets you a missing-shared-library error at import time.
     if not dry_run and not version:
-        from polima.util.proc import capture
-
         from polima.compile.toolchain import ACTIVATION_SCRIPT, find_activation
+        from polima.util.proc import capture
 
         probe = capture([str(compiler_python), "-c", "import afe"], env=env)
         detail = probe.tail(3).strip() or "no output"
@@ -216,10 +253,11 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
 
     driver = Driver(spec=spec, build_dir=build_dir, compiler_python=compiler_python,
                     env=env, dry_run=dry_run, force=not args.reuse, sdk_version=version,
-                    jobs=max(1, args.jobs))
+                    jobs=max(1, args.jobs), precision_profile=args.precision_profile)
 
     print(table.section(f"compile {spec.name} in {build_dir.name}"))
     print(f"  compiler  {compiler_python}" + (f"  (ModelSDK {version})" if version else ""))
+    print(f"  precision {args.precision_profile}")
     try:
         results = driver.run(only=args.graph)
     except CompileError as error:
@@ -231,8 +269,8 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
     failed = [r for r in results if r.status == "failed"]
     print(f"\n  {len(built)} built, {len(reused)} reused, {len(failed)} failed")
     if reused and not built and not failed:
-        print(f"  nothing changed since the last compile in this tree "
-              f"(--reuse); drop it to rebuild")
+        print("  nothing changed since the last compile in this tree "
+              "(--reuse); drop it to rebuild")
 
     if failed:
         for result in failed:
@@ -249,7 +287,7 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
 
     # A freshly compiled tree has the same shape as a legacy one -- that is
     # deliberate (see Driver's docstring), so the Phase-1a packer takes it as is.
-    return _pack(args, build_dir, output_root)
+    return _pack(args, build_dir, output_root, spec)
 
 
 def _export(args, spec, build_dir: Path, dry_run: bool) -> int:
@@ -310,10 +348,13 @@ def _export(args, spec, build_dir: Path, dry_run: bool) -> int:
     return 0
 
 
-def _pack(args, build_dir: Path, output_root: Path) -> int:
+def _pack(args, build_dir: Path, output_root: Path, spec=None) -> int:
     from polima.bundle.import_legacy import import_legacy
 
-    spec = get_policy(args.policy)
+    spec = spec or apply_precision_profile(
+        _specialize_spec(get_policy(args.policy), build_dir=build_dir),
+        args.precision_profile,
+    )
     bundle = import_legacy(build_dir, spec, output_root=output_root,
                            dataset=args.dataset, steps=args.steps,
                            source="polima-compile")
@@ -323,7 +364,16 @@ def _pack(args, build_dir: Path, output_root: Path) -> int:
 def _import_legacy(args, output_root: Path) -> int:
     from polima.bundle.import_legacy import import_legacy
 
-    spec = get_policy(args.policy)
+    try:
+        spec = apply_precision_profile(
+            _specialize_spec(
+                get_policy(args.policy), build_dir=Path(args.import_legacy).resolve()
+            ),
+            args.precision_profile,
+        )
+    except (OSError, TypeError, ValueError) as error:
+        print(f"polima-compile: {error}", file=sys.stderr)
+        return 2
     bundle = import_legacy(args.import_legacy, spec, output_root=output_root,
                            dataset=args.dataset, steps=args.steps)
     return _report(bundle, args.json)
@@ -347,6 +397,44 @@ def _report(bundle, as_json: bool) -> int:
     print(f"  total     {bundle.total_elf_bytes / 1048576:.1f} MiB of ELF")
     print(f"\nnext:  polima-deploy --bundle {bundle.bundle_id}")
     return 0
+
+
+def _specialize_spec(
+    spec,
+    *,
+    checkpoint: str | Path | None = None,
+    dataset_root: str | Path | None = None,
+    embodiment_tag: str | None = None,
+    build_dir: Path | None = None,
+):
+    """Restore a robot profile from a checkpoint or portable build contract."""
+
+    profile = None
+    # An explicitly supplied checkpoint always wins. Build metadata is only for
+    # a later compile/pack invocation that names the build tree by itself.
+    if build_dir is not None and checkpoint is None:
+        contract_path = build_dir / "input_contract.json"
+        try:
+            contract = json.loads(contract_path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            contract = {}
+        profile = contract.get("profile")
+        checkpoint = contract.get("checkpoint")
+        dataset_root = dataset_root or contract.get("dataset_root")
+
+    # Old build contracts did not record a profile. Preserve their historical
+    # policy spec when the original checkpoint is no longer mounted.
+    usable_checkpoint = checkpoint and Path(checkpoint).is_dir()
+    if not profile and not usable_checkpoint:
+        return spec
+    context = {
+        "checkpoint": checkpoint,
+        "dataset_root": dataset_root,
+        "profile": profile,
+    }
+    if embodiment_tag:
+        context["embodiment_tag"] = embodiment_tag
+    return spec.specialize_profile(**context)
 
 
 def _src_root() -> Path:

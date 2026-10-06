@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shlex
 from dataclasses import dataclass, field
 
@@ -174,11 +175,55 @@ def list_bundles(session: BoardSession, board: BoardConfig) -> list[str]:
     return [line for line in output.splitlines() if line.strip()]
 
 
+def bundle_identity(
+    session: BoardSession, board: BoardConfig, bundle_id: str
+) -> tuple[str, str]:
+    """Return the policy and robot recorded by one deployed bundle.
+
+    ``polima deploy --list`` used to call every managed bundle's *kind*
+    ``polima``. That described its storage format, but operators reasonably
+    read the column as the policy kind. Read the two small manifests so the
+    list distinguishes ACT/SmolVLA/GR00T and SO-101/MyCobot explicitly.
+
+    Older bundles may lack one of these fields, so retain conservative name
+    fallbacks rather than making a listing command fail on historical data.
+    """
+    root = f"{board.bundles_dir}/{bundle_id}"
+
+    def load(remote_path: str) -> dict:
+        try:
+            value = json.loads(
+                session.capture(f"cat {shlex.quote(remote_path)} 2>/dev/null") or "{}"
+            )
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    manifest = load(f"{root}/bundle.json")
+    plan = load(f"{root}/plan.json")
+    policy = str(manifest.get("policy") or "").strip().lower()
+    robot_block = plan.get("robot") if isinstance(plan.get("robot"), dict) else {}
+    profile = plan.get("profile") if isinstance(plan.get("profile"), dict) else {}
+    robot = str(
+        robot_block.get("calibration_id") or profile.get("calibration_id") or ""
+    ).strip()
+
+    lowered = bundle_id.lower()
+    if not policy:
+        policy = next(
+            (name for name in ("act", "smolvla", "groot") if lowered.startswith(name)),
+            "-",
+        )
+    if not robot:
+        robot = "mycobot280" if "mycobot" in lowered else "-"
+    return policy, robot
+
+
 def managed_bundles(session: BoardSession, board: BoardConfig) -> set[str]:
     """Of the trees in the model store, the ones PoLiMa built.
 
-    The store also holds hand-built deploy roots (ACT_gewb_100000,
-    SmolVLA_gewb_045000_v2, ...). Those are perfectly valid to serve, but
+    The store also holds hand-built deploy roots (e.g. ACT_<task>_100000).
+    Those are perfectly valid to serve, but
     `--activate` and the content-hash guarantees only apply to trees carrying a
     bundle.json, so the listing says which is which rather than implying every
     directory is interchangeable.

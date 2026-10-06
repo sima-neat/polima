@@ -103,13 +103,18 @@ DEFAULT_PORT = 8081
 # -------------------------------------------------------------------- buffers
 
 
-def buffers() -> dict[str, int]:
+def buffers(state_dim: int = STATE_DIM, action_dim: int = ACTION_DIM) -> dict[str, int]:
     """Every buffer the plan touches, allocated once at load."""
+    if not 0 < state_dim <= ACTION_LANE or not 0 < action_dim <= ACTION_LANE:
+        raise ValueError(
+            f"SmolVLA state/action dimensions must fit the {ACTION_LANE}-wide MLA lane"
+        )
+    response_elements = CHUNK * action_dim
     sizes = {
         # wire inputs
         "image0": IMAGE_ELEMENTS,
         "image1": IMAGE_ELEMENTS,
-        "state": STATE_DIM,
+        "state": state_dim,
         "noise": NOISE_ELEMENTS,
         # vision
         "vision0": VISION_ELEMENTS,
@@ -117,7 +122,7 @@ def buffers() -> dict[str, int]:
         "vision0_scaled": VISION_ELEMENTS,
         "vision1_scaled": VISION_ELEMENTS,
         # state path
-        "state_normalized": STATE_DIM,
+        "state_normalized": state_dim,
         "state_lane": ACTION_LANE,
         "state_embedding": HIDDEN,
         # prefix
@@ -130,8 +135,8 @@ def buffers() -> dict[str, int]:
         "denoise_input": DENOISE_IN_ELEMENTS,
         "velocity": NOISE_ELEMENTS,
         # output
-        "actions_lane": RESPONSE_ELEMENTS,
-        "actions": RESPONSE_ELEMENTS,
+        "actions_lane": response_elements,
+        "actions": response_elements,
     }
     for step in range(DENOISE_STEPS):
         sizes[f"time_{step:02d}"] = EXPERT_HIDDEN
@@ -145,7 +150,7 @@ def _step(op: str, out: str, **args) -> Step:
     return Step(op, out, args)
 
 
-def build_steps() -> list[Step]:
+def build_steps(state_dim: int = STATE_DIM, action_dim: int = ACTION_DIM) -> list[Step]:
     steps: list[Step] = []
 
     # --- vision, the same ELF run once per camera --------------------------
@@ -154,14 +159,14 @@ def build_steps() -> list[Step]:
     steps.append(_step("scale", "vision0_scaled", src="vision0", scalar=IMAGE_SCALE))
     steps.append(_step("scale", "vision1_scaled", src="vision1", scalar=IMAGE_SCALE))
 
-    # --- state: normalize 6, widen to the 32 lane, project to 960 ----------
-    # Normalizing into a 6-wide buffer and packing separately is deliberate.
+    # --- state: normalize real channels, widen to 32, project to 960 --------
+    # Normalizing into a narrow buffer and packing separately is deliberate.
     # Normalizing a 32-wide buffer directly would apply the statistics to the
-    # 26 padding slots too, turning structural zeros into -mean/std.
+    # padding slots too, turning structural zeros into -mean/std.
     steps.append(_step("normalize", "state_normalized", src="state",
                        mean="state_mean", std="state_std"))
     steps.append(_step("pack", "state_lane",
-                       parts=[{"src": "state_normalized", "dst_offset": 0, "count": STATE_DIM}]))
+                       parts=[{"src": "state_normalized", "dst_offset": 0, "count": state_dim}]))
     steps.append(_step("matvec", "state_embedding", src="state_lane",
                        weights="state_project_weight", bias="state_project_bias",
                        rows=HIDDEN, cols=ACTION_LANE))
@@ -207,9 +212,9 @@ def build_steps() -> list[Step]:
                            **{"in": ["denoise_input"]}))
         steps.append(_step("euler", "x", src="velocity", scalar=DT))
 
-    # --- 32-wide lane -> 6 real joints, then denormalize --------------------
+    # --- 32-wide lane -> real robot channels, then denormalize --------------
     steps.append(_step("gather_strided", "actions_lane", src="x",
-                       stride=ACTION_LANE, take=ACTION_DIM, count=CHUNK))
+                       stride=ACTION_LANE, take=action_dim, count=CHUNK))
     steps.append(_step("denormalize", "actions", src="actions_lane",
                        mean="action_mean", std="action_std"))
     return steps
@@ -229,9 +234,11 @@ SIDECARS = (
 
 
 def build_plan(spec: PolicySpec, context: Any = None) -> RuntimePlan:
+    state_dim = spec.dataset.state_dim
+    action_dim = spec.dataset.action_dim
     return RuntimePlan(
-        buffers=buffers(),
-        steps=tuple(build_steps()),
+        buffers=buffers(state_dim, action_dim),
+        steps=tuple(build_steps(state_dim, action_dim)),
         result="actions",
         sidecars=SIDECARS,
     )

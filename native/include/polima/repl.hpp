@@ -22,6 +22,8 @@ struct StoreEntry {
   std::filesystem::path root;
   std::string policy;        // empty for a hand-built tree with no bundle.json
   size_t graphs = 0;
+  std::string robot;         // calibration/profile id from plan.json
+  std::string action_shape;  // e.g. 100x7, visibly distinguishes checkpoints
   size_t elf_bytes = 0;
   bool managed = false;      // has bundle.json -> PoLiMa built it
   bool current = false;      // the `current` symlink points here

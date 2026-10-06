@@ -121,6 +121,86 @@ def numerical_smoke(
     )
 
 
+def compare_normalized_actions(
+    actual: np.ndarray,
+    expected: np.ndarray,
+    action_mean: np.ndarray,
+    action_std: np.ndarray,
+    *,
+    state: np.ndarray | None = None,
+    relative_dim: int = 0,
+    name: str = "vs-pytorch-reference",
+    cosine_min: float = DEFAULT_COSINE_MIN,
+    mean_abs_max: float = DEFAULT_MEAN_ABS_MAX,
+) -> SmokeResult:
+    """Compare decoded robot actions in the models normalized coordinates.
+
+    GR00T returns physical-unit actions because denormalization and relative-arm
+    decoding live in the board plan. Dataset scales can amplify a 0.001 model
+    error into more than 0.01 degrees, making a physical-space threshold depend
+    on the particular dataset. Reverse that deterministic decoding before
+    applying the model-accuracy threshold.
+    """
+    actual = np.asarray(actual, dtype=np.float32).reshape(-1)
+    expected = np.asarray(expected, dtype=np.float32).reshape(-1)
+    mean_array = np.asarray(action_mean, dtype=np.float32)
+    std_array = np.asarray(action_std, dtype=np.float32)
+    action_dim = int(mean_array.shape[-1]) if mean_array.ndim >= 2 else 0
+    mean = mean_array.reshape(-1)
+    std = std_array.reshape(-1)
+    if not (actual.size == expected.size == mean.size == std.size):
+        return SmokeResult(
+            name=name, ok=False, cosine=0.0, mean_abs=float("inf"),
+            max_abs=float("inf"), elements=actual.size,
+            cosine_min=cosine_min, mean_abs_max=mean_abs_max,
+            note=(
+                "normalization size mismatch: "
+                f"actual={actual.size} expected={expected.size} "
+                f"mean={mean.size} std={std.size}"
+            ),
+        )
+    if not np.isfinite(std).all() or np.any(std <= 0):
+        return SmokeResult(
+            name=name, ok=False, cosine=0.0, mean_abs=float("inf"),
+            max_abs=float("inf"), elements=actual.size,
+            cosine_min=cosine_min, mean_abs_max=mean_abs_max,
+            note="action normalization has non-finite or non-positive scale",
+        )
+
+    decoded_actual = actual.copy()
+    decoded_expected = expected.copy()
+    if relative_dim:
+        state_values = np.asarray(state, dtype=np.float32).reshape(-1) if state is not None else np.zeros(0)
+        if (
+            relative_dim > action_dim
+            or not action_dim
+            or state_values.size < action_dim
+            or actual.size % action_dim
+        ):
+            return SmokeResult(
+                name=name, ok=False, cosine=0.0, mean_abs=float("inf"),
+                max_abs=float("inf"), elements=actual.size,
+                cosine_min=cosine_min, mean_abs_max=mean_abs_max,
+                note="relative-action state geometry does not match the response",
+            )
+        decoded_actual.reshape(-1, action_dim)[:, :relative_dim] -= state_values[:relative_dim]
+        decoded_expected.reshape(-1, action_dim)[:, :relative_dim] -= state_values[:relative_dim]
+
+    normalized_actual = (decoded_actual - mean) / std
+    normalized_expected = (decoded_expected - mean) / std
+    result = compare(
+        name, normalized_actual, normalized_expected,
+        cosine_min=cosine_min, mean_abs_max=mean_abs_max,
+    )
+    physical = np.abs(actual - expected)
+    result.note = (
+        "normalized model-action comparison; "
+        f"physical mean_abs={float(physical.mean()):.6f} "
+        f"max_abs={float(physical.max()):.6f}"
+    )
+    return result
+
+
 def compare_against_reference(
     actual: np.ndarray, reference: np.ndarray, *, name: str = "vs-legacy"
 ) -> SmokeResult:

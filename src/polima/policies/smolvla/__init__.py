@@ -43,6 +43,7 @@ from polima.policies.base import (
     WireSpec,
 )
 from polima.policies.registry import register_policy
+from polima.policies.smolvla.profile import MYCOBOT_JOINT_NAMES
 from polima.policies.smolvla.runtime import (
     ACTION_DIM,
     CACHE_ELEMENTS,
@@ -188,10 +189,12 @@ SMOLVLA_SPEC = PolicySpec(
                 legacy_names=("denoise_single_bf16", "denoise_core_llima_nhwc_bf16"),
                 builder="polima.policies.smolvla.graphs:DenoiseExpert",
                 inputs=(TensorSpec("denoise_input", (1, 1, DENOISE_TOKENS, DENOISE_WIDTH)),),
-                outputs=(TensorSpec(
-                    "velocity", (1, 50, 32), dram_layout="hwc16",
-                    logical_width=50, logical_channels=32,
-                ),),
+                # Modalix hardware proof (2026-09-10): a bare denoise ELF
+                # downloads ordinary contiguous BF16. Interpreting those bytes
+                # as HWC16 created two non-finite values (first at index 320),
+                # while the same raw words decoded as plain BF16 were all finite
+                # with a plausible [-3.28125, 2.65625] range.
+                outputs=(TensorSpec("velocity", (1, 50, 32)),),
                 layout="NHWC",
                 precision="bf16",
                 # ModelSDK 2.1's all-BF16 codegen is numerically unstable for
@@ -241,6 +244,7 @@ SMOLVLA_SPEC = PolicySpec(
     ),
     runtime_plan_builder="polima.policies.smolvla.runtime:build_plan",
     checkpoint_validator="polima.policies.smolvla.graphs:validate_checkpoint",
+    profile_entry="polima.policies.smolvla.profile:specialize_spec",
     # ----------------------------------------------------------------- smoke --
     # ACT's 0.01 is the wrong bar here. Measured on Modalix 2026-08-20, the
     # deployed chain agrees with PyTorch to cosine 0.99957 but a mean of 1.85
@@ -254,4 +258,4 @@ SMOLVLA_SPEC = PolicySpec(
 
 register_policy(SMOLVLA_SPEC)
 
-__all__ = ["JOINT_NAMES", "SMOLVLA_SPEC"]
+__all__ = ["JOINT_NAMES", "MYCOBOT_JOINT_NAMES", "SMOLVLA_SPEC"]

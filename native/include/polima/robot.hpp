@@ -33,6 +33,7 @@ struct RobotDescription {
   bool present = false;
   std::vector<std::pair<std::string, std::string>> roles;   // (role, label)
   std::map<std::string, std::string> hints;                 // role -> by-id substring
+  std::map<std::string, int> camera_capture_fps;             // role -> hardware FPS
   std::string fourcc = "MJPG";
   std::string calibration_id;
   int fps = 30;
@@ -58,6 +59,7 @@ CameraAssignment assign_cameras(const RobotDescription& description,
 // starting the policy server. Runs in the foreground until Ctrl-C.
 int run_camera_preview(const std::filesystem::path& bundle_root,
                        const CameraAssignment& cameras,
+                       const std::string& fourcc = "MJPG",
                        int preview_port = 5001,
                        const std::filesystem::path& venv = "/media/nvme/lerobot");
 

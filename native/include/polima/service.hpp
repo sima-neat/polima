@@ -21,6 +21,9 @@ struct ServerState {
   int pid = 0;
   bool running = false;
   std::string bundle;      // what `current` points at, i.e. what it would serve
+  std::string served_bundle;  // canonical bundle loaded by the live process
+  int port = 0;
+  bool accepting = false;
 };
 
 // Reads var/run/server.pid and checks the process is alive.

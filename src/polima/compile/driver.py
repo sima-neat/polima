@@ -7,8 +7,8 @@ loop twice with different graph lists hardcoded. Here the graph list comes from
 
 Three behaviours are inherited deliberately:
 
-* **Precision fallback.** ACT and GR00T both try int8 and fall back to bf16.
-  `GraphSpec.precisions` encodes the order per graph.
+* **Precision fallback.** `GraphSpec.precisions` encodes each graph's declared
+  attempt order; policies without a safe fallback stop on the primary failure.
 * **ELF presence is the success condition**, not the exit code. A compile can
   return 0 having quietly placed the graph on the APU, which only shows up as a
   load failure on the board.
@@ -29,15 +29,16 @@ import os
 import shutil
 import threading
 import time
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, Sequence
 
 from polima.compile import mpk
 from polima.util import proc
 from polima.util.hashing import sha256_file, sha256_text
 
 STATE_FILE = "compile_state.json"
+SDK_VERSION_TIMEOUT_S = 300
 
 
 @dataclass
@@ -45,6 +46,8 @@ class GraphResult:
     name: str
     status: str                      # compiled | reused | failed | skipped
     precision: str | None = None
+    activation_precision: str | None = None
+    weight_precision: str | None = None
     elf: str | None = None
     key: str | None = None
     duration_s: float = 0.0
@@ -59,6 +62,8 @@ class GraphResult:
         mark = {"compiled": "built", "reused": "reused", "failed": "FAILED",
                 "skipped": "skipped"}[self.status]
         detail = f"{self.precision}" if self.precision else ""
+        if self.activation_precision and self.weight_precision:
+            detail = f"{detail} (A={self.activation_precision}, W={self.weight_precision})"
         if self.status == "compiled":
             detail += f"  {self.duration_s:.0f}s"
         if self.note:
@@ -104,6 +109,7 @@ class Driver:
     #: stages "each require substantial host RAM" and runs them sequentially for
     #: that reason. Opt in with --jobs once you know the graph sizes.
     jobs: int = 1
+    precision_profile: str = "policy"
     _state_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # ------------------------------------------------------------- paths
@@ -204,6 +210,8 @@ class Driver:
             "key": result.key,
             "elf": self._relative_elf(result.elf),
             "precision": result.precision,
+            "activation_precision": result.activation_precision,
+            "weight_precision": result.weight_precision,
             "status": result.status,
             "recorded_at": time.time(),
         }
@@ -282,6 +290,14 @@ class Driver:
         key = self.stage_key(graph)
         started = time.monotonic()
 
+        def effective(precision: str | None) -> tuple[str | None, str | None]:
+            if precision is None:
+                return None, None
+            return (
+                graph.activation_precision or precision,
+                graph.weight_precision or precision,
+            )
+
         onnx = self.onnx_path(name)
         if not onnx.exists() and not self.dry_run:
             return GraphResult(name, "failed", key=key,
@@ -299,14 +315,23 @@ class Driver:
                 elf = self.elf_path(graph)
             if elf is not None and elf.exists():
                 self.publish(graph, elf)
-                outcome = GraphResult(name, "reused", precision=previous.get("precision"),
-                                      elf=str(elf), key=key, note="unchanged")
+                precision = previous.get("precision")
+                activation, weights = effective(precision)
+                outcome = GraphResult(
+                    name,
+                    "reused",
+                    precision=precision,
+                    activation_precision=previous.get("activation_precision") or activation,
+                    weight_precision=previous.get("weight_precision") or weights,
+                    elf=str(elf), key=key, note="unchanged",
+                )
                 if previous.get("elf") != self._relative_elf(str(elf)):
                     self._record(outcome)
                 return outcome
 
         attempts: list[dict] = []
         for precision in graph.precisions:
+            activation, weights = effective(precision)
             # afe writes into the retained directory; a leftover ELF from a
             # failed earlier attempt would otherwise be mistaken for success.
             retained = self.retained_dir(name)
@@ -316,11 +341,16 @@ class Driver:
             log = self.build_dir / "logs" / f"compile_{name}_{precision}.log"
             result = proc.run(self.argv(graph, precision), env=self.env, log_path=log,
                               echo=False, dry_run=self.dry_run)
-            attempts.append({"precision": precision, "returncode": result.returncode,
+            attempts.append({"precision": precision,
+                             "activation_precision": activation,
+                             "weight_precision": weights,
+                             "returncode": result.returncode,
                              "log": str(log), "duration_s": round(result.duration_s, 1)})
 
             if self.dry_run:
-                return GraphResult(name, "skipped", precision=precision, key=key,
+                return GraphResult(name, "skipped", precision=precision,
+                                   activation_precision=activation,
+                                   weight_precision=weights, key=key,
                                    attempts=attempts, note="dry run")
 
             elf = self.locate_elf(graph, precision) if result.ok else None
@@ -333,7 +363,9 @@ class Driver:
                 continue
 
             self.publish(graph, elf)
-            outcome = GraphResult(name, "compiled", precision=precision, elf=str(elf),
+            outcome = GraphResult(name, "compiled", precision=precision,
+                                  activation_precision=activation,
+                                  weight_precision=weights, elf=str(elf),
                                   key=key, duration_s=time.monotonic() - started,
                                   attempts=attempts)
             self._record(outcome)
@@ -432,13 +464,85 @@ class Driver:
                 existing = json.loads(path.read_text())
             except json.JSONDecodeError:
                 existing = {}
+
+        # A targeted retry (``--graph denoise``) must not make a four-graph
+        # build look like a one-graph build. Prefer the fresh result, retain
+        # full records already present in the manifest, and finally recover a
+        # minimal record from compile_state.json. The state file is updated per
+        # graph and is the durable inventory when an old manifest was replaced.
+        current = {result.name: result for result in results}
+        prior_manifest = {
+            item.get("name"): item
+            for item in existing.get("graphs", [])
+            if isinstance(item, dict) and item.get("name")
+        }
+        state = self._state()
+        merged: list[dict] = []
+        for graph in self.spec.compile.graphs:
+            if graph.name in current:
+                merged.append(asdict(current[graph.name]))
+                continue
+            if graph.name in prior_manifest:
+                saved = state.get(graph.name, {})
+                item = dict(prior_manifest[graph.name])
+                precision = item.get("precision") or saved.get("precision") or graph.precision
+                item["precision"] = precision
+                item["activation_precision"] = (
+                    item.get("activation_precision")
+                    or saved.get("activation_precision")
+                    or graph.activation_precision
+                    or precision
+                )
+                item["weight_precision"] = (
+                    item.get("weight_precision")
+                    or saved.get("weight_precision")
+                    or graph.weight_precision
+                    or precision
+                )
+                recorded_elf = self._resolve_elf(item.get("elf"))
+                if recorded_elf is None or not recorded_elf.exists():
+                    recorded_elf = self._resolve_elf(saved.get("elf"))
+                if recorded_elf is not None:
+                    item["elf"] = str(recorded_elf)
+                merged.append(item)
+                continue
+            saved = state.get(graph.name)
+            if not saved:
+                continue
+            precision = saved.get("precision") or graph.precision
+            activation = (
+                saved.get("activation_precision")
+                or graph.activation_precision
+                or precision
+            )
+            weights = (
+                saved.get("weight_precision")
+                or graph.weight_precision
+                or precision
+            )
+            elf = self._resolve_elf(saved.get("elf"))
+            merged.append(asdict(GraphResult(
+                name=graph.name,
+                status=saved.get("status", "reused"),
+                precision=precision,
+                activation_precision=activation,
+                weight_precision=weights,
+                elf=str(elf) if elf is not None else None,
+                key=saved.get("key"),
+                note="recovered from compile_state.json",
+            )))
+
+        # Do not retain stale historical names removed from the current policy.
+        known = {graph.name for graph in self.spec.compile.graphs}
+        merged.extend(asdict(result) for result in results if result.name not in known)
         existing.update({
             "format": "polima-build-v1",
             "policy": getattr(self.spec, "name", "?"),
             "build_dir": str(self.build_dir),
             "sdk_version": self.sdk_version,
+            "precision_profile": self.precision_profile,
             "compiled_at": time.time(),
-            "graphs": [asdict(r) for r in results],
+            "graphs": merged,
         })
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n")
@@ -451,5 +555,6 @@ def sdk_version(compiler_python: str | Path, env: dict[str, str] | None = None) 
         [str(compiler_python), "-c",
          "from afe.apis.release_v1 import get_model_sdk_version as v; print(v())"],
         env=env,
+        timeout=SDK_VERSION_TIMEOUT_S,
     )
     return result.stdout.strip().splitlines()[-1] if result.ok and result.stdout.strip() else ""

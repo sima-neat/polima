@@ -7,7 +7,7 @@
 # so the same file works on the host, in any container, at any mount point, and
 # keeps working while you edit src/.
 #
-#   export PATH=/workspace/MLSandbox/polima/bin:$PATH
+#   export PATH=/path/to/polima/bin:$PATH
 #   polima compile --build-dir ...
 #
 # Interpreter choice: an explicit $POLIMA_PYTHON wins, then PoLiMa's complete

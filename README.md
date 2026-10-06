@@ -1,280 +1,282 @@
 # PoLiMa
 
-**Po**licy + Si**Ma** — a unified framework for compiling, deploying and running robot policies (ACT, SmolVLA, GR00T) on SiMa.ai Modalix hardware.
+**Po**licy + Si**Ma**: run robot policies (ACT, GR00T) on the SiMa.ai
+Modalix DevKit.
 
-**PoLiMa does not train.** Training stays where it is, with `lerobot-train` in the model stacks. PoLiMa picks up at the checkpoint and owns everything after it: export → compile → bundle → deploy → serve → drive the arm.
+PoLiMa takes a trained robot policy and gets it driving a robot arm from the
+Modalix chip:
 
-PoLiMa is the robot-policy analogue of **LLiMa**, and uses it under the hood: VLM backbones go through `sima_lmm.host.compile_lmm`, action experts go through `afe`. It mirrors LLiMa's shape deliberately — separate console scripts per stage, not one monolith.
+```
+checkpoint -> export -> compile -> bundle -> deploy -> serve -> robot
+```
 
-Adding a policy should mean writing one `PolicySpec`, not copying 3,000 lines.
+It is the robot-policy counterpart of [LLiMa](https://github.com/sima-neat/llima),
+which does the same for language models. PoLiMa does not train models. You train
+with LeRobot (or NVIDIA's GR00T tools) as usual, and PoLiMa starts from the
+checkpoint.
+
+- **Export and compile** (on an x86 computer): turn an ACT checkpoint
+  into a *bundle*: a folder with the compiled model, its settings and the robot
+  client.
+- **Deploy** (from the x86 computer): copy a bundle to the DevKit and build
+  PoLiMa's runtime there.
+- **Serve and drive** (on the DevKit): run the model on the chip and drive an
+  SO-101 arm with two USB cameras.
+- **Studio and Workbench**: web pages for running the robot and keeping track
+  of models, builds and robot runs.
+
+Version 0.2.0 supports:
+
+| Model | Compile it yourself | Run on the DevKit | On the SO-101 arm |
+|---|---|---|---|
+| ACT | yes | yes | tested |
+| GR00T N1.6, N1.7 | next version (prebuilt bundles for now) | yes | tested (mixed W8A16 bundles) |
 
 ---
 
-## The two-machine split
+## What you need
 
-PoLiMa spans two machines with incompatible dependency sets. That split is structural, not a convention.
+**To compile models (x86 host)**
+- An x86_64 Linux computer with Python 3.10 to 3.12.
+- The **SiMa ModelSDK** (model compiler). It is licensed separately and is not
+  part of this repository; get it from the SiMa Developer Portal. ACT
+  compilation was verified with ModelSDK 2.1.0.
+- The training dataset of your checkpoint. PoLiMa uses a few samples from it to
+  calibrate the compiled model.
 
-**The host builds; the board runs.** Nothing on the host drives a robot, and nothing on the board compiles.
+**To run models (DevKit)**
+- A SiMa.ai Modalix DevKit with one of these SDK versions:
 
-| | **HOST** (x86_64 workstation) | **BOARD** (Modalix SoM, aarch64) |
-|---|---|---|
-| role | build it | run it |
-| | `polima-compile` — export (torch) then compile (afe), two separate venvs | `polima-run` — serve the policy |
-| | `polima-deploy` — ssh, rsync | `polima-robot` — drive the arm |
-| deps | `polima[host]` | `polima` (numpy only); the robot client uses the board's `/media/nvme/lerobot` venv |
+  | DevKit SDK | `sima_lmm` runtime |
+  |---|---|
+  | 2.1.2 | 0.3.0 |
+  | 2.1.3 | 0.4.0 |
 
-The robot client sits with the server rather than on the host because it sends two 640×480 frames per control step — ~110 MB/s at 30 Hz — which should be a loopback copy, not a network hop.
+- For robot runs: an SO-101 follower arm and two USB cameras (one that sees the
+  workspace from the front, and one on the wrist), plugged into the DevKit.
+- Internet access on the DevKit for the first install. It downloads LeRobot
+  0.4.4 and its dependencies.
 
-`polima-doctor` runs on both and is the first thing to run after any install.
-
-`polima <stage>` also works everywhere as an umbrella alias, so `polima compile …` and `polima-compile …` are the same code path.
-
-### Why not two packages
-
-Both halves share one core — `polima.policies`, `polima.wire`, `polima.bundle`, `polima.config`, `polima.util` — because that core **is the contract between them**: the host writes `bundle.json` and `plan.json`, the board reads them. Splitting them into disjoint distributions would mean duplicating the contract, which is exactly the failure mode PoLiMa exists to remove.
-
-So the core carries a hard dependency floor of **stdlib + numpy**, and it must import in all three interpreters:
-
-- the self-contained PoLiMa `.venv` (py3.12 + torch + LeRobot)
-- the SiMa model-compiler venv (py3.12 + `afe`, **no torch**)
-- the board's py3.11
-
-`polima doctor --imports` proves this by importing the core under each interpreter, and `tests/unit/test_role.py` asserts no heavy dependency leaks in. A bare `pip install polima` pulls exactly one package: numpy.
-
-Invoking a stage on the wrong machine exits `3` with one actionable sentence, rather than an `ImportError` three frames deep in a vendored library.
-
----
-
-## Prerequisites
-
-**The SiMa Model Compiler (ModelSDK) is required and is not part of this
-repository.** It is proprietary and licensed, so it cannot be vendored or
-installed by `make venv`; you obtain it from the SiMa Developer Portal (via
-`sima-cli`, or the Palette `modelsdk` container). Everything except
-quantization and compilation works without it — export, packing, deploy, run,
-the robot client and Studio — but `polima compile` cannot do its job, because
-`afe` lives inside the ModelSDK and nowhere else.
-
-Point PoLiMa at it once installed:
-
-```bash
-export MODEL_COMPILER_BIN=/path/to/model-compiler/bin   # the dir holding its python
-polima doctor                                           # verifies afe imports
-```
-
-Developed and verified against **ModelSDK 2.1.0**. The version participates in
-the compile resume key, so upgrading it invalidates cached ELFs and recompiles
-— by design, since an AFE upgrade changes code generation while every input
-stays byte-identical.
-
-If it is missing or misconfigured, `polima compile` says so and names the
-interpreter it tried, rather than failing later inside AFE:
-
-```
-polima-compile: /path/to/python cannot import afe.
-  Sourced .../activate-model-compiler and it still fails.
-  Set MODEL_COMPILER_BIN, or run from the modelsdk environment.
-```
-
-That activation step matters: without it `import afe` fails on a missing
-`libLLVM`, which is why `bin/polima` sources `activate-model-compiler` when it
-finds one.
+You do not need the ModelSDK to deploy and run a prebuilt bundle.
 
 ---
 
 ## Install
 
-**Host**
+### On the x86 host
+
+To deploy and run prebuilt bundles only:
+
 ```bash
+git clone https://github.com/sima-neat/polima.git
 cd polima
-make venv
+python3 -m venv .venv
 source .venv/bin/activate
-polima-doctor
+pip install -e ".[deploy]"
+polima doctor
 ```
 
-The project-local `.venv` owns the ordinary PoLiMa CLI, dataset validation,
-tests, CPU-only Torch/LeRobot export stack, and deployment dependencies. CUDA
-is not required. It never uses a Conda environment. Only the proprietary
-ModelSDK extension remains external; PoLiMa launches AFE through
-`MODEL_COMPILER_BIN` while all checkpoint loading and ONNX export stays inside
-`.venv`.
-
-**Palette modelsdk container** — no install; the launcher resolves its own location, so it works at whatever path the workspace is mounted:
+To also compile ACT checkpoints, build the full host environment
+instead. It installs a CPU-only PyTorch, and LeRobot from a LeRobot source
+checkout. Use the checkout your checkpoints were trained with; PoLiMa is tested
+with LeRobot 0.6.1.
 
 ```bash
-export PATH=/workspace/MLSandbox/polima/bin:$PATH
-polima compile --build-dir <dir>
+make venv LEROBOT_SOURCE=/path/to/lerobot
+source .venv/bin/activate
+export MODEL_COMPILER_BIN=/path/to/model-compiler/bin   # folder holding the ModelSDK's python
+polima doctor                                           # checks that the compiler is found
 ```
 
-`bin/polima` picks an interpreter that has numpy (the model compiler's own will do) and sources `activate-model-compiler` when present — without it `import afe` fails on a missing `libLLVM`.
+`polima` and `python -m polima` are the same command.
 
-**Board**
+Tell PoLiMa where your DevKit is, once:
+
 ```bash
-ssh sima@192.168.91.211
-cd /path/to/polima
+export POLIMA_BOARD=sima@<board-address>
+```
+
+Or copy `.polima.yaml.example` to `.polima.yaml` and set `board.host`.
+
+### On the DevKit
+
+```bash
+ssh sima@<board-address>
+git clone https://github.com/sima-neat/polima.git
+cd polima
 ./scripts/install_polima_modalix.sh
-polima robot status
 ```
 
-The installer builds the native `polima_server` and `polima_cli`, exposes the
-device command as `polima`, and reuses or provisions `/media/nvme/lerobot` via
-the included `lerobot_sima/install_lerobot_modalix.sh`. After deploying a bundle,
-`polima robot run` starts the matching policy server and runs the bundled
-LeRobot control client in the foreground.
+The installer:
+- creates the LeRobot 0.4.4 environment at `/media/nvme/lerobot`, or reuses it,
+- installs PoLiMa and PoLiMa Studio into it,
+- builds the runtime (`polima_server`, `polima_cli`) under `/media/nvme/polima`,
+- makes the board command `polima` available.
 
-Device lifecycle commands:
+On the DevKit, `polima` is the board command: `polima activate`,
+`polima server`, `polima robot`, `polima studio`. The `compile` and `deploy`
+commands run on the host.
+
+---
+
+## Quickstart: ACT
+
+**1. Compile (host).** Export the checkpoint, compile it, and pack a bundle:
 
 ```bash
-polima activate                    # interactively select an installed bundle
-polima activate 2                  # or select by list number
-polima activate <bundle-id>        # or exact bundle id
-polima activate 2 --start          # activate and start it in one operation
-polima server status             # inspect the background policy server
-polima server start              # serve /media/nvme/polima/current
-polima server stop
-polima robot status              # LeRobot env, follower arm, camera assignments
-polima robot run                 # start server, then control the arm in foreground
-polima robot preview             # browser camera view only; no server or arm
+polima compile --policy act \
+    --checkpoint /path/to/outputs/train/<run>/checkpoints/100000/pretrained_model \
+    --build-dir ~/polima-builds/act-my-task -j 3
 ```
 
-Activation is performed entirely on the device and atomically updates
-`/media/nvme/polima/current`. If a policy server is running, activation stops it
-first so its reported bundle cannot disagree with the model it actually loaded;
-start it again with `polima server start`.
-The interactive command asks whether to start the selected bundle; scripts can
-request the same combined handoff with `--start`.
-If no managed bundle is active, interactive `polima server start` presents the
-same bundle selector, activates the choice, and starts it. In a script, select
-explicitly with `polima activate <bundle-id>` (or use `--bundle DIR`).
+PoLiMa finds the training dataset from the checkpoint; pass `--dataset-root /path/to/dataset` if it is somewhere else.
+`-j 3` compiles three parts of the model at once (each needs about 1.6 GB of
+memory). The bundle is written to `outputs/bundles/<bundle-id>/`, and the
+command prints its id.
 
-Running `polima server` or `polima robot` without an action opens a guided
-prompt using the active bundle. An explicit `polima robot run` still confirms
-before motion; unattended invocation must opt in with `--yes`.
-
-`polima robot run` refuses to start unless exactly one follower arm and both
-bundle-declared cameras are resolved. Ctrl-C stops robot control but intentionally
-leaves the policy server loaded; use `polima server stop` to release it.
-
-While robot control is running, the client prints a tokenized live-preview URL
-such as `http://<board-ip>:5001/<token>/`. Open it from a browser on the same
-network to view both camera feeds. The preview reuses the frames already read by
-LeRobot and does not open the camera devices a second time.
-
----
-
-## Layout
-
-```
-src/polima/
-  policies/   THE PLUGIN LAYER -- one PolicySpec per policy
-  config/     layered config (dataclasses + stdlib loader; no pydantic)
-  data/       dataset contracts, discovery, episode specs, aggregation
-  export/     checkpoint -> ONNX + calibration + fixtures
-  compile/    afe wrapper, the per-graph compile driver
-  bundle/     content-addressed bundles, MPK unpack, path rewriting
-  deploy/     ssh/rsync, board bootstrap, health poll, smoke test
-  wire/       the SoM TCP protocol   <- replaces 2 hand-written clients
-  robot/      robot client, live view, teleop, lerobot monkeypatch layer
-  util/       proc, hashing, jsonio, paths, logging, table
-
-native/       ONE polima_server binary, driven by plan.json
-board/        scripts that run on the SoM
-tests/        unit (fast, no hardware) + hardware (opt-in)
-```
-
-### The policy contract
-
-Everything policy-specific is data in one frozen dataclass — `DatasetContract`, `TrainSpec`, `CompilePlan`, `RuntimePlan`, `WireSpec`, `RobotSpec`. It is JSON round-trippable because a spec has to cross all three interpreters.
-
-`PolicySpec.validate()` cross-checks the pieces at import time: graph outputs must match the plan buffers that receive them, and the wire's response size must equal `actions_per_chunk × action_dim`. A malformed spec fails at `polima doctor`, not mid-deploy.
-
----
-
-## Safety net
-
-The four legacy stacks (`ACT/`, `SmolVLA/`, `GR00T-N1.6/`, `lerobot_sima/`) are **not modified** by PoLiMa. Two mechanisms enforce it:
+**2. Deploy (host).** Copy the bundle to the DevKit and make it the active one:
 
 ```bash
-make backup-legacy        # tree copy + tarball -> ../.legacy-backups/<stamp>/
-make check-legacy-intact  # sha256 all 129 first-party files
-make restore-legacy       # undo, from the newest backup
+polima deploy --bundle <bundle-id>
 ```
 
-Backups live outside `polima/` so removing the framework never takes the safety net with it. `make check-legacy-intact` predates version control and is now largely redundant with git; it stays as a fast on-disk check.
+**3. Run the robot (DevKit).**
+
+```bash
+polima robot run
+```
+
+This starts the model server for the active bundle, asks you to pick the arm and
+the two cameras, asks for confirmation, and then drives the arm. Ctrl-C stops
+the robot; the model server keeps running until `polima server stop`.
+
+Before the first run on a new arm, calibrate it (see [docs/robot.md](docs/robot.md)).
+
+You can also check the model without the robot, from the host:
+
+```bash
+polima deploy --bundle <bundle-id> --start   # deploy and start the model server
+polima run --bundle <bundle-id> --fixture    # send the bundle's test input and check the answer
+```
+
+## Quickstart: a prebuilt GR00T bundle
+
+**1. Deploy (host).**
+
+```bash
+polima deploy --bundle /path/to/<groot-bundle-folder>
+```
+
+You can also install a bundle from a browser with PoLiMa Studio (see below).
+
+**2. Run with the SO-101 recipe (DevKit).**
+
+```bash
+export POLIMA_GROOT_NOISE=zero POLIMA_CHUNK_THRESHOLD=0.5
+export POLIMA_SMOOTH_MOVES=5 POLIMA_SMOOTH_SHAPE=smoothstep
+export POLIMA_SUBSTEPS=2 POLIMA_RESET_EASE=smoothstep
+polima robot run --fps 15
+```
+
+See [docs/groot.md](docs/groot.md) for camera order, calibration and what is not
+included.
 
 ---
 
-## Status
+## The SO-101 robot recipe
 
-186 unit tests, no hardware required. Every milestone so far is proven against
-the real board rather than asserted:
+These are the settings GR00T was run with on the SO-101 arm.
 
-| Stage | State | Proof |
+| Setting | What it does |
+|---|---|
+| `--fps 15` | The arm receives 15 position commands per second. |
+| `POLIMA_CHUNK_THRESHOLD=0.5` | Each model answer is a plan of upcoming moves. The next plan is requested when half of the current plan is left. |
+| `POLIMA_GROOT_NOISE=zero` | GR00T starts every plan from zero noise instead of random noise, so the same camera view gives the same plan. |
+| `POLIMA_SMOOTH_MOVES=5` | When a new plan takes over, the jump from the old plan to the new one is spread over 5 moves instead of 1. |
+| `POLIMA_SMOOTH_SHAPE=smoothstep` | That spreading starts and ends gently (an S-curve) instead of using equal steps. |
+| `POLIMA_SUBSTEPS=2` | Each command is sent in 2 smaller steps, so the motors move more continuously. |
+| `POLIMA_RESET_EASE=smoothstep` | The return to the rest position speeds up and slows down gently instead of starting and stopping abruptly. |
+
+The limit on how far the arm may move per command stays at its default of 12
+degrees. Every setting is off unless you set it. Details:
+[docs/robot.md](docs/robot.md).
+
+## Performance
+
+Measured on a Modalix DevKit with an SO-101 arm on 2026-10-05, with the
+optimised mixed W8A16 GR00T bundles and the recipe above:
+
+| Model | Chip time per plan | Camera to plan |
 |---|---|---|
-| `polima doctor` / `data` / `list` | working | |
-| `polima-deploy` / `polima-run` | working | 20.8 ms on the SoM, cosine 0.999990 vs PyTorch — 24% faster than the hand-written `act_llima` at 27.0 ms |
-| `polima-compile` | working | checkpoint → ONNX → ELF → bundle reproduces **byte for byte**, landing on the same content-addressed bundle id as the one deployed ([export](docs/export.md), [compile](docs/compile.md)) |
-| `polima-robot` | Phase 1d | |
-| SmolVLA | native checkpoint export + compile integrated; hardware validation pending | ONNX chain max abs `1.67e-6`; suffix and vision accepted by ModelSDK 2.1.0 |
-| GR00T | Phase 5 | |
+| GR00T N1.6 | 317 ms | 364 ms |
+| GR00T N1.7 | 233 ms | 285 ms |
 
-The compile stage replaces three divergent copies of
-`sima_compile_onnx_tensors.py` (518 lines) plus two per-policy controllers with
-one driver over `PolicySpec.compile.graphs`, so adding a policy needs no
-controller at all. The export stage splits `export_act_modalix.py` so that only
-the policy's own graph decomposition needs torch.
+*Chip time per plan* is the time the model takes on the DevKit to produce one
+plan of 32 moves. *Camera to plan* also includes reading the camera images and
+preparing them for the model.
 
-```bash
-polima compile --checkpoint <ckpt> --build-dir <dir>   # export, compile, pack
-polima compile --build-dir <dir>                       # recompile what changed
-polima compile --import-legacy <dir>                   # adopt an existing tree
-polima deploy --bundle <bundle>                        # deploy only; does not serve
-polima deploy --bundle <bundle> --start                # explicitly start serving
-polima deploy                                          # interactive bundle/board setup
-```
+---
 
-### On the board
+## PoLiMa Studio and Workbench
 
-`polima-cli` with no arguments opens a session over the board's model store,
-the way `llima run` does — the model loads once and everything after is fast:
+**PoLiMa Studio** runs on the DevKit (port 8080). From a browser you can:
+- choose, start and install bundles (upload from the browser),
+- watch the cameras and assign the arm and cameras,
+- calibrate the arm,
+- start and stop robot runs, with an emergency **HALT NOW** button,
+- review and label robot runs, and export the failed ones for retraining,
+- benchmark a bundle without the robot.
 
-```
-polima> use 1
-  loaded act-rcwb_f_t-100000-a3573dae (6 graphs, 0.1s)
-act-rcwb_f_t-100000-a3573dae> run
-  600 floats in 22.5 ms
-act-rcwb_f_t-100000-a3573dae> stages
-  total 22.3 ms
-    run_elf:vision_backbone=4.977770
-    run_elf:vision_backbone=4.911727
-    ...
-```
-
-`models` / `use` / `run` / `bench` / `stages` / `check` / `info` / `save`, with
-history, cursor keys and tab completion. `--bundle` still runs once and exits.
-Deploy links `polima-cli` and `polima-server` onto `PATH`, next to `llima`.
-
-### PoLiMa Studio
-
-The board installer registers a SOM-resident web cockpit, disabled and stopped
-by default. Studio provides camera-only MJPG preview, bundle and
-policy-server management, hardware assignment, guarded robot runs, guided
-calibration, diagnostics, logs, and bounded run history. One browser holds the
-controller lease while all observers retain access to the emergency halt.
-It also provides isolated, hardware-free fixture benchmarks with warm-up,
-latency percentiles, throughput, per-stage timings, and output verification.
+It is installed but stopped by default. On the DevKit:
 
 ```bash
-polima studio status             # service state and URL
-polima studio start              # start for this boot
-polima studio enable             # opt in to starting at boot
-polima studio stop               # stop without changing boot preference
-polima studio disable            # stop and disable at boot
-polima studio logs [-f]          # recent or following service logs
-polima studio serve --port 8080  # foreground, without systemd
+polima studio start     # prints the address to open
+polima studio status
+polima studio stop
 ```
 
-Robot start requires a successful preflight followed by confirmation within
-15 seconds. Normal stop returns to the dataset rest pose; **HALT NOW** skips
-that motion and immediately disconnects the follower. See
-[docs/polima-studio.md](docs/polima-studio.md) for deployment and API details.
+**PoLiMa Workbench** runs on your computer (port 8686). It lists your trained
+checkpoints, your compiled bundles and your DevKits, with each bundle's
+readiness and measured results:
+
+```bash
+polima workbench --models ~/checkpoints --bundles outputs/bundles --open
+```
+
+Add your DevKits on its **Boards** page: an address such as
+`sima@192.168.1.20` (on your network, or cabled straight to the computer), an
+optional ssh key and a name. The Workbench checks each one over ssh and through
+its Studio, and keeps the list in `~/.config/polima/devkits.json`. A saved name
+also works in every other command, for example `polima deploy --board <name>`.
+
+> **Studio and Workbench have no login and no encryption (no TLS).** Use them
+> only on an isolated robot network. Workbench listens on every network
+> interface by default; add `--host 127.0.0.1` to keep it to your own computer.
+
+More: [docs/polima-studio.md](docs/polima-studio.md).
+
+---
+
+## Known limits
+
+- **Compiling your own GR00T checkpoint is not part of this release.** Use a
+  prebuilt GR00T bundle. It comes in the next version.
+- **SmolVLA** is not part of this release. It comes in a later version.
+- Studio's robot-run review lists runs made with ACT bundles. GR00T
+  runs are not recorded there.
+- Studio and Workbench have no login or TLS (see above).
+
+## Documentation
+
+- [docs/deploy.md](docs/deploy.md): deploying bundles and managing the DevKit
+- [docs/robot.md](docs/robot.md): running the SO-101, the recipe, troubleshooting
+- [docs/groot.md](docs/groot.md): running prebuilt GR00T bundles
+- [docs/polima-studio.md](docs/polima-studio.md): PoLiMa Studio
+- [CHANGELOG.md](CHANGELOG.md): what changed
+
+## Licence
+
+PoLiMa is licensed under the Apache License 2.0 (see [LICENSE](LICENSE)). Model
+weights and third-party software keep their own licences; see
+[THIRD_PARTY.md](THIRD_PARTY.md). In particular, GR00T bundles are covered by
+NVIDIA's licence for the GR00T checkpoints.

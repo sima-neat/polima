@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from polima.bundle.layout import Bundle
 from polima.config.base import BoardConfig
@@ -21,11 +22,12 @@ from polima.deploy.build import BuildResult, build_native, link_onto_path
 from polima.deploy.service import ServiceStatus, start
 from polima.deploy.ssh import BoardError, BoardSession
 from polima.util.logging import get
+from polima.util.paths import package_root
 
 log = get("deploy")
 
 STAGES = (
-    "preflight", "layout", "sync-bundle", "build", "verify", "guard",
+    "preflight", "layout", "sync-bundle", "python-runtime", "build", "verify", "guard",
     "activate", "service", "smoke",
 )
 
@@ -64,7 +66,12 @@ def _metadata_matches(session, bundle, remote_bundle: str) -> bool:
     """
     import hashlib
 
-    for name in ("plan.json", "bundle.json"):
+    robot_sidecars = tuple(
+        name
+        for name in bundle.sidecars
+        if name.startswith("robot_client/") and ".." not in Path(name).parts
+    )
+    for name in ("plan.json", "bundle.json", *robot_sidecars):
         local = bundle.root / name
         if not local.is_file():
             continue
@@ -134,6 +141,18 @@ def deploy(
                 excludes=("*.tar.gz", "*.onnx", "__pycache__"), echo=False,
             )
             report.record("sync-bundle", "ok", bytes=bundle.total_elf_bytes)
+
+        launcher = bundle.root / "robot_client/start.sh"
+        if launcher.is_file() and any(name in launcher.read_text() for name in ("polima.robot.mycobot", "polima.robot.so101")):
+            log.info("syncing robot Python runtime to %s", board_config.python_src_dir)
+            session.mkdirs(board_config.python_src_dir)
+            session.rsync(
+                package_root() / "src/polima", board_config.python_src_dir,
+                excludes=("__pycache__", "*.pyc"), echo=False,
+            )
+            report.record("python-runtime", "ok")
+        else:
+            report.record("python-runtime", "skipped", reason="bundle uses standalone client")
 
         # --- build: skipped when native/ is unchanged ----------------------
         if build:

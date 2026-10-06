@@ -204,7 +204,8 @@ def _launch(
     command = (
         f"cd {shlex.quote(board.root)} && "
         "{ "
-        f"nohup {shlex.quote(binary)} "
+        + ("POLIMA_LAYOUT_DIAGNOSTICS=1 " if verbose else "")
+        + f"nohup {shlex.quote(binary)} "
         f"--bundle {shlex.quote(bundle_path)} --port {port}"
         + (" --verbose" if verbose else "")
         + f" < /dev/null >> {shlex.quote(log_file)} 2>&1 & "

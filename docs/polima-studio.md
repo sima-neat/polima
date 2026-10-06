@@ -1,8 +1,10 @@
 # PoLiMa Studio
 
 PoLiMa Studio is the SOM-resident operations cockpit for installed PoLiMa robot policies. It
-does not compile or deploy models; those remain host-side workflows. Studio manages the active
-bundle, policy server, cameras, follower arm, calibration, controlled runs, logs, and run history.
+does not compile models; that remains a host-side workflow. Studio manages the active bundle,
+policy server, cameras, follower arm, calibration, controlled runs, logs, and run history, and it
+moves files between the operator's browser and the board, so bundles and results no longer
+travel by scp.
 
 ## Manage it
 
@@ -56,6 +58,33 @@ For an isolated measurement, Studio refuses to begin while the policy server, ro
 camera preview, or calibration is active. The native benchmark holds the same controller lock as
 robot operation, preventing a terminal process from starting control during the measurement.
 
+## Install bundles and download files
+
+**Bundles & files** moves files without scp, from any browser that reaches Studio.
+
+**Install a bundle** takes a bundle folder (`outputs/bundles/<bundle-id>`) or a `.tar` of one,
+dropped or chosen in the browser. It uploads in resumable 16 MiB chunks: choosing the same files
+again continues an interrupted upload, and partial uploads are kept for a week. Studio then
+applies `polima deploy`'s checks (each ELF's sha256 against `bundle.json`, no archive inside the
+bundle) and moves it into `models/<bundle_id>`. A replaced bundle keeps the board's calibration,
+and a bundle is never replaced while a Studio process runs or while it is being served.
+**Activate after install** activates only when Studio is idle and the policy server is stopped.
+A browser install does not rebuild the native binaries.
+
+**Installed bundles** shows each bundle's size, graphs, robot client and how its SO-ARM101
+calibration compares with the active bundle's. It can activate, re-check ELF checksums,
+download, upload or copy the active calibration, and delete. Every calibration change saves a
+backup first, which **Restore** in Follower calibration brings back. Only inactive PoLiMa bundles
+can be deleted, after their calibration is backed up; hand-built deploy roots are never deleted.
+
+**Download from the devkit** browses `var/log`, `var/lib/calibration-backups` and `models`
+read-only. Files download as-is and folders stream as `.tar`; symlinks that leave a location are
+never followed. `POLIMA_STUDIO_DOWNLOADS=name=/path:/other/path` in `/etc/default/polima-studio`
+adds locations. Like logs, these reads need no controller lease.
+
+Run and benchmark history link each log, the console links the policy-server log, and each
+camera preview can save its current frame.
+
 ## API
 
 The versioned API is rooted at `/api/v1`. Important endpoints are `session`, `snapshot`,
@@ -63,3 +92,8 @@ The versioned API is rooted at `/api/v1`. Important endpoints are `session`, `sn
 `bundles/<id>/activate`, `calibration/*`, `history`, `logs/*`, and the `events` SSE stream.
 Benchmark endpoints are `benchmarks/start`, `benchmarks/stop`, `benchmarks`, and
 `logs/benchmarks/<id>`.
+Transfer endpoints are `uploads` (create, list), `uploads/<id>/chunk`, `uploads/<id>/install`,
+`uploads/<id>/cancel`, `bundles/<id>/details`, `bundles/<id>/verify`, `bundles/<id>/delete`,
+`bundles/<id>/calibration` (GET downloads, POST replaces), `storage`, and
+`files/<location>/list` and `files/<location>/download`. Install and verify run as one
+background job at a time and report progress as `job` events.

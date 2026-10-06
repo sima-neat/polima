@@ -102,7 +102,13 @@ def test_vision_is_compiled_by_afe_like_the_rest():
 
 
 def test_compiled_output_layouts_match_modalix_downloads():
-    """Only denoise velocity crosses DRAM in byte-planed HWC16."""
+    """Every SmolVLA output downloads as plain contiguous BF16.
+
+    Measured on Modalix (2026-09-10): decoding the bare denoise ELF's output
+    as HWC16 byte planes produced non-finite values, while the same words read
+    as plain BF16 were finite and in range. The SO-101 SmolVLA bundle that ran
+    on the arm declares denoise plain.
+    """
     graphs = {graph.name: graph for graph in get_policy("smolvla").compile.graphs}
     assert (
         graphs["vision"].outputs[0].dram_layout,
@@ -117,7 +123,8 @@ def test_compiled_output_layouts_match_modalix_downloads():
         graphs["denoise"].outputs[0].dram_layout,
         graphs["denoise"].outputs[0].logical_width,
         graphs["denoise"].outputs[0].logical_channels,
-    ) == ("hwc16", 50, 32)
+    ) == ("plain", None, None)
+    assert graphs["denoise"].outputs[0].shape == (1, 50, 32)
 
 
 def test_action_graphs_request_smolvla_shape_inference():

@@ -19,6 +19,7 @@ from pathlib import Path
 SEARCH_PATH = (
     "$MODEL_COMPILER_BIN",
     "~/sima-sdk-extensions/model-compiler/bin",
+    "~/sdk-extensions/model-compiler/bin",
     "/sdk-extensions/model-compiler/bin",
 )
 
@@ -31,6 +32,7 @@ def find_compiler_bin(config=None) -> Path | None:
         candidates.append(str(explicit))
     candidates.append(os.environ.get("MODEL_COMPILER_BIN", ""))
     candidates.append(os.path.expanduser("~/sima-sdk-extensions/model-compiler/bin"))
+    candidates.append(os.path.expanduser("~/sdk-extensions/model-compiler/bin"))  # sima-cli
     candidates.append("/sdk-extensions/model-compiler/bin")
     for candidate in candidates:
         if candidate and (Path(candidate) / "python").exists():

@@ -38,11 +38,12 @@ that changes, and every dependent size is derived from it.
 
 ## Language conditioning
 
-Like SmolVLA, GR00T is language-conditioned, so `single_task` is False. The
-prompt embedding is *precomputed* into `constants/prompt_embedding` at export:
-the task string is fixed for a deployed checkpoint, and embedding it on every
-inference would mean shipping the 151,680-row vocabulary table to the board.
-Changing the task means re-exporting.
+Like SmolVLA, GR00T is language-conditioned, so `single_task` is False.
+Export discovers every trained instruction from the dataset and precomputes one
+prompt row in `constants/prompt_embeddings`. The request header's flags select
+that row, so all trained tasks share one set of compiled ELFs without shipping
+the 151,680-row vocabulary table. Export rejects catalogs whose processor
+layouts differ; it never silently truncates or pads a prompt.
 """
 
 from __future__ import annotations
@@ -104,17 +105,6 @@ def _token_tensor(name: str, width: int, channels: int) -> TensorSpec:
     return TensorSpec(name, (1, width, channels))
 
 
-def _tessellated(name: str, width: int, channels: int) -> TensorSpec:
-    """An MLA output the host detessellates from HWC16.
-
-    Every `detessellate_hwc16` call in groot_action_llima.cpp corresponds to one
-    of these; the logical width and channel count are what reverses the 16-lane
-    byte-planed form.
-    """
-    return TensorSpec(name, (1, width, channels), dram_layout="hwc16",
-                      logical_width=width, logical_channels=channels)
-
-
 def _eagle_stage(name: str, in_channels: int, out_channels: int, width: int,
                  *, samples: int = 1) -> GraphSpec:
     """One device-resident Eagle stage.
@@ -140,6 +130,26 @@ def _eagle_stage(name: str, in_channels: int, out_channels: int, width: int,
     )
 
 
+def _qwen_stage(name: str) -> GraphSpec:
+    """Qwen pair with explicit task-selected causal/key-padding mask."""
+
+    return GraphSpec(
+        name=name,
+        builder=f"polima.policies.groot.graphs:{name}",
+        inputs=(
+            TensorSpec("hidden", (1, 1, SEQUENCE, LANGUAGE_CHANNELS)),
+            TensorSpec("attention_mask", (1, SEQUENCE, SEQUENCE, 1)),
+        ),
+        outputs=(TensorSpec("output", (1, 1, SEQUENCE, LANGUAGE_CHANNELS)),),
+        layout="NHWC",
+        precision="bf16",
+        calibration=CalibrationSource("npz", samples=1),
+        mla_tessellation=False,
+        external_dram_layout="HWC",
+        exit_on_stable_elf=True,
+    )
+
+
 def _eagle_graphs() -> tuple[GraphSpec, ...]:
     graphs = [
         # Patchified pixels in, SigLIP embeddings out. The 588 input channels
@@ -155,22 +165,23 @@ def _eagle_graphs() -> tuple[GraphSpec, ...]:
         _eagle_stage("eagle_vision_post_norm", VISION_CHANNELS, VISION_CHANNELS,
                      VISION_WIDTH)
     )
-    # The connector breaks the chain: the host folds 18x18x1152 into 9x9x4608
-    # between post_norm and here, so this one graph takes the tessellated path.
+    # The connector breaks the chain: the host folds the vision grid into
+    # C*4 channels between post_norm and here. ModelSDK 2.1.3 accepts the
+    # tessellated input boundary but the raw connector ELF returns ordinary
+    # contiguous BF16, not HWC16. This was confirmed on Modalix with the
+    # MyCobot fixture: plain decoding matched the ONNX range while HWC16
+    # byte-plane decoding manufactured non-finite values.
     graphs.append(GraphSpec(
         name="eagle_vision_connector",
         builder="polima.policies.groot.graphs:eagle_vision_connector",
         inputs=(_token_tensor("hidden", CONNECTOR_WIDTH, CONNECTOR_CHANNELS),),
-        outputs=(_tessellated("output", CONNECTOR_WIDTH, LANGUAGE_CHANNELS),),
+        outputs=(_token_tensor("output", CONNECTOR_WIDTH, LANGUAGE_CHANNELS),),
         layout="NHWC",
         precision="bf16",
         calibration=CalibrationSource("npz", samples=1),
         exit_on_stable_elf=True,
     ))
-    graphs += [
-        _eagle_stage(name, LANGUAGE_CHANNELS, LANGUAGE_CHANNELS, SEQUENCE)
-        for name in qwen_stage_names()
-    ]
+    graphs += [_qwen_stage(name) for name in qwen_stage_names()]
     graphs.append(
         _eagle_stage("eagle_output_norm", LANGUAGE_CHANNELS, LANGUAGE_CHANNELS,
                      SEQUENCE)
@@ -188,7 +199,7 @@ def _action_graphs() -> tuple[GraphSpec, ...]:
             name="state_project",
             builder="polima.policies.groot.graphs:state_project",
             inputs=(TensorSpec("state", (1, 1, STATE_LANE)),),
-            outputs=(_tessellated("state_features", 1, HIDDEN_CHANNELS),),
+            outputs=(_token_tensor("state_features", 1, HIDDEN_CHANNELS),),
             layout="NHWC",
             precision="bf16",
             calibration=CalibrationSource("npz", samples=1),
@@ -201,7 +212,7 @@ def _action_graphs() -> tuple[GraphSpec, ...]:
                 TensorSpec("actions", (1, CHUNK, ACTION_LANE)),
                 TensorSpec("tau_embedding", (1, CHUNK, HIDDEN_CHANNELS)),
             ),
-            outputs=(_tessellated("action_features", CHUNK, HIDDEN_CHANNELS),),
+            outputs=(_token_tensor("action_features", CHUNK, HIDDEN_CHANNELS),),
             layout="NHWC",
             precision="bf16",
             calibration=calibration,
@@ -219,7 +230,7 @@ def _action_graphs() -> tuple[GraphSpec, ...]:
                 TensorSpec("backbone_features", (1, SEQUENCE, LANGUAGE_CHANNELS)),
                 TensorSpec("additive_mask", (1, MASK_ELEMENTS)),
             ),
-            outputs=(_tessellated("hidden_out", HIDDEN_WIDTH, HIDDEN_CHANNELS),),
+            outputs=(_token_tensor("hidden_out", HIDDEN_WIDTH, HIDDEN_CHANNELS),),
             layout="NHWC",
             precision="bf16",
             calibration=calibration,
@@ -234,7 +245,7 @@ def _action_graphs() -> tuple[GraphSpec, ...]:
             TensorSpec("hidden", (1, HIDDEN_WIDTH, HIDDEN_CHANNELS)),
             TensorSpec("temb", (1, TEMB_ELEMENTS)),
         ),
-        outputs=(_tessellated("velocity", CHUNK, ACTION_LANE),),
+        outputs=(_token_tensor("velocity", CHUNK, ACTION_LANE),),
         layout="NHWC",
         precision="bf16",
         calibration=calibration,
@@ -273,7 +284,7 @@ GROOT_SPEC = PolicySpec(
             # modality.json lands in the *converted* v2.1 tree, which is why it
             # is post_copy here and not extra_meta_files: requiring it of the
             # v3.0 source would reject every dataset before conversion runs.
-            post_copy=(("config/modality.json", "meta/modality.json"),),
+            post_copy=(("config/mycobot_modality.json", "meta/modality.json"),),
         ),
     ),
     # ------------------------------------------------- checkpoint provenance --
@@ -344,10 +355,13 @@ GROOT_SPEC = PolicySpec(
         default_fps=30,
         max_relative_target=12,
         aggregate_fn="weighted_average",
+        # Short 16-action plans: always request the next one (20 trials, 11 picks).
+        chunk_threshold=1.0,
         image_preprocessor="polima.policies.groot.graphs:patchify_for_wire",
     ),
     runtime_plan_builder="polima.policies.groot.runtime:build_plan",
     checkpoint_validator="polima.policies.groot.graphs:validate_checkpoint",
+    profile_entry="polima.policies.groot.profile:specialize_spec",
 )
 
 register_policy(GROOT_SPEC)

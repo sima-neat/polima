@@ -31,8 +31,8 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from polima.compile import calibration as calib
 
@@ -112,12 +112,13 @@ def prepare(path: str | Path, names: Sequence[str], shapes: Sequence[Shape],
 def promote_rank3_hwc(path: str | Path, layout: str = "NHWC") -> Path:
     """Wrap each rank-3 [N,W,C] boundary as a layout-correct rank-4 tensor.
 
-    The reshapes are numerical no-ops. They only satisfy ModelSDK 2.1's
-    four-dimensional external-layout packaging path, which is required for
-    directly sharing an HWC MLABuffer between token stages. Rank-4 boundaries
-    are left alone, which also covers SmolVLA vision's NCHW image input and
-    rank-3 token output. NCHW graphs use [N,C,1,W], so the compiler sees the
-    real channel count while an HWC external buffer remains token-major.
+    This satisfies ModelSDK 2.1's four-dimensional external-layout path, which
+    is required for directly sharing an HWC MLABuffer between token stages.
+    NHWC promotion is a reshape to [N,1,W,C]. NCHW promotion is *not* merely a
+    reshape: [N,W,C] must be transposed to [N,C,W] before wrapping it as
+    [N,C,1,W]. Otherwise ModelSDK correctly exports NCHW as external HWC but
+    the token and channel axes contain reshape-order data, producing a
+    deterministic 64x960 permutation in SmolVLA vision output.
     """
     import onnx
 
@@ -155,20 +156,42 @@ def promote_rank3_hwc(path: str | Path, layout: str = "NHWC") -> Path:
                 input_shape_name, onnx.TensorProto.INT64, [3], input_shape
             )
         )
-        model.graph.node.insert(0, onnx.helper.make_node(
-            "Reshape", [input_name, input_shape_name], [rank3_input],
-            name=input_name + "__unwrap_hwc",
-        ))
+        if layout.upper() == "NCHW":
+            input_nhwc = input_name + "__nhwc"
+            model.graph.node.insert(0, onnx.helper.make_node(
+                "Reshape", [input_nhwc, input_shape_name], [rank3_input],
+                name=input_name + "__unwrap_hwc",
+            ))
+            model.graph.node.insert(0, onnx.helper.make_node(
+                "Transpose", [input_name], [input_nhwc],
+                name=input_name + "__nchw_to_hwc", perm=[0, 2, 3, 1],
+            ))
+        else:
+            model.graph.node.insert(0, onnx.helper.make_node(
+                "Reshape", [input_name, input_shape_name], [rank3_input],
+                name=input_name + "__unwrap_hwc",
+            ))
     if len(output_shape) == 3:
         output_shape_name = output_name + "__shape4"
         model.graph.initializer.append(onnx.helper.make_tensor(
             output_shape_name, onnx.TensorProto.INT64, [4],
             rank4(output_shape),
         ))
-        model.graph.node.append(onnx.helper.make_node(
-            "Reshape", [rank3_output, output_shape_name], [output_name],
-            name=output_name + "__wrap_hwc",
-        ))
+        if layout.upper() == "NCHW":
+            output_nchw = output_name + "__nchw"
+            model.graph.node.append(onnx.helper.make_node(
+                "Transpose", [rank3_output], [output_nchw],
+                name=output_name + "__hwc_to_chw", perm=[0, 2, 1],
+            ))
+            model.graph.node.append(onnx.helper.make_node(
+                "Reshape", [output_nchw, output_shape_name], [output_name],
+                name=output_name + "__wrap_hwc",
+            ))
+        else:
+            model.graph.node.append(onnx.helper.make_node(
+                "Reshape", [rank3_output, output_shape_name], [output_name],
+                name=output_name + "__wrap_hwc",
+            ))
     for value, shape in ((graph_input, input_shape), (graph_output, output_shape)):
         if len(shape) != 3:
             continue
@@ -183,7 +206,46 @@ def promote_rank3_hwc(path: str | Path, layout: str = "NHWC") -> Path:
 # -------------------------------------------------------------- tessellation
 
 
-def tessellation_parameters(quantized):
+def _mla_output_names(
+    mla_node, node_is_tuple, *, peel_terminal_reshape: bool = True,
+) -> list[str]:
+    """Return compiler-visible MLA outputs.
+
+    AFE 2.1.3 can leave a graph-output reshape in the segment IR while lowering
+    the actual MLA boundary to that reshape's producer. Passing the reshape name
+    then fails later in ModelSDK with an available-output list containing only
+    the producer. A one-input terminal reshape changes shape, not values, so the
+    producer is the correct node on which to request output detessellation.
+    Raw NCHW vision graphs are the exception: AFE retains their terminal reshape
+    as the compiler-visible MLA boundary.
+    """
+
+    nodes = mla_node.ir.nodes
+    output_node = nodes[mla_node.ir.output_node_name]
+    names = (
+        list(output_node.input_node_names)
+        if node_is_tuple(output_node)
+        else [output_node.name]
+    )
+    resolved = []
+    for name in names:
+        seen = set()
+        node = nodes.get(name)
+        while (
+            node is not None
+            and name not in seen
+            and peel_terminal_reshape
+            and "reshape" in name.rsplit("/", 1)[-1].lower()
+            and len(node.input_node_names) == 1
+        ):
+            seen.add(name)
+            name = node.input_node_names[0]
+            node = nodes.get(name)
+        resolved.append(name)
+    return resolved
+
+
+def tessellation_parameters(quantized, *, peel_terminal_reshape: bool = True):
     """Direct HWC in / HWC16 out for the MLA segment.
 
     This is what lets the board hand the MLA a plain contiguous buffer and read
@@ -214,9 +276,8 @@ def tessellation_parameters(quantized):
     for input_name in mla_node.input_names:
         params[input_name] = dataclasses.replace(inbound)
 
-    output_node = mla_node.ir.nodes[mla_node.ir.output_node_name]
-    output_names = (
-        output_node.input_node_names if node_is_tuple(output_node) else [output_node.name]
+    output_names = _mla_output_names(
+        mla_node, node_is_tuple, peel_terminal_reshape=peel_terminal_reshape,
     )
     outbound = TensorTessellateParameters(
         tile_shape=(0, 0, 0, 0), enable_mla=True, dram_layout=TensorDRAMLayout.HWC16
@@ -244,10 +305,7 @@ def external_layout_parameters(quantized, layout_name: str):
     params = {
         name: dataclasses.replace(template) for name in mla_node.input_names
     }
-    output_node = mla_node.ir.nodes[mla_node.ir.output_node_name]
-    output_names = (
-        output_node.input_node_names if node_is_tuple(output_node) else [output_node.name]
-    )
+    output_names = _mla_output_names(mla_node, node_is_tuple)
     params.update({
         f"{name}_output": dataclasses.replace(template) for name in output_names
     })
@@ -269,6 +327,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="sets both sides unless overridden individually")
     parser.add_argument("--activation-precision", choices=("int8", "bf16"))
     parser.add_argument("--weight-precision", choices=("int8", "bf16"))
+    parser.add_argument(
+        "--host-mlc-verification", choices=("auto", "on", "off"), default="auto",
+        help="control the ModelSDK host MLC checker; auto handles AFE 2.1.3 on this CPU",
+    )
 
     parser.add_argument("--calibration-npz", type=Path,
                         help="one array per input, shaped (N, *input_shape)")
@@ -343,7 +405,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     output = args.build_dir / stem
     output.mkdir(parents=True, exist_ok=True)
 
-    print(f"[INFO] Model Compiler Version: {get_model_sdk_version()}")
+    sdk_version = get_model_sdk_version()
+    print(f"[INFO] Model Compiler Version: {sdk_version}")
     print(f"[INFO] Target: {args.device}   Layout: {args.model_layout}")
     print(f"[INFO] Inputs: {list(zip(names, shapes, strict=True))}")
     print(f"[INFO] Outputs: {outputs}")
@@ -375,7 +438,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     activation = args.activation_precision or args.precision
     weights = args.weight_precision or args.precision
-    all_bf16 = activation == "bf16" and weights == "bf16"
+    print(f"[INFO] Precision: activation={activation}, weights={weights}")
 
     if args.calibration_npz and args.calibration_raw_f32:
         raise SystemExit("pass at most one of --calibration-npz / --calibration-raw-f32")
@@ -435,10 +498,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mla_tessellation and args.external_dram_layout != "compiler":
         raise SystemExit("--mla-tessellation and --external-dram-layout are mutually exclusive")
     compile_layout = (
-        tessellation_parameters(quantized) if args.mla_tessellation else
+        tessellation_parameters(
+            quantized, peel_terminal_reshape=args.model_layout != "NCHW",
+        ) if args.mla_tessellation else
         external_layout_parameters(quantized, args.external_dram_layout)
         if args.external_dram_layout != "compiler" else None
     )
+    if _skip_host_mlc_verification(
+        args.host_mlc_verification, sdk_version, activation, weights
+    ):
+        print(
+            "[WARN] Disabling ModelSDK host MLC verification: AFE 2.1.3 cannot "
+            "lower its BF16 checker on this host. Validate the "
+            "resulting ELF on the target with the bundle fixture.",
+            flush=True,
+        )
+        _disable_host_mlc_verification()
+
     try:
         quantized.compile(
             output_path=str(output),
@@ -482,6 +558,39 @@ def mpk_only_failure(error: BaseException, elf: Path | None,
         return False
     return (before.st_size > 0 and before.st_size == after.st_size
             and before.st_mtime_ns == after.st_mtime_ns)
+
+
+def _skip_host_mlc_verification(
+    mode: str, sdk_version: str, activation: str, weights: str,
+) -> bool:
+    if mode == "off":
+        return True
+    if mode == "on":
+        return False
+    if activation != "bf16" and weights != "bf16":
+        return False
+    flags = ""
+    try:
+        flags = Path("/proc/cpuinfo").read_text().lower()
+    except OSError:
+        return False
+    return sdk_version.startswith("2.1.3") and "avx512_bf16" not in flags
+
+
+def _disable_host_mlc_verification() -> None:
+    """Apply AFE 2.1.3's internal switch for this one compiler process."""
+    from afe.core import compile_networks
+
+    original = compile_networks.MLACompilerConfig
+    if getattr(original, "_polima_host_verification_disabled", False):
+        return
+
+    def config(*args, **kwargs):
+        kwargs["verify_mlc_files"] = False
+        return original(*args, **kwargs)
+
+    config._polima_host_verification_disabled = True
+    compile_networks.MLACompilerConfig = config
 
 
 def _start_elf_watchdog(path: Path, stable_seconds: float = 30.0) -> None:

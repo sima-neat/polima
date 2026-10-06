@@ -152,6 +152,24 @@ std::vector<StoreEntry> scan_store(const fs::path& store) {
       entry.managed = true;
       try {
         std::ifstream stream(manifest);
+        const fs::path plan = item.path() / "plan.json";
+        if (fs::is_regular_file(plan)) {
+          try {
+            std::ifstream plan_stream(plan);
+            json plan_value;
+            plan_stream >> plan_value;
+            entry.robot = plan_value.value("robot", json::object())
+                              .value("calibration_id", "");
+            const auto response = plan_value.value("wire", json::object())
+                                      .value("response_shape", std::vector<size_t>{});
+            for (size_t index = 0; index < response.size(); ++index) {
+              if (index) entry.action_shape += "x";
+              entry.action_shape += std::to_string(response[index]);
+            }
+          } catch (const std::exception&) {
+            // Old bundles remain selectable; they simply show unknown metadata.
+          }
+        }
         json value;
         stream >> value;
         entry.policy = value.value("policy", "");

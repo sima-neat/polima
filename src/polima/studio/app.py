@@ -2,18 +2,30 @@ from __future__ import annotations
 
 import json
 import secrets
+import socket
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from polima.robot import evidence
+
+from . import transfer
 from .models import RunConfig
 from .runtime import Conflict, StudioRuntime
 
 
 def create_app(root: Path | str = "/media/nvme/polima", runtime: StudioRuntime | None = None):
-    from flask import Flask, Response, jsonify, make_response, request, send_from_directory
+    from flask import (
+        Flask,
+        Response,
+        jsonify,
+        make_response,
+        request,
+        send_file,
+        send_from_directory,
+    )
 
     static = Path(__file__).with_name("static")
     app = Flask(__name__, static_folder=None)
@@ -183,6 +195,39 @@ def create_app(root: Path | str = "/media/nvme/polima", runtime: StudioRuntime |
     def history():
         return jsonify(items=engine.store.list_runs())
 
+    # Robot run evidence, written by the robot client for every run (polima.robot.evidence).
+    @app.get("/api/v1/robot-runs")
+    def robot_runs():
+        limit = min(max(int(request.args.get("limit", 50)), 1), 500)
+        return jsonify(items=evidence.list_runs(engine.root, limit), outcomes=evidence.OUTCOMES,
+                       failure_tags=evidence.FAILURE_TAGS)
+
+    @app.get("/api/v1/robot-runs/reviews")
+    def robot_run_reviews():
+        """Reviewed partial and failed runs (?all=1: every reviewed run), for improvement."""
+        everything = request.args.get("all") in ("1", "true")
+        return jsonify(items=evidence.export_reviews(engine.root, everything))
+
+    @app.get("/api/v1/robot-runs/improvement-manifest")
+    def robot_run_improvement_manifest():
+        """Reviewed failed and partial runs (?all=1: every reviewed run) as one manifest."""
+        everything = request.args.get("all") in ("1", "true")
+        return jsonify(evidence.improvement_manifest(engine.root, everything, socket.gethostname()))
+
+    @app.get("/api/v1/robot-runs/<run_id>")
+    def robot_run(run_id: str):
+        folder = evidence.run_dir(engine.root, run_id)
+        limit = min(max(int(request.args.get("events", 5000)), 0), 100000)
+        summary = evidence.summarize(folder)
+        return jsonify(summary=summary, annotation=summary["annotation"],
+                       events=evidence.read_events(folder, limit))
+
+    @app.post("/api/v1/robot-runs/<run_id>/annotation")
+    def robot_run_annotation(run_id: str):
+        body = request.get_json(force=True)
+        folder = evidence.run_dir(engine.root, run_id)
+        return mutation(lambda: evidence.annotate(folder, body), lease=False)
+
     @app.get("/api/v1/logs/server")
     def server_log():
         return Response(engine.read_log(), mimetype="text/plain")
@@ -229,6 +274,98 @@ def create_app(root: Path | str = "/media/nvme/polima", runtime: StudioRuntime |
             relay(), mimetype="multipart/x-mixed-replace; boundary=frame",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
+
+    # -------------------------------------------- bundles and files over HTTP
+
+    @app.get("/api/v1/storage")
+    def storage():
+        return jsonify(engine.storage())
+
+    @app.get("/api/v1/uploads")
+    def uploads():
+        return jsonify(items=engine.uploads.pending())
+
+    @app.post("/api/v1/uploads")
+    def upload_create():
+        files = request.get_json(force=True).get("files")
+        return mutation(lambda: engine.create_upload(files))
+
+    @app.get("/api/v1/uploads/<upload_id>")
+    def upload_status(upload_id: str):
+        return jsonify(engine.uploads.status(upload_id))
+
+    @app.put("/api/v1/uploads/<upload_id>/chunk")
+    def upload_chunk(upload_id: str):
+        # The raw body, so MAX_CONTENT_LENGTH stays at 1 MB for the JSON routes.
+        args, length = request.args, int(request.headers.get("Content-Length") or 0)
+        return mutation(lambda: engine.uploads.receive(
+            upload_id, args.get("path", ""), int(args.get("offset", 0)),
+            request.environ["wsgi.input"], length,
+        ))
+
+    @app.post("/api/v1/uploads/<upload_id>/install")
+    def upload_install(upload_id: str):
+        activate = bool((request.get_json(silent=True) or {}).get("activate"))
+        return mutation(lambda: engine.install_upload(upload_id, activate))
+
+    @app.post("/api/v1/uploads/<upload_id>/cancel")
+    def upload_cancel(upload_id: str):
+        return mutation(lambda: engine.uploads.discard(upload_id) or {"ok": True})
+
+    @app.get("/api/v1/bundles/<bundle>/details")
+    def bundle_details(bundle: str):
+        return jsonify(engine.bundle_details(bundle))
+
+    @app.post("/api/v1/bundles/<bundle>/verify")
+    def bundle_verify(bundle: str):
+        return mutation(lambda: engine.verify_bundle(bundle))
+
+    @app.post("/api/v1/bundles/<bundle>/delete")
+    def bundle_delete(bundle: str):
+        return mutation(lambda: engine.delete_bundle(bundle))
+
+    @app.get("/api/v1/bundles/<bundle>/calibration")
+    def calibration_download(bundle: str):
+        path = engine.read_calibration(engine._model_dir(bundle).name)
+        return send_file(path, as_attachment=True, download_name=f"{bundle}-so-arm101.json")
+
+    @app.post("/api/v1/bundles/<bundle>/calibration")
+    def calibration_upload(bundle: str):
+        body = request.get_json(force=True)
+        name = engine._model_dir(bundle).name
+        return mutation(lambda: engine.set_calibration(
+            name, body.get("calibration"), body.get("from_bundle"),
+        ))
+
+    def download_root(key: str) -> Path:
+        roots = transfer.download_roots(engine.root)
+        if key not in roots:
+            raise FileNotFoundError(f"unknown download location {key!r}")
+        return roots[key]
+
+    @app.get("/api/v1/files")
+    def file_roots():
+        return jsonify(items=[{"key": key, "path": str(path), "exists": path.is_dir()}
+                              for key, path in transfer.download_roots(engine.root).items()])
+
+    @app.get("/api/v1/files/<key>/list")
+    def file_list(key: str):
+        base = download_root(key)
+        entries = transfer.list_directory(base, request.args.get("path", "")) if (
+            base.is_dir()
+        ) else []
+        return jsonify(entries=entries)
+
+    @app.get("/api/v1/files/<key>/download")
+    def file_download(key: str):
+        target = transfer.confined(download_root(key), request.args.get("path", ""))
+        if target.is_file():
+            return send_file(target, as_attachment=True)
+        if not target.is_dir():
+            raise FileNotFoundError("no such file")
+        return Response(transfer.stream_tar(target), mimetype="application/x-tar", headers={
+            "Content-Disposition": f'attachment; filename="{target.name}.tar"',
+        })
 
     @app.get("/api/v1/health")
     def health():

@@ -45,7 +45,7 @@ HOST_COMMANDS = ("compile", "deploy")
 #: Commands that run where the MLA and the arm are.
 BOARD_COMMANDS = ("run", "robot", "studio")
 #: Commands that work anywhere.
-SHARED_COMMANDS = ("help", "doctor", "data", "list", "clean")
+SHARED_COMMANDS = ("help", "doctor", "data", "list", "clean", "workbench")
 
 _CAPABILITY_MODULES = {
     "torch": "export (compile stage)",
