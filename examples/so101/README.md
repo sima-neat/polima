@@ -18,9 +18,10 @@ A precompiled bundle does not require the training dataset, PyTorch checkpoint
 or ModelSDK on the customer's host. To compile your own checkpoint, use the
 [compiler guide](../../docs/your-own-model.md#groot) first.
 
-Public model repository names and download commands are not finalized in this
-checkout. Obtain the exact bundle from its released model card rather than
-substituting an upstream NVIDIA checkpoint: a checkpoint is not a Modalix bundle.
+The compiled models are planned for `simaai/GR00T-N1.6-SO101-PickPlace` and
+`simaai/GR00T-N1.7-SO101-PickPlace` on Hugging Face. Publication is pending;
+use the download command from the published model card when available. An
+upstream NVIDIA checkpoint is not a compiled Modalix bundle.
 
 ## 1. Install and connect
 
@@ -105,13 +106,13 @@ Use stable device paths when selecting cameras; numeric indices can change.
 
 | Measurement | Reference value |
 |---|---|
-| Robot to basket | Approximately 32 cm; measurement endpoints pending confirmation. |
-| Robot base to overhead camera | Approximately 20 inches (50.8 cm); measurement direction pending confirmation. |
-| Basket dimensions (length × width × height) | To be confirmed. |
-| Eraser dimensions (length × width × height) | To be confirmed. |
+| Arm end to basket | 32 cm |
+| Overhead camera lens above tabletop | 49 cm |
+| Basket dimensions (length × width × height) | 17.5 × 12 × 6 cm |
+| Eraser dimensions (length × width × height) | 12.5 × 5 × 2 cm |
 
-These dimensions are provisional. The base-to-camera measurement is not yet a
-verified lens-to-table height.
+Reference measurements supplied for this setup. The 32 cm distance is measured
+from the arm end to the basket, not from the robot base.
 
 Frame the cameras as follows for the reference eraser task:
 
