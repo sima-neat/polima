@@ -95,11 +95,9 @@ class BoardConfig:
 
 @dataclass
 class PathsConfig:
-    """Host-side locations. The training host keeps its existing layout --
-    /ml_datasets and the conda envs are NOT relocated to /media/nvme; that
-    applies to the DevKit only."""
+    """Host-side locations, configured independently of the DevKit."""
 
-    dataset_parent: Path = Path("/ml_datasets")
+    dataset_parent: Path | None = None
     outputs: Path | None = None             # None -> polima/outputs
     build_root: Path | None = None          # None -> <outputs>/build
     # $HOME/sima-sdk-extensions/model-compiler/bin -- overridable by

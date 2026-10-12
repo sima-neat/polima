@@ -318,7 +318,7 @@ def robot_python() -> str | None:
 
 def _calibration_file(spec, calibration_dir: str | None = None) -> Path:
     if calibration_dir:
-        return Path(calibration_dir) / f"{spec.robot.calibration_id}.json"
+        return Path(calibration_dir).expanduser() / f"{spec.robot.calibration_id}.json"
     return (Path.home() / ".cache" / "huggingface" / "lerobot" / "calibration"
             / "robots" / "so_follower" / f"{spec.robot.calibration_id}.json")
 
@@ -333,6 +333,23 @@ def _calibrate(spec, args) -> int:
         print(f"{spec.name} does not support calibration", file=sys.stderr)
         return 2
 
+    import fcntl
+
+    lock = Path(os.environ.get("POLIMA_ROOT", "/media/nvme/polima")) / "var/run/control.lock"
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with lock.open("a+") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return _calibrate_arm(spec, args, stream.fileno())
+    except BlockingIOError:
+        print("  another PoLiMa controller is active; stop it before calibrating", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"  cannot calibrate: {exc}", file=sys.stderr)
+        return 1
+
+
+def _calibrate_arm(spec, args, lock_fd: int) -> int:
     _, _, _, arm, problems = _discover(spec, args)
     if not arm:
         for problem in problems:
@@ -340,13 +357,18 @@ def _calibrate(spec, args) -> int:
         return 1
 
     calibration = _calibration_file(spec, args.calibration_dir)
-    if calibration.is_file():
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        backup = calibration.with_suffix(f".json.bak.{stamp}")
-        shutil.copy2(calibration, backup)
-        print(f"  backed up {calibration.name} -> {backup.name}")
-    else:
-        print(f"  no existing calibration at {calibration}")
+    try:
+        calibration.parent.mkdir(parents=True, exist_ok=True)
+        if calibration.is_file():
+            stamp = f"{time.strftime('%Y%m%d_%H%M%S')}.{time.time_ns()}"
+            backup = calibration.with_suffix(f".json.bak.{stamp}")
+            shutil.copy2(calibration, backup)
+            print(f"  backed up {calibration.name} -> {backup.name}")
+        else:
+            print(f"  no existing calibration at {calibration}")
+    except OSError as exc:
+        print(f"  cannot prepare calibration: {exc}", file=sys.stderr)
+        return 1
 
     if not args.yes:
         answer = input(f"  recalibrate {spec.robot.calibration_id} on {arm}? [y/N] ").strip().lower()
@@ -363,10 +385,12 @@ def _calibrate(spec, args) -> int:
     if not binary.exists():
         print(f"  {binary} not found", file=sys.stderr)
         return 1
+    env = dict(os.environ)
+    env.pop("LEROBOT_FORCE_PROVIDED_CALIBRATION", None)
     return subprocess.run([
         str(binary),
         "--robot.type=so101_follower",
         f"--robot.port={arm}",
         f"--robot.id={spec.robot.calibration_id}",
-        f"--robot.calibration_dir={calibration.parent if args.calibration_dir else calibration.parent.parent.parent}",
-    ], check=False).returncode
+        f"--robot.calibration_dir={calibration.parent}",
+    ], check=False, env=env, pass_fds=(lock_fd,)).returncode

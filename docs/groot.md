@@ -14,8 +14,11 @@ Reference for GR00T N1.6 and N1.7 bundles. The step-by-step guides are
 
 A compiled package is specific to its model version, embodiment, camera mapping,
 action horizon and precision. A different SO-101 checkpoint is a new build.
-Public download locations must come from the released model card; this guide
-does not imply that an unpublished package is available on Hugging Face.
+The reference compiled bundles are on Hugging Face: [GR00T N1.6](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace) and
+[GR00T N1.7](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace).
+These are private previews requiring an authorized account. Download instructions
+are in the model cards; uploaded revisions are recorded in the
+[SO-101 guide](../examples/so101/README.md#reference-models).
 
 ## Machines and environments
 

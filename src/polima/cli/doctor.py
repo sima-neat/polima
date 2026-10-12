@@ -332,12 +332,12 @@ def check_policies(doc: Doctor) -> None:
 
 
 def check_datasets(doc: Doctor, config) -> None:
-    doc.heading(f"datasets under {config.paths.dataset_parent}")
+    doc.heading(f"datasets under {config.paths.dataset_parent}" if config.paths.dataset_parent else "datasets")
     from polima.data.contract import validate
     from polima.data.discover import discover
     from polima.policies.registry import iter_specs
 
-    if not Path(config.paths.dataset_parent).is_dir():
+    if config.paths.dataset_parent is None or not Path(config.paths.dataset_parent).is_dir():
         doc.record(table.SKIP, "datasets", "set POLIMA_DATASET_PARENT to the folder holding your datasets")
         return
     entries = discover(config.paths.dataset_parent)

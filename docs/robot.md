@@ -59,7 +59,9 @@ running until `polima server stop`.
 ## After each pick
 
 GR00T uses policy-controlled placement and return by default. When the policy
-returns near the dataset rest pose, the client holds that pose before continuing.
+commands a return near the dataset rest pose, the client holds that pose for
+two seconds before continuing. This rest hold is separate from the optional
+gripper-sequence completion detector.
 **Ctrl-C** ends the run and returns the arm to rest.
 
 ### Optional automatic return

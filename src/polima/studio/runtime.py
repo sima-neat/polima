@@ -387,13 +387,19 @@ class StudioRuntime:
         return {"output": result.stdout.strip()}
 
     def preflight(self, config: RunConfig) -> list[dict[str, Any]]:
-        calibration = self._calibration_path(config.bundle)
+        from polima.robot.so101 import arm_calibration_dir
+
+        try:
+            arm_calibration_dir(self._calibration_path(config.bundle).parent.parent)
+            calibrated = True
+        except FileNotFoundError:
+            calibrated = False
         checks = [
             ("bundle", Path(self._bundle_path(config.bundle)).exists()),
             ("follower arm", Path(config.robot_port).exists()),
             ("overhead camera", Path(config.overhead_camera).exists()),
             ("wrist camera", Path(config.wrist_camera).exists()),
-            ("follower-arm calibration", calibration.is_file()),
+            ("follower-arm calibration", calibrated),
             ("native control binary", self.command.exists() and os.access(self.command, os.X_OK)),
         ]
         return [{"name": name, "ok": ok} for name, ok in checks]

@@ -506,3 +506,18 @@ def test_completion_policy_default_reaches_robot(tmp_path, monkeypatch, policy, 
     started = _started_env(tmp_path, monkeypatch, run, policy)
     assert started["env"]["POLIMA_AUTO_COMPLETE"] == expected
     assert started["env"]["ACT_AUTO_COMPLETE"] == expected
+
+
+def test_studio_preflight_accepts_cli_calibration(tmp_path, monkeypatch):
+    from polima.robot import so101
+
+    run = config(tmp_path)
+    runtime = StudioRuntime(tmp_path)
+    runtime._calibration_path(run.bundle).unlink()
+    devkit = tmp_path / "devkit-calibration"
+    devkit.mkdir()
+    (devkit / "so-arm101.json").write_text("{}")
+    monkeypatch.setattr(so101, "DEVKIT_CALIBRATION", devkit)
+    checks = {item["name"]: item["ok"] for item in runtime.preflight(run)}
+    assert checks["follower-arm calibration"]
+    assert runtime._calibration_path(run.bundle).parent != devkit

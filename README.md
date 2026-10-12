@@ -28,6 +28,39 @@ Start with [installation](docs/install.md), including host prerequisites,
 DevKit installation and access from a laptop to a remote compiler host.
 After installation, run `polima workbench start` and open its printed URL.
 
+## Compiled models
+
+Download the SO-101 pick-and-place bundles from Hugging Face:
+[GR00T N1.6](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace) and
+[GR00T N1.7](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace). Both produce 32 actions per plan.
+The repositories are private previews; access requires an authorized Hugging Face
+account. Follow each model card for download instructions and
+[the SO-101 guide](examples/so101/README.md) for setup.
+
+## Reference robot setup
+
+<img src="docs/images/so101-setup.jpg" alt="SO-101 follower arm with wrist camera, white basket and overhead camera on a flexible mount" width="900">
+
+The SO-101 pick-and-place setup. Follow the
+[hardware, measurements and camera-view guide](examples/so101/README.md#reference-placement)
+to reproduce the arrangement.
+
+## Workbench and Studio
+
+**Workbench** runs on the build host: import a checkpoint and dataset, configure
+compilation, and deploy the resulting bundle to a DevKit.
+
+![Workbench navigation: overview, model imports, compile settings and DevKits](docs/images/workbench.gif)
+
+**Studio** runs on the DevKit: select a policy, configure hardware, manage the
+runtime and benchmark inference before running the arm.
+
+![Studio navigation: robot setup, bundle transfer, runtime and benchmarks](docs/images/studio.gif)
+
+These navigation previews use example data; they do not show a hardware run or
+measured performance. See the [SO-101 setup guide](examples/so101/README.md) for
+the reference hardware, dataset, camera placement and calibration instructions.
+
 ## Commands
 
 On your computer:
@@ -77,8 +110,8 @@ The arm keeps moving while the next plan is computed.
 
 ## Licence
 
-PoLiMa is licensed under Apache-2.0 ([LICENSE](LICENSE)). Model weights and
-third-party software keep their own licences ([THIRD_PARTY.md](THIRD_PARTY.md)).
-GR00T bundles, including bundles you compile from a GR00T checkpoint, are
-covered by NVIDIA's licence for the GR00T models, which allows research and
-evaluation use.
+PoLiMa's code is licensed under Apache-2.0. Bundled UI component notices are
+included in [LICENSE](LICENSE). GR00T bundles remain subject to NVIDIA’s model
+licence, including the non-commercial research/evaluation restriction in the
+source checkpoint licences. See [third-party licences](THIRD_PARTY.md) and the
+licence supplied with each model package.

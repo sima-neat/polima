@@ -24,3 +24,6 @@ outputs/
 # PoLiMa Studio host-side frontend dependencies; production assets are built
 # into src/polima/studio/static and shipped in the board wheel.
 src/polima/studio/ui/node_modules/
+
+# Local release notes
+/CHANGELOG.md
