@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+- Compile ACT and GR00T N1.6/N1.7 checkpoints for Modalix.
+- Import checkpoint and dataset folders through Workbench.
+- Check compiler prerequisites before starting a build.
+- Compare recorded output fidelity, inference latency and graph profiles.
+- Manage DevKit connections and review installation status.
+- Start, stop and inspect Workbench with the `polima workbench` command.
+- Install bundles and benchmark model inference in Studio.
+
 ## 0.2.0
 
 First public version.
@@ -16,9 +26,6 @@ First public version.
 - **PoLiMa Studio** (DevKit) and **Workbench** (host): web pages to install
   bundles, calibrate, run and review the robot, and track bundles and results.
 - **Your DevKits in the Workbench**: add any DevKit by address and ssh key; it
-  is checked over ssh and kept, and its name works as `--board <name>`.
+  is checked over ssh and kept, and its name works as `--devkit <name>`.
 - Supports SiMa.ai SDK 2.1.2 and 2.1.3 on the DevKit.
 - Licensed under Apache-2.0.
-
-Not in this version: compiling your own GR00T checkpoint (next version) and
-SmolVLA (a later version).

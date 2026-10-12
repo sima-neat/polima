@@ -1,12 +1,8 @@
-"""Shared bundle-driven policy preprocessing and transport; no robot control.
+"""Bundle-driven policy input preparation and transport; no robot control.
 
-Two front ends share this module:
-
-- CompiledPolicyAdapter: GR00T, SmolVLA and ACT through the established ACT
-  control loop (polima.robot.so101) and the MyCobot client. This is the path
-  verified on the SO-101 with GR00T N1.6/N1.7 and SmolVLA.
-- BundlePolicy: PoLiMa's own SO-101 loop (polima.robot.so101_loop), which
-  takes its whole contract from the bundle's plan.json.
+- CompiledPolicyAdapter: a GR00T bundle's exact request tensors (camera frames,
+  state, noise) for the SO-101 loop in polima.robot.so101.
+- BundlePolicy: an ACT bundle, its whole contract read from the bundle's plan.json.
 """
 
 from __future__ import annotations
@@ -34,40 +30,6 @@ class PolicyPrediction:
     raw_actions: np.ndarray
     actions: np.ndarray
     latency_ms: float
-
-
-def prepare_smolvla_image(image: np.ndarray) -> np.ndarray:
-    """Match the proven SO-101 client's left/top-padded SigLIP transform."""
-
-    try:
-        import torch
-        import torch.nn.functional as torch_f
-    except ImportError as error:
-        raise RuntimeError(
-            "SmolVLA robot inference needs torch in the robot environment"
-        ) from error
-
-    array = _rgb_hwc(image)
-    tensor = torch.from_numpy(np.ascontiguousarray(array)).permute(2, 0, 1).unsqueeze(0)
-    tensor = tensor.to(dtype=torch.float32)
-    if array.dtype == np.uint8 or float(tensor.max()) > 1.0:
-        tensor.div_(255.0)
-    current_height, current_width = tensor.shape[2:]
-    ratio = max(current_width / 512, current_height / 512)
-    resized_height = int(current_height / ratio)
-    resized_width = int(current_width / ratio)
-    tensor = torch_f.interpolate(
-        tensor,
-        size=(resized_height, resized_width),
-        mode="bilinear",
-        align_corners=False,
-    )
-    tensor = torch_f.pad(
-        tensor,
-        (512 - resized_width, 0, 512 - resized_height, 0),
-        value=0,
-    )
-    return tensor.mul(2.0).sub(1.0)[0].permute(1, 2, 0).contiguous().numpy()
 
 
 def prepare_groot_image(image: np.ndarray, context: dict[str, Any]) -> np.ndarray:
@@ -337,10 +299,7 @@ class CompiledPolicyAdapter:
             raise ProtocolError(
                 f"bundle expects {len(image_specs)} cameras, robot supplied {len(images)}"
             )
-        if self.spec.name == "smolvla":
-            for tensor, image in zip(image_specs, images, strict=True):
-                tensors[tensor.name] = np.asarray(prepare_smolvla_image(image), dtype=DTYPE)
-        elif self.spec.name == "groot":
+        if self.spec.name == "groot":
             context = dict(self.spec.runtime_context)
             # One thread per camera: OpenCV, Pillow, torch and the large numpy
             # operations release the GIL, so two 640x480 frames take ~the time
@@ -413,10 +372,7 @@ def _prepare_qwen3_image(image: np.ndarray, context: dict[str, Any]) -> np.ndarr
     return value.permute(0, 3, 6, 4, 7, 2, 1, 5, 8).reshape(gh * gw, 3 * temporal * patch * patch).numpy()
 
 
-# -- PoLiMa's own SO-101 loop (polima.robot.so101_loop) ---------------------
-
-PATCH = 14  # GR00T vision patch side, in pixels
-
+# -- ACT bundles ----------------------------------------------------------------
 
 class BundlePolicy:
     def __init__(self, root: Path, address: str, task: str | int = "",
@@ -444,18 +400,9 @@ class BundlePolicy:
         """Robot-unit actions shaped like the bundle's response, and model time in ms."""
         state = np.asarray([observation[name] for name in self.joint_names], dtype=np.float32)
         images = [observation[key] for key in self.camera_keys]
-        if self.spec.name == "act":
-            return self.client.predict(images, state)
-        if self.spec.name != "groot":
-            raise ValueError(f"the robot client does not run {self.spec.display_name} yet")
-        tensors: dict[str, np.ndarray] = {"state": state}
-        wire = self.spec.wire.request_tensors
-        for tensor, image in zip((t for t in wire if t.name.startswith("patches")), images):
-            tensors[tensor.name] = groot_patches(image, self.context)
-        noise = next((t for t in wire if t.name == "noise"), None)
-        if noise is not None:  # flow matching starts each plan from fresh noise
-            tensors["noise"] = self.rng.standard_normal(noise.shape).astype(DTYPE)
-        return self.client.predict_raw(tensors, task_id=self.task_id)
+        if self.spec.name != "act":  # GR00T uses CompiledPolicyAdapter
+            raise ValueError(f"BundlePolicy runs ACT bundles, not {self.spec.display_name}")
+        return self.client.predict(images, state)
 
 
 def with_plan(spec: PolicySpec, plan: dict) -> PolicySpec:
@@ -483,83 +430,3 @@ def task_index(task: str | int, tasks: list[str], default: int = 0) -> int:
     if task in tasks:
         return tasks.index(task)
     raise ValueError(f"unknown task {task!r}; this bundle knows {tasks}")
-
-
-def groot_patches(image: np.ndarray, context: dict[str, Any]) -> np.ndarray:
-    """GR00T N1.6's evaluation transform for one camera, cut into 14x14 patches.
-
-    Follows the checkpoint's own eval pipeline (crop, resize), then Eagle's
-    bicubic resize to the compiled shape and mean/std normalization.
-    """
-    from PIL import Image
-
-    config = context.get("image_preprocess") or {}
-    if config.get("format") != "groot-eagle-image-v1" or config.get("color_space") != "RGB":
-        raise ValueError("this GR00T bundle has no Eagle image contract; repack it")
-    height, width = (int(value) for value in context["image_shape"])
-    evaluation, eagle = config["gr00t_eval"], config["eagle"]
-    frame = rgb(image)
-    frame = (eval_albumentations if evaluation.get("use_albumentations") else eval_torchvision)(
-        frame, evaluation)
-    frame = np.asarray(Image.fromarray(frame).resize((width, height), Image.Resampling.BICUBIC))
-    values = frame.astype(np.float32) * np.float32(eagle["rescale_factor"])
-    values = (values - np.float32(eagle["image_mean"])) / np.float32(eagle["image_std"])
-    rows, columns = height // PATCH, width // PATCH
-    patches = values.reshape(rows, PATCH, columns, PATCH, 3).transpose(0, 2, 1, 3, 4)
-    return np.ascontiguousarray(patches.reshape(rows * columns, PATCH * PATCH * 3), dtype=DTYPE)
-
-
-def eval_albumentations(frame: np.ndarray, config: dict[str, Any]) -> np.ndarray:
-    import cv2
-
-    if config.get("letter_box_transform"):
-        frame = letter_box(frame)
-    target, crop = config.get("image_target_size"), config.get("image_crop_size")
-    shortest = config.get("shortest_image_edge") or (target and target[0])
-    fraction = config.get("crop_fraction") or (target and crop and crop[0] / target[0])
-    if not shortest or not fraction:
-        raise ValueError("the bundle's GR00T crop settings are incomplete")
-
-    def resize(value: np.ndarray) -> np.ndarray:
-        scale = float(shortest) / min(value.shape[:2])
-        size = (round(value.shape[1] * scale), round(value.shape[0] * scale))
-        return cv2.resize(value, size, interpolation=cv2.INTER_AREA)
-
-    frame = resize(frame)
-    height, width = frame.shape[:2]
-    crop_h, crop_w = max(1, int(height * fraction)), max(1, int(width * fraction))
-    top, left = (height - crop_h) // 2, (width - crop_w) // 2
-    return resize(frame[top:top + crop_h, left:left + crop_w])
-
-
-def eval_torchvision(frame: np.ndarray, config: dict[str, Any]) -> np.ndarray:
-    import torch
-    from torchvision.transforms import InterpolationMode
-    from torchvision.transforms import functional as transforms
-
-    if config.get("letter_box_transform"):
-        frame = letter_box(frame)
-    target, crop = config["image_target_size"], config["image_crop_size"]
-    value = torch.from_numpy(np.ascontiguousarray(frame)).permute(2, 0, 1)
-    value = transforms.resize(value, list(target), InterpolationMode.BILINEAR, antialias=True)
-    value = transforms.center_crop(value, list(crop))
-    value = transforms.resize(value, list(target), InterpolationMode.BILINEAR, antialias=True)
-    return value.permute(1, 2, 0).contiguous().numpy()
-
-
-def letter_box(frame: np.ndarray) -> np.ndarray:
-    height, width = frame.shape[:2]
-    side = max(height, width)
-    top, left = (side - height) // 2, (side - width) // 2
-    boxed = np.zeros((side, side, 3), dtype=frame.dtype)
-    boxed[top:top + height, left:left + width] = frame
-    return boxed
-
-
-def rgb(image: np.ndarray) -> np.ndarray:
-    array = np.asarray(image)
-    if array.ndim == 3 and array.shape[0] == 3 and array.shape[-1] != 3:
-        array = array.transpose(1, 2, 0)
-    if array.ndim != 3 or array.shape[-1] != 3:
-        raise ValueError(f"expected an RGB camera frame, got {array.shape}")
-    return np.ascontiguousarray(array)

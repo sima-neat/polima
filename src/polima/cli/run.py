@@ -1,11 +1,11 @@
-"""`polima-run` -- run inference against a deployed bundle.
+"""`polima run` -- run inference against a deployed bundle.
 
 Three modes:
 
     --fixture            send the bundle's golden inputs and check the result
                          against expected_normalized_actions.f32
-    --compare HOST:PORT  A/B the same fixture through a second server (used to
-                         prove polima_server matches the legacy act_llima)
+    --compare HOST:PORT  send the same fixture to a second server and compare
+                         the two results
     --input-dir DIR      send arbitrary .f32 tensors
 """
 
@@ -34,12 +34,12 @@ from polima.wire.client import PolimaSOMClient
 
 
 def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="polima-run")
+    parser = argparse.ArgumentParser(prog="polima run")
     parser.add_argument("--bundle", required=True, help="bundle id or path (for fixtures)")
     parser.add_argument("--bundles-root", default=None)
     parser.add_argument(
-        "--board", default=None,
-        help="user@host or host:port (default: board.host from config, else 127.0.0.1)",
+        "--devkit", "--board", dest="board", default=None, metavar="ADDRESS",
+        help="the DevKit: user@host, a saved name or host:port (default: POLIMA_DEVKIT, else 127.0.0.1)",
     )
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--fixture", action="store_true", help="use the bundle's golden inputs")
@@ -69,7 +69,7 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     spec = spec_from_bundle(get_policy(bundle.policy), bundle)
     task_id = _resolve_task(args.task, bundle, fixture=args.fixture)
     port = args.port or config.board.port or spec.wire.default_port
-    # On the board itself the server is local; elsewhere name the board.
+    # On the DevKit itself the server is local; elsewhere name the DevKit.
     host = _host_of(config.board.host) or "127.0.0.1"  # --board is in config, saved DevKit names resolved
 
     inputs_dir = Path(args.input_dir) if args.input_dir else bundle.fixtures_dir / "inputs"
@@ -78,8 +78,8 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     client = PolimaSOMClient(spec, f"{host}:{port}", timeout=args.timeout)
     if not client.ping():
         print(
-            f"polima-run: nothing listening on {host}:{port}\n"
-            f"  start it with: polima-deploy --bundle {bundle.bundle_id} --port {port} --start",
+            f"polima run: nothing listening on {host}:{port}\n"
+            f"  start it with: polima deploy --bundle {bundle.bundle_id} --port {port} --start",
             file=sys.stderr,
         )
         return 2
@@ -96,7 +96,7 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
         if spec.name == "groot":
             stats_path = bundle.fixtures_dir / "normalization_stats.npz"
             if not stats_path.is_file():
-                raise SystemExit(f"polima-run: missing GR00T fixture {stats_path}")
+                raise SystemExit(f"polima run: missing GR00T fixture {stats_path}")
             with np.load(stats_path, allow_pickle=False) as stats:
                 result = compare_normalized_actions(
                     actions,
@@ -126,7 +126,7 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
             timeout=args.timeout,
         )
         if not reference_client.ping():
-            print(f"polima-run: cannot reach {args.compare}", file=sys.stderr)
+            print(f"polima run: cannot reach {args.compare}", file=sys.stderr)
             return 2
         reference, reference_latency = reference_client.predict_raw(tensors, task_id=task_id)
         result = report.add(
@@ -182,13 +182,13 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
 def _resolve_task(value: str | None, bundle: Bundle, *, fixture: bool) -> int:
     if not bundle.tasks:
         if value not in (None, "0"):
-            raise SystemExit("polima-run: this bundle has no task catalog")
+            raise SystemExit("polima run: this bundle has no task catalog")
         return 0
     if value is None:
         if fixture:
             return int(bundle.default_task)
         raise SystemExit(
-            "polima-run: --task is required for this multi-task bundle; "
+            "polima run: --task is required for this multi-task bundle; "
             "use a catalog id or exact instruction"
         )
     try:
@@ -200,14 +200,14 @@ def _resolve_task(value: str | None, bundle: Bundle, *, fixture: bool) -> int:
                 f"  {index}: {instruction}" for index, instruction in enumerate(bundle.tasks)
             )
             raise SystemExit(
-                f"polima-run: task {value!r} is not in this bundle:\n{choices}"
+                f"polima run: task {value!r} is not in this bundle:\n{choices}"
             ) from None
         task_id = matches[0]
     if not 0 <= task_id < len(bundle.tasks):
-        raise SystemExit(f"polima-run: task id {task_id} outside [0, {len(bundle.tasks)})")
+        raise SystemExit(f"polima run: task id {task_id} outside [0, {len(bundle.tasks)})")
     if fixture and task_id != bundle.default_task:
         raise SystemExit(
-            f"polima-run: the bundled smoke fixture is for task "
+            f"polima run: the bundled smoke fixture is for task "
             f"{bundle.default_task}, not task {task_id}"
         )
     return task_id
@@ -223,11 +223,11 @@ def _load_tensors(spec, inputs_dir: Path) -> dict[str, np.ndarray]:
     for tensor in spec.wire.request_tensors:
         path = inputs_dir / f"{tensor.name}.f32"
         if not path.is_file():
-            raise SystemExit(f"polima-run: missing fixture {path}")
+            raise SystemExit(f"polima run: missing fixture {path}")
         values = np.fromfile(path, dtype="<f4")
         if values.size != tensor.elements:
             raise SystemExit(
-                f"polima-run: {path.name} holds {values.size} floats, "
+                f"polima run: {path.name} holds {values.size} floats, "
                 f"tensor {tensor.name} needs {tensor.elements}"
             )
         tensors[tensor.name] = values
@@ -240,5 +240,5 @@ def _resolve_bundle(reference: str, bundles_root: str | None) -> Bundle:
         candidate = Path(bundles_root or (outputs_root() / "bundles")) / reference
     manifest = candidate / "bundle.json"
     if not manifest.is_file():
-        raise SystemExit(f"polima-run: no bundle at {candidate}")
+        raise SystemExit(f"polima run: no bundle at {candidate}")
     return Bundle.from_dict(read_json(manifest), candidate)

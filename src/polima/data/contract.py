@@ -1,25 +1,18 @@
 """Dataset contract validation, driven by DatasetContract instead of hardcoded.
 
-Generalizes ACT/scripts/validate_act_datasets.py -- the only dataset validator in
-the legacy tree. Its SO-101 assertions (six named joints, exactly two camera
-keys, HWC [480,640,3], 30 fps, single task) are inlined constants there, so
-SmolVLA and GR00T get nothing but `[[ -f meta/info.json ]]`. Making the rules
-data means every policy is validated by the same code.
-
-Two behavioural differences from the legacy script, both deliberate:
+The rules (named joints, camera keys, image shape, fps, single task) are data,
+so every policy is validated by the same code. Two properties:
 
   * it collects ALL violations instead of raising on the first, so one run tells
     you everything wrong with a dataset; and
   * pyarrow is optional. When it is missing, task checking degrades to a
     recorded "skipped" rather than an ImportError, because this module is
-    imported on the board where pyarrow is not installed.
-
-`polima data validate` reproduces the legacy verdict exactly; see
-tests/unit/test_contract.py and the Phase-0 parity proof.
+    imported on the DevKit where pyarrow is not installed.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,8 +25,8 @@ from polima.util.jsonio import read_json
 def canonical_task(value: str) -> str:
     """Casefold, collapse whitespace, strip trailing sentence punctuation.
 
-    Verbatim from ACT/scripts/validate_act_datasets.py:20-21 -- byte-identical
-    behaviour matters, since it decides whether two datasets may be combined.
+    The exact behaviour matters, since it decides whether two datasets may be
+    combined.
     """
     return re.sub(r"[.!?]+$", "", " ".join(value.casefold().split())).strip()
 
@@ -111,13 +104,13 @@ def validate(
     if contract.fps and info.get("fps") != contract.fps:
         report.fail(f"{root}: requires {contract.fps} fps, found {info.get('fps')!r}")
 
-    if contract.codebase_version and report.codebase_version:
-        if report.codebase_version != contract.codebase_version:
-            report.fail(
-                f"{root}: codebase_version {report.codebase_version!r}, "
-                f"contract requires {contract.codebase_version!r}"
-                + (" (a converter is configured)" if contract.converter else "")
-            )
+    accepted = contract.codebase_version
+    accepted = (accepted,) if isinstance(accepted, str) else tuple(accepted or ())
+    if accepted and report.codebase_version and report.codebase_version not in accepted:
+        report.fail(
+            f"{root}: codebase_version {report.codebase_version!r}, "
+            f"needs {' or '.join(accepted)}"
+        )
 
     for relative in contract.extra_meta_files:
         if not (root / relative).is_file():
@@ -135,9 +128,9 @@ def validate_all(
 ) -> tuple[list[DatasetReport], list[str]]:
     """Validate several roots and cross-check that they describe one task.
 
-    Mirrors main() in validate_act_datasets.py, which rejects combining datasets
-    with different task labels unless --allow-mixed-tasks is given (ACT has no
-    language conditioning, so mixing tasks silently degrades the policy).
+    Rejects combining datasets with different task labels unless
+    --allow-mixed-tasks is given (ACT has no language conditioning, so mixing
+    tasks silently degrades the policy).
     """
     reports = [validate(root, contract, allow_mixed_tasks=allow_mixed_tasks) for root in roots]
     tasks = sorted({task for report in reports for task in report.tasks})
@@ -205,18 +198,21 @@ def _check_tasks(
     contract: DatasetContract,
     allow_mixed_tasks: bool,
 ) -> None:
-    if not tasks_path.is_file():
+    jsonl = tasks_path.with_name("tasks.jsonl")  # LeRobot v2.x
+    if jsonl.is_file() and not tasks_path.is_file():
+        labels = [str(json.loads(line)["task"]) for line in jsonl.read_text().splitlines() if line.strip()]
+    elif not tasks_path.is_file():
         report.task_check = "skipped-missing"
-        report.fail(f"{root}: missing meta/tasks.parquet")
+        report.fail(f"{root}: missing meta/tasks.parquet (or meta/tasks.jsonl)")
         return
-    try:
-        import pyarrow.parquet as parquet  # noqa: PLC0415 - absent on the board
-    except ImportError:
-        report.task_check = "skipped-no-pyarrow"
-        return
-
-    table = parquet.read_table(tasks_path, columns=["task"])
-    labels = [str(value) for value in table.column("task").to_pylist()]
+    else:
+        try:
+            from pyarrow import parquet
+        except ImportError:
+            report.task_check = "skipped-no-pyarrow"
+            return
+        table = parquet.read_table(tasks_path, columns=["task"])
+        labels = [str(value) for value in table.column("task").to_pylist()]
     canonicalize = canonical_task
     if contract.task_canonicalizer:
         from polima.policies.base import resolve

@@ -1,14 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PoLiMa Workbench</title>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("polima-theme")||"dark"}catch(e){}</script>
 <link rel="icon" href="/logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
-/* Layout: PoLiMa Studio's shell (header + left nav + work area), reused so the computer and board halves read as one product. */
+/* Layout: PoLiMa Studio's shell (header + left nav + work area), reused so the computer and DevKit halves read as one product. */
 :root {
   --page:#f4f6f8; --header:rgba(255,255,255,.94); --sidebar:#fafbfc;
   --surface:#fff; --surface-2:#f7f9fa; --surface-3:#edf1f4; --line:#dfe4ea;
@@ -22,19 +23,19 @@
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --page:#0c0f14; --header:rgba(21,26,33,.94); --sidebar:#11161d;
-  --surface:#151a21; --surface-2:#1b212a; --surface-3:#222a35; --line:#29323d;
-  --text:#e9edf2; --muted:#a7b0bd; --faint:#76818f; --accent:#2fd4c0;
-  --accent-dark:#4fdccb; --accent-soft:#10322f; --ok:#35c489; --ok-soft:#12301f;
-  --warn:#e0a84a; --warn-soft:#33270f; --danger:#ef5b62; --danger-soft:#3a1719;
+  --page:#0b1020; --header:rgba(15,23,43,.96); --sidebar:#0c1324;
+  --surface:#121d34; --surface-2:#182641; --surface-3:#203151; --line:#2c3e60;
+  --text:#edf4ff; --muted:#b1bfd6; --faint:#8e9fbc; --accent:#26e5dc;
+  --accent-dark:#67f0e6; --accent-soft:#123a43; --ok:#69e5b1; --ok-soft:#153831;
+  --warn:#e0a84a; --warn-soft:#33270f; --danger:#ff869c; --danger-soft:#382338;
   --info:#7aa2f2; --info-soft:#17233d;
   --shadow:0 1px 2px rgba(0,0,0,.35),0 10px 28px rgba(0,0,0,.3); color-scheme:dark; } }
 :root[data-theme="dark"] {
-  --page:#0c0f14; --header:rgba(21,26,33,.94); --sidebar:#11161d;
-  --surface:#151a21; --surface-2:#1b212a; --surface-3:#222a35; --line:#29323d;
-  --text:#e9edf2; --muted:#a7b0bd; --faint:#76818f; --accent:#2fd4c0;
-  --accent-dark:#4fdccb; --accent-soft:#10322f; --ok:#35c489; --ok-soft:#12301f;
-  --warn:#e0a84a; --warn-soft:#33270f; --danger:#ef5b62; --danger-soft:#3a1719;
+  --page:#0b1020; --header:rgba(15,23,43,.96); --sidebar:#0c1324;
+  --surface:#121d34; --surface-2:#182641; --surface-3:#203151; --line:#2c3e60;
+  --text:#edf4ff; --muted:#b1bfd6; --faint:#8e9fbc; --accent:#26e5dc;
+  --accent-dark:#67f0e6; --accent-soft:#123a43; --ok:#69e5b1; --ok-soft:#153831;
+  --warn:#e0a84a; --warn-soft:#33270f; --danger:#ff869c; --danger-soft:#382338;
   --info:#7aa2f2; --info-soft:#17233d;
   --shadow:0 1px 2px rgba(0,0,0,.35),0 10px 28px rgba(0,0,0,.3); color-scheme:dark; }
 
@@ -78,15 +79,15 @@ nav a[aria-current="page"] { color:var(--accent-dark); background:var(--accent-s
 .machine b { font-size:12px; }
 .machine .row { display:flex; justify-content:space-between; gap:8px; color:var(--muted); }
 
-main { min-width:0; padding:28px clamp(16px,3vw,40px) 60px; }
+main { min-width:0; padding:clamp(24px,2.5vw,40px) clamp(16px,3vw,56px) 48px; }
 .mock-note { display:flex; gap:10px; align-items:flex-start; margin-bottom:22px; padding:10px 14px; border:1px dashed color-mix(in srgb,var(--info) 50%,var(--line)); border-radius:10px; background:var(--info-soft); color:var(--text); font-size:12.5px; max-width:980px; }
 .mock-note b { color:var(--info); }
-.view { display:none; max-width:1180px; }
+.view { display:none; width:100%; min-width:0; }
 .view.active { display:grid; gap:20px; }
-#v-compare { max-width:none; }
+
 td.nw { white-space:nowrap; }
 .eyebrow { margin:0 0 4px; color:var(--accent-dark); font:700 10.5px var(--sans); letter-spacing:.14em; text-transform:uppercase; }
-.view-head h2 { font-size:22px; letter-spacing:-.015em; }
+.view-head h2 { font-size:clamp(24px,1.5vw,32px); letter-spacing:-.015em; }
 .view-head p { margin:6px 0 0; color:var(--muted); max-width:68ch; }
 
 .panel { border:1px solid var(--line); border-radius:12px; background:var(--surface); box-shadow:var(--shadow); min-width:0; }
@@ -114,10 +115,10 @@ a.btn.primary { color:var(--surface); }
 code { font-family:var(--mono); font-size:12px; }
 
 /* Pipeline (home) */
-.pipeline { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:0; }
-.stage { position:relative; padding:16px 14px 16px 18px; border-right:1px solid var(--line); display:grid; gap:6px; align-content:start; }
+.pipeline { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:0; }
+.stage { position:relative; padding:16px 14px 16px 18px; border-right:1px solid var(--line); display:grid; grid-template-rows:auto auto 1fr auto; gap:10px; align-content:start; }
 .stage:last-child { border-right:0; }
-.stage .k { color:var(--faint); font:600 10.5px var(--mono); letter-spacing:.06em; text-transform:uppercase; }
+.stage .k { color:var(--accent); font:700 14px var(--mono); letter-spacing:.06em; text-transform:uppercase; }
 .stage b { font-size:14px; }
 .stage p { margin:0; color:var(--muted); font-size:12.5px; }
 .stage .where { font:600 10px var(--mono); color:var(--faint); }
@@ -132,11 +133,15 @@ tr:last-child td { border-bottom:0; }
 td.r,th.r { text-align:right; }
 tbody tr.sel { background:var(--accent-soft); }
 .scroll { overflow-x:auto; }
+.view > * { min-width:0; }
+#validation-comparison { display:grid; gap:20px; }
+.kv dd { min-width:0; overflow-wrap:anywhere; }
+@media(max-width:560px) { #chip-boards { display:none; } }
 .sub { display:block; color:var(--faint); font-size:11.5px; }
 
 /* Compile */
 .form { display:grid; gap:14px; }
-.field { display:grid; gap:6px; }
+.field { display:grid; min-width:0; gap:6px; }
 .field label { font-size:12px; font-weight:600; color:var(--muted); }
 .field select,.field input { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); }
 .seg { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
@@ -195,13 +200,36 @@ tbody tr.sel { background:var(--accent-soft); }
   .hdr-right .chip.hide-sm { display:none; }
 }
 @media (prefers-reduced-motion:reduce) { *,*::before { animation:none!important; transition:none!important; } }
+
+/* Shared navy / cyan polish; existing navigation and view layout stay intact. */
+body { background:radial-gradient(900px 480px at 90% 0,color-mix(in srgb,var(--accent) 6%,transparent),transparent 70%),var(--page); }
+.panel-h { background:linear-gradient(110deg,var(--surface-2),var(--surface)); border-radius:12px 12px 0 0; }
+.section-icon { margin-right:9px; font-size:15px; }
+.btn.primary,a.btn.primary { color:#062a2c; background:linear-gradient(110deg,var(--accent),color-mix(in srgb,var(--accent) 55%,var(--ok))); box-shadow:0 3px 14px color-mix(in srgb,var(--accent) 12%,transparent); }
+:root[data-theme="light"] .btn.primary { color:#fff; }
+.btn.primary:hover { color:#062a2c; filter:brightness(1.08); }
+nav a[aria-current="page"] { box-shadow:inset 3px 0 var(--accent); }
+th { background:var(--surface-2); color:var(--muted); }
+tbody tr:hover { background:color-mix(in srgb,var(--accent) 4%,var(--surface)); }
+.score { color:var(--accent-dark); }
+.metric-note { color:var(--muted); font-size:12px; padding:0 18px 16px; margin:0; }
+.comparison-row { display:grid; grid-template-columns:minmax(100px,1fr) 90px; gap:8px 16px; padding:14px 18px; border-bottom:1px solid var(--line); }
+.comparison-row:last-child { border-bottom:0; }
+.comparison-row b { font-size:12px; overflow-wrap:anywhere; }
+.comparison-row .sub { overflow-wrap:anywhere; }
+.comparison-value { text-align:right; color:var(--accent-dark); font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+.comparison-value small { display:block; color:var(--muted); font-size:10px; font-weight:500; }
+.comparison-track { grid-column:1/-1; height:7px; border-radius:8px; background:var(--surface-3); overflow:hidden; }
+.comparison-track i { display:block; height:100%; border-radius:8px; background:linear-gradient(90deg,var(--accent),#55b8ff); }
+.comparison-source { grid-column:1/-1; display:flex; flex-wrap:wrap; gap:5px 10px; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+.comparison-source .fail { color:var(--danger); }.comparison-source .pass { color:var(--ok); }
 </style>
 </head>
 <body>
 
 <div class="shell">
   <header>
-    <div class="brand"><img class="mark" src="/logo.svg" alt="PoLiMa"><div><h1>PoLiMa Workbench</h1><small>On this computer · compile, compare, send to a Modalix board</small></div></div>
+    <div class="brand"><img class="mark" src="/logo.svg" alt="PoLiMa"><div><h1>PoLiMa Workbench</h1><small>Robotics deployment</small></div></div>
     <div class="hdr-right">
       <span id="chip-compiler"></span>
       <span id="chip-boards"></span>
@@ -217,7 +245,7 @@ tbody tr.sel { background:var(--accent-soft); }
         <a href="#models" data-v="models"><span class="n"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M7 10l5 5 5-5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></span>Models</a>
         <a href="#compile" data-v="compile"><span class="n"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></svg></span>Compile</a>
         <a href="#compare" data-v="compare"><span class="n"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18a8 8 0 1 1 16 0"/><path d="m12 18 4-6M7 18h10"/></svg></span>Compare</a>
-        <a href="#boards" data-v="boards"><span class="n"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19v-7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7"/><path d="M8 10V7a4 4 0 0 1 8 0v3M9 15h6M12 12v6"/></svg></span>Boards</a>
+        <a href="#boards" data-v="boards"><span class="n"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19v-7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7"/><path d="M8 10V7a4 4 0 0 1 8 0v3M9 15h6M12 12v6"/></svg></span>DevKits</a>
         <a href="#runs" data-v="runs"><span class="n"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/></svg></span>Robot runs</a>
       </nav>
     </div>
@@ -234,28 +262,37 @@ tbody tr.sel { background:var(--accent-soft); }
 
     <!-- OVERVIEW -->
     <section class="view" id="v-home">
-      <div class="view-head"><p class="eyebrow">Overview</p><h2>From checkpoint to a measured robot policy</h2><p>The first three steps happen on this computer; running the arm happens on the Modalix board, through its Studio.</p></div>
+      <div class="view-head"><p class="eyebrow">Overview</p><h2>Deployment overview</h2><p>Compile, validate and deploy robot policies.</p><a class="btn" href="/guide" target="_blank" rel="noopener">Setup guide ↗</a></div>
       <div class="panel">
-        <div class="panel-h"><h3>Where things stand</h3><span><small id="updated"></small> <button class="btn" id="refresh">Refresh</button></span></div>
+        <div class="panel-h"><h3><span class="section-icon" aria-hidden="true">🧭</span>Deployment status</h3><span><small id="updated"></small> <button class="btn" id="refresh">Refresh</button></span></div>
         <div class="pipeline" id="pipeline"></div>
       </div>
-      <div class="panel">
-        <div class="panel-h"><h3>Policy readiness</h3><small>Each bundle, checkpoint to measured skill</small></div>
+      <div class="panel" id="readiness-panel">
+        <div class="panel-h"><h3><span class="section-icon" aria-hidden="true">🤖</span>Policy readiness</h3><small>Readiness by bundle</small></div>
         <div class="scroll"><table class="readiness-table">
           <thead><tr><th>Bundle</th><th>Installed</th><th>Benchmark</th><th>Robot run</th><th>Reviewed</th><th>Compared</th><th>Export</th><th>Next</th><th>Evidence</th></tr></thead>
           <tbody id="policy-readiness"></tbody></table></div>
       </div>
       <div class="grid2">
-        <div class="panel"><div class="panel-h"><h3>Latest builds</h3></div><div class="panel-b"><ul class="checks" id="recent"></ul></div></div>
-        <div class="panel"><div class="panel-h"><h3>Before you start</h3></div><div class="panel-b"><ul class="checks" id="readiness"></ul></div></div>
+        <div class="panel"><div class="panel-h"><h3><span class="section-icon" aria-hidden="true">📦</span>Latest builds</h3></div><div class="panel-b"><ul class="checks" id="recent"></ul></div></div>
+        <div class="panel"><div class="panel-h"><h3><span class="section-icon" aria-hidden="true">✓</span>Prerequisites</h3></div><div class="panel-b"><ul class="checks" id="readiness"></ul></div></div>
       </div>
     </section>
 
     <!-- MODELS -->
     <section class="view" id="v-models">
-      <div class="view-head"><p class="eyebrow">Step 1 · Models</p><h2>Trained checkpoints</h2><p>Checkpoints found in this computer's model folders. PoLiMa does not train: train with LeRobot (or GR00T's own scripts) and point PoLiMa at the result.</p></div>
+      <div class="view-head"><p class="eyebrow">Step 1 · Models</p><h2>Model checkpoints</h2><p>Select a trained checkpoint for compilation.</p></div>
+      <div class="panel"><div class="panel-h"><h3>Import files</h3><a href="/guide#inputs" target="_blank" rel="noopener">What to upload ↗</a></div><div class="panel-b form">
+        <p>Choose a folder on this computer. Files are uploaded to the Workbench host.</p>
+        <div><label class="btn primary" for="upload-checkpoint">Upload checkpoint</label> <input id="upload-checkpoint" type="file" webkitdirectory multiple hidden>
+        <label class="btn" for="upload-dataset">Upload dataset</label> <input id="upload-dataset" type="file" webkitdirectory multiple hidden></div>
+        <progress id="upload-progress" max="100" value="0" hidden aria-label="Upload progress"></progress>
+        <p id="upload-message" role="status"></p><button class="btn" id="upload-retry" hidden>Resume upload</button> <button class="btn" id="upload-discard" hidden>Discard upload</button>
+        <p class="sub">Upload extracted folders, up to 64 GiB. Large files transfer in chunks. Keep this page open until the upload completes.</p>
+        <details><summary>Files already on the Workbench host</summary><p>Start Workbench with <code>--models /path/to/checkpoints</code>. Dataset paths can be entered on the Compile page. These paths refer to the host running Workbench.</p></details>
+      </div></div>
       <div class="panel">
-        <div class="panel-h"><h3>Checkpoints</h3><small id="model-folders"></small></div>
+        <div class="panel-h"><h3><span class="section-icon" aria-hidden="true">🧠</span>Checkpoints</h3><small id="model-folders"></small></div>
         <div class="scroll"><table>
           <thead><tr><th>Policy</th><th>Training run</th><th class="r">Step</th><th>Saved</th><th></th></tr></thead>
           <tbody id="checkpoints"></tbody></table></div>
@@ -264,23 +301,33 @@ tbody tr.sel { background:var(--accent-soft); }
 
     <!-- COMPILE -->
     <section class="view" id="v-compile">
-      <div class="view-head"><p class="eyebrow">Step 2 · Compile</p><h2>Compile for the Modalix accelerator</h2><p>Export to ONNX, check it against PyTorch, compile each part, package it, and test the package on stored inputs. A failed check stops the build and says why.</p></div>
+      <div class="view-head"><p class="eyebrow">Step 2 · Compile</p><h2>Compile a model</h2><p>Build a deployment bundle for Modalix.</p></div>
       <div class="grid2">
-        <div class="panel"><div class="panel-h"><h3>Settings</h3></div><div class="panel-b form">
+        <div class="panel"><div class="panel-h"><h3><span class="section-icon" aria-hidden="true">⚙️</span>Settings</h3></div><div class="panel-b form">
           <div class="field"><label for="ckpt">Checkpoint</label><select id="ckpt"></select></div>
-          <div class="callout ok" id="compile-note"><span>Compiling from this page comes next. Until then, run the command on the right in a terminal on this computer.</span></div>
+          <div class="field"><label for="dataset">Dataset</label><input id="dataset" list="dataset-options" placeholder="Select an uploaded dataset or enter a host path"><datalist id="dataset-options"></datalist></div>
+          <p class="sub">Representative observations are required for export and validation, including BF16. No retraining. <a href="/guide#inputs" target="_blank" rel="noopener">Prepare your dataset ↗</a></p>
+          <div><button class="btn" id="check-setup">Check prerequisites</button> <a href="/guide#compiler" target="_blank" rel="noopener">Compiler setup ↗</a></div>
+          <ul class="checks" id="compile-checks" aria-live="polite"></ul>
+          <button class="btn primary" id="compile-start">Compile for Modalix</button>
+          <p id="workflow-message" role="status"></p>
         </div></div>
-        <div class="panel"><div class="panel-h"><h3>Command</h3><button class="btn" id="copy">Copy</button></div><div class="panel-b">
-          <pre class="log" id="command"></pre>
+        <div class="panel"><div class="panel-h"><h3>Build output</h3></div><div class="panel-b">
+          <details><summary>Command details</summary><button class="btn" id="copy">Copy</button><pre class="log" id="command"></pre></details><h4>Build log</h4><pre class="log" id="workflow-log" aria-label="Build log">Ready to compile.</pre>
         </div></div>
       </div>
     </section>
 
     <!-- COMPARE -->
     <section class="view" id="v-compare">
-      <div class="view-head"><p class="eyebrow">Step 3 · Compare</p><h2>Compiled builds</h2><p>Every bundle in this computer's bundle folders. Accuracy and speed comparisons will sit next to each build.</p></div>
+      <div class="view-head"><p class="eyebrow">Step 2 · Validate</p><h2>Compare models</h2><p>Evaluate numerical fidelity and inference performance.</p></div>
+      <div id="validation-comparison"></div><div id="measured-comparison" class="grid2"></div>
+      <div class="panel"><div class="panel-h"><h3>🔎 Model inspection</h3></div><div class="panel-b form">
+        <div class="field"><label for="inspect-build">Build</label><select id="inspect-build"></select></div>
+        <div id="inspection"></div>
+      </div></div>
       <div class="panel">
-        <div class="panel-h"><h3>Bundles</h3><small id="bundle-folders"></small></div>
+        <div class="panel-h"><h3><span class="section-icon" aria-hidden="true">📦</span>Bundles</h3><small id="bundle-folders"></small></div>
         <div class="manifest-export" id="manifest-export"></div>
         <div class="scroll"><table>
           <thead><tr><th>Build</th><th>Policy</th><th>Precision</th><th class="r">Size</th><th class="r">Median</th><th class="r">p99</th><th class="r">Rate</th><th>Check</th><th>Latest robot run</th><th>Reviewed</th><th>Success</th><th>Partial+</th><th>Top failures</th><th>Robot latency</th></tr></thead>
@@ -288,34 +335,76 @@ tbody tr.sel { background:var(--accent-soft); }
       </div>
     </section>
 
-    <!-- BOARDS -->
+    <!-- DEVKITS -->
     <section class="view" id="v-boards">
-      <div class="view-head"><p class="eyebrow">Step 4 · Boards</p><h2>Modalix DevKits</h2><p>Your DevKits, on the network or cabled straight to this computer. PoLiMa reaches each one over ssh; its Studio page installs builds and runs the arm.</p></div>
-      <div class="panel"><div class="panel-h"><h3>Add a DevKit</h3></div><div class="panel-b form">
+      <div class="view-head"><p class="eyebrow">Step 3 · Deploy</p><h2>Modalix DevKits</h2><p>Connect devices and deploy bundles.</p></div>
+      <div class="panel"><div class="panel-h"><h3>📦 Deploy a compiled bundle</h3></div><div class="panel-b form">
+        <div class="grid2"><div class="field"><label for="deploy-bundle">Bundle</label><select id="deploy-bundle"></select></div>
+        <div class="field"><label for="deploy-devkit">Saved DevKit</label><select id="deploy-devkit"></select></div></div>
+        <label><input type="checkbox" id="deploy-server"> Start inference server after deployment</label>
+        <p class="sub">Deployment uses the saved DevKit configuration. Open its Studio below to configure and run the robot.</p>
+        <button class="btn primary" id="deploy-start">Deploy bundle</button><p id="deploy-message" role="status"></p>
+      </div></div>
+      <div class="panel"><div class="panel-h"><h3><span class="section-icon" aria-hidden="true">🔌</span>Add a DevKit</h3></div><div class="panel-b form">
         <div class="grid2">
           <div class="field"><label for="dk-host">Address</label><input id="dk-host" placeholder="sima@192.168.1.20" autocomplete="off"></div>
           <div class="field"><label for="dk-name">Name (optional)</label><input id="dk-name" placeholder="lab-devkit" autocomplete="off"></div>
         </div>
-        <div class="field"><label for="dk-key">SSH key on this computer (optional)</label><input id="dk-key" placeholder="~/.ssh/id_ed25519" autocomplete="off"></div>
-        <p class="sub">ssh must log in without a password. Saved DevKits also work as <code>polima deploy --board &lt;name&gt;</code>.</p>
-        <div><button class="btn primary" id="dk-add">Add and check</button> <span class="sub" id="dk-msg"></span></div>
+        <div class="grid2">
+          <div class="field"><label for="dk-password">DevKit password (first time only)</label><input id="dk-password" type="password" autocomplete="off"></div>
+          <div class="field"><label for="dk-key">SSH key on Workbench host (optional)</label><input id="dk-key" placeholder="~/.ssh/id_ed25519" autocomplete="off"></div>
+        </div>
+        <p class="sub">Use an existing SSH key, or enter the DevKit password to authorize a key from the Workbench host. This changes SSH access only. Passwords are never stored. <a href="/guide#devkit" target="_blank" rel="noopener">Install PoLiMa on a new DevKit ↗</a>.</p>
+        <div><button class="btn primary" id="dk-add">Connect DevKit</button> <span class="sub" id="dk-msg"></span></div>
       </div></div>
       <div class="grid2" id="boards"></div>
     </section>
 
     <!-- RUNS -->
     <section class="view" id="v-runs">
-      <div class="view-head"><p class="eyebrow">Step 5 · Robot runs</p><h2>What happened on the arm</h2><p>Runs are started and stopped from the board's Studio, where the safety check and Emergency Halt live. Their history shows here.</p></div>
+      <div class="view-head"><p class="eyebrow">Step 3 · Run</p><h2>Robot runs</h2><p>Review execution history from connected DevKits.</p></div>
       <div class="panel">
-        <div class="panel-h"><h3>Recent runs</h3></div>
+        <div class="panel-h"><h3><span class="section-icon" aria-hidden="true">📊</span>Recent runs</h3></div>
         <div class="scroll"><table>
-          <thead><tr><th>Board</th><th>Build</th><th>Task</th><th>Result</th><th>When</th></tr></thead>
+          <thead><tr><th>DevKit</th><th>Build</th><th>Task</th><th>Result</th><th>When</th></tr></thead>
           <tbody id="runs"></tbody></table></div>
       </div>
     </section>
   </main>
 </div>
 
+<script id="comparison-renderer">
+// Presentation only: values and provenance come from each bundle's recorded evidence.
+function comparisonCards(builds) {
+  const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const valid = value => Number.isFinite(value) && value >= 0;
+  if (!builds.length) return '<div class="panel panel-b">No measured bundles yet. Compile a policy and benchmark it in Studio.</div>';
+  return [{key:"median_ms",title:"⏱ Latency · p50",unit:"ms",hint:"Measured on the DevKit"},
+          {key:"rate_hz",title:"⚡ Inference rate",unit:"Hz",hint:"Policy evaluations per second"}].map(metric => {
+    const max = Math.max(0, ...builds.map(b => valid(b.evidence?.[metric.key]) ? b.evidence[metric.key] : 0));
+    return '<section class="panel"><div class="panel-h"><h3>'+metric.title+'</h3></div><p class="metric-note">'+metric.hint+'</p>'+builds.map(b => {
+      const e = b.evidence, value = e?.[metric.key];
+      const check = e?.check === "pass" ? "Output verified" : e?.check === "fail" ? "Output check failed" : "No output reference";
+      return '<div class="comparison-row"><div><b>'+escape(b.policy)+'</b><span class="sub mono">'+escape(b.id)+'</span></div>'+
+        '<div class="comparison-value">'+(valid(value) ? value.toFixed(1) : "—")+'<small>'+(valid(value) ? metric.unit : '')+'</small></div>'+
+        (valid(value) ? '<div class="comparison-track" aria-hidden="true"><i style="width:'+(max > 0 ? value/max*100 : 0)+'%"></i></div>' : '')+
+        '<div class="comparison-source">'+(e ? '<span>'+escape(e.board || "DevKit not recorded")+'</span><span>'+(valid(e.iterations) ? e.iterations+' runs' : "Run count unavailable")+'</span><span class="'+(e.check === "pass" ? "pass" : e.check === "fail" ? "fail" : "")+'">'+check+'</span>' : "Not measured")+'</div></div>';
+    }).join("")+'<p class="metric-note">Compare under equivalent test conditions.</p></section>';
+  }).join("");
+}
+function validationTable(builds) {
+  const esc = v => String(v ?? "").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const num = v => Number.isFinite(v) ? (Math.abs(v) < .001 && v !== 0 ? v.toExponential(2) : v > .99 && v <= 1 ? v.toFixed(8) : v.toFixed(5)) : "—";
+  const rows = builds.flatMap(b => {
+    const v = b.validation || {}, e = b.evidence;
+    return [["ONNX / PyTorch", v.export], ["Compiled / PyTorch", v.compiled],
+      ["Runtime / reference", e ? {ok:e.check==='pass' ? true : e.check==='fail' ? false : null, cosine:e.cosine,mean_abs:e.mean_abs,max_abs:e.max_abs,source:e.board} : null]].filter(([stage,r]) => stage !== 'Runtime / reference' || r).map(([stage,r]) =>
+      '<tr><td><b title="'+esc(b.id)+'">'+esc(b.policy)+'</b><span class="sub mono">'+esc(b.id.slice(-8))+'</span><span class="sub">'+esc((b.precision || []).join(' / '))+'</span></td><td>'+stage+'</td><td>'+num(r?.action_cosine_similarity ?? r?.cosine)+'</td><td>'+num(r?.mean_abs)+'</td><td>'+num(r?.max_abs)+'</td><td>'+(r?.ok === true ? 'Pass' : r?.ok === false ? 'Fail' : r ? 'Reported' : 'Not measured')+'</td><td>'+esc(r?.source || 'Run device validation')+'</td></tr>');
+  }).join('');
+  return '<section class="panel"><div class="panel-h"><h3>Numerical fidelity</h3><small>Reference: PyTorch or packaged fixture</small></div><div class="scroll"><table><thead><tr><th>Model / bundle precision</th><th>Comparison</th><th>Cosine similarity</th><th>Mean absolute error</th><th>Maximum error</th><th>Status</th><th>Source</th></tr></thead><tbody>'+rows+'</tbody></table></div><p class="metric-note">Output agreement, not task accuracy. A dash means the source report did not record that metric. Device results require a separate validation run.</p></section>';
+}
+
+</script>
 <script>
 (function () {
   var views = ["home", "models", "compile", "compare", "boards", "runs"], data = null;
@@ -338,27 +427,26 @@ tbody tr.sel { background:var(--accent-soft); }
     var r = document.documentElement, cur = r.getAttribute("data-theme");
     var dark = cur ? cur === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
     r.setAttribute("data-theme", dark ? "light" : "dark");
+    try { localStorage.setItem("polima-theme", dark ? "light" : "dark"); } catch (_) {}
   });
 
   function render() {
     var c = data.computer, ck = data.checkpoints, bd = data.bundles, boards = data.boards;
     var online = boards.filter(function (b) { return b.online; });
-    $("updated").textContent = "Folders read at " + new Date(data.generated * 1000).toLocaleTimeString();
+    $("updated").textContent = "Updated " + new Date(data.generated * 1000).toLocaleTimeString();
     $("chip-compiler").innerHTML = c.compiler ? chip("ok hide-sm", "ModelSDK found") : chip("warn hide-sm", "ModelSDK not found");
-    $("chip-boards").innerHTML = boards.length ? chip(online.length ? "ok" : "bad", online.length + " of " + boards.length + " boards online") : chip("", "No board added");
+    $("chip-boards").innerHTML = boards.length ? chip(boards.some(function(b) { return b.online || b.ssh?.reachable; }) ? "ok" : "bad", boards.filter(function(b) { return b.online || b.ssh?.reachable; }).length + " of " + boards.length + " DevKits connected") : chip("", "No DevKit added");
     $("host").textContent = c.host;
     $("machine-ck").textContent = ck.length;
     $("machine-bd").textContent = bd.length;
 
     var steps = [
-      ["Step 1 · Model", ck.length + " checkpoints", "Found in " + c.model_folders.length + " folder(s).", ck.length ? "done" : "next", "models"],
-      ["Step 2 · Compile", bd.length + " builds", c.compiler ? "Model compiler ready." : "Install the SiMa ModelSDK to compile.", bd.length ? "done" : "next", "compile"],
-      ["Step 3 · Compare", "Builds side by side", "Accuracy and speed per build.", "", "compare"],
-      ["Step 4 · Board", boards.length ? online.length + " online" : "No board yet", boards.length ? "Install builds from the board's Studio." : "Add one under Boards.", online.length ? "done" : "next", "boards"],
-      ["Step 5 · Run", "On the arm", "Calibrate, check and run in the board's Studio.", "", "runs"]
+      ["01 · Import model", "Checkpoint and dataset", "Upload files from your computer or use folders on the build host.", "models", "Import files"],
+      ["02 · Compile & validate", "Prepare for Modalix", "Check dependencies, compile and compare numerical fidelity.", "compile", "Configure build"],
+      ["03 · Deploy & run", "Connect your DevKit", "Install PoLiMa, deploy a bundle and open Studio.", "boards", "Connect DevKit"]
     ];
     $("pipeline").innerHTML = steps.map(function (s) {
-      return '<div class="stage ' + s[3] + '"><span class="k">' + s[0] + "</span><b>" + esc(s[1]) + "</b><p>" + esc(s[2]) + '</p><a class="btn go" href="#' + s[4] + '">Open</a></div>';
+      return '<div class="stage"><span class="k">' + esc(s[0]) + '</span><b>' + esc(s[1]) + '</b><p>' + esc(s[2]) + '</p><a class="btn go" href="#' + s[3] + '">' + esc(s[4]) + '</a></div>';
     }).join("");
 
     $("recent").innerHTML = bd.slice(0, 4).map(function (b) {
@@ -367,12 +455,12 @@ tbody tr.sel { background:var(--accent-soft); }
     $("readiness").innerHTML =
       "<li><span>Model compiler (ModelSDK)</span>" + (c.compiler ? chip("ok", "Found") : chip("warn", "Not found")) + "</li>" +
       "<li><span>Checkpoint folders</span>" + chip(ck.length ? "ok" : "warn", ck.length + " checkpoints") + "</li>" +
-      "<li><span>Boards</span>" + chip(online.length ? "ok" : (boards.length ? "bad" : ""), boards.length ? online.length + " of " + boards.length + " online" : "None added") + "</li>";
+      "<li><span>DevKits</span>" + chip(online.length ? "ok" : (boards.length ? "bad" : ""), boards.length ? online.length + " of " + boards.length + " online" : "None added") + "</li>";
 
     $("model-folders").textContent = c.model_folders.join(" · ");
     $("checkpoints").innerHTML = ck.map(function (m) {
       return "<tr><td>" + esc(m.policy) + '</td><td><b>' + esc(m.run) + '</b><span class="sub mono">' + esc(m.path) + '</span></td><td class="r num">' + esc(m.step) + "</td><td>" + when(m.modified) + '</td><td><a class="btn" href="#compile" data-path="' + esc(m.path) + '">Compile</a></td></tr>';
-    }).join("") || empty(5, "No checkpoints found. Start the Workbench with --models <folder>.");
+    }).join("") || empty(5, "No checkpoints yet. Upload a checkpoint folder to get started.");
     document.querySelectorAll("#checkpoints a[data-path]").forEach(function (a) {
       a.addEventListener("click", function () { $("ckpt").value = a.dataset.path; command(); });
     });
@@ -380,10 +468,20 @@ tbody tr.sel { background:var(--accent-soft); }
     var selected = $("ckpt").value;
     $("ckpt").innerHTML = ck.map(function (m) { return '<option value="' + esc(m.path) + '">' + esc(m.policy + " · " + m.run + " · step " + m.step) + "</option>"; }).join("");
     if (selected) $("ckpt").value = selected;
+    $("dataset-options").innerHTML = (data.inputs || []).filter(i => i.kind === 'dataset').map(i => '<option value="'+esc(i.path)+'">'+esc(i.name)+'</option>').join('');
     command();
+    options("inspect-build", bd, "path", function(b) { return b.policy + " · " + b.id; });
+    options("deploy-bundle", bd, "path", function(b) { return b.policy + " · " + b.id; });
+    options("deploy-devkit", data.devkits || [], "name", function(d) { return d.name + " · " + d.host; });
+    inspect();
+    workflow(data.workflow);
 
+    $("validation-comparison").innerHTML = validationTable(bd);
+    $("measured-comparison").innerHTML = bd.some(b => b.evidence) ? comparisonCards(bd) : '<section class="panel panel-b"><h3>Device measurements pending</h3><p>Deploy this bundle and run a benchmark in Studio to collect inference latency, rate and stage timings.</p><a class="btn" href="#boards">Connect a DevKit</a></section>';
+    if (bd.some(b => b.evidence)) $("validation-comparison").innerHTML += '<details class="panel panel-b"><summary>Benchmark details</summary><div class="scroll"><table><thead><tr><th>Model</th><th>Mean</th><th>p50</th><th>p95</th><th>p99</th><th>Min</th><th>Max</th><th>Runs</th><th>DevKit</th></tr></thead><tbody>' + bd.map(function(b) { var e=b.evidence || {}; return '<tr><td>'+esc(b.policy)+'</td>'+['mean_ms','median_ms','p95_ms','p99_ms','min_ms','max_ms'].map(function(k) { return '<td>'+(Number.isFinite(e[k]) ? e[k].toFixed(2)+' ms' : '—')+'</td>'; }).join('')+'<td>'+esc(e.iterations ?? '—')+'</td><td>'+esc(e.board || 'Not measured')+'</td></tr>'; }).join('')+'</tbody></table></div></details>';
     $("bundle-folders").textContent = c.bundle_folders.join(" · ");
     $("manifest-export").innerHTML = manifestExport(boards);
+    $("readiness-panel").hidden = bd.length === 0;
     $("policy-readiness").innerHTML = readinessRows(bd);
     $("bundles").innerHTML = bd.map(function (b) {
       var e = b.evidence, ms = function (v) { return v == null ? "—" : v.toFixed(v < 100 ? 1 : 0) + " ms"; };
@@ -401,19 +499,19 @@ tbody tr.sel { background:var(--accent-soft); }
     $("runs").innerHTML = runs.map(function (p) {
       var r = p[1];
       return "<tr><td>" + esc(p[0].address) + '</td><td class="mono">' + esc(r.bundle) + "</td><td>" + esc(r.task) + "</td><td>" + esc(r.status) + "</td><td>" + (r.started_at ? when(r.started_at) : "") + "</td></tr>";
-    }).join("") || empty(5, online.length ? "No runs recorded on the boards yet." : "Robot runs appear here once a board is online.");
+    }).join("") || empty(5, online.length ? "No runs recorded on the DevKits yet." : "Robot runs appear here once a DevKit is online.");
   }
 
   // One DevKit: ssh (saved DevKits) and Studio are reported separately, so a DevKit without Studio still shows.
   function boardCard(b) {
     var s = b.ssh, rows = [], heads = [];
-    if (s) heads.push(!s.reachable ? chip("bad", "ssh: " + s.error) : chip(s.modalix ? "ok" : "bad", s.modalix ? "ssh ok" : "ssh ok · not a Modalix"));
-    heads.push(b.online ? chip("ok", "Studio · " + (b.state || "idle")) : chip(s && s.reachable ? "" : "bad", "Studio off"));
-    if (s && s.reachable) rows.push(["PoLiMa", s.polima ? "installed" : "not installed: run scripts/install_polima_modalix.sh on it"]);
+    if (s) heads.push(!s.reachable ? chip("bad", "SSH unavailable") : chip(s.modalix ? "ok" : "bad", s.modalix ? "ssh ok" : "ssh ok · not a Modalix"));
+    heads.push(b.online ? chip("ok", "Studio · " + (b.state || "idle")) : chip(s && s.reachable ? "" : "bad", "Studio unavailable"));
+    if (s && s.reachable) rows.push(["PoLiMa", s.polima ? "Installed" : "Installation required"]);
     if (b.online) rows.push(["Active build", b.active || "none"], ["Builds installed", b.bundles.length]);
     if (b.online || (s && s.reachable)) rows.push(["Policy server", (b.online ? b.server && b.server.running : s.server) ? "running" : "stopped"],
       ["Free space", b.online && b.storage && b.storage.free_bytes ? size(b.storage.free_bytes) : s && s.free_gb != null ? s.free_gb + " GB" : "—"]);
-    var note = b.online ? "" : '<p class="sub">' + (s && s.reachable ? "Start Studio on it: <code>polima studio start</code>" : s ? "Check the address, the network and that ssh logs in without a password." : "Studio is not answering. On the board run <code>polima studio start</code>.") + "</p>";
+    var note = b.online ? "" : '<p class="sub">' + (s && s.reachable ? (s.studio_installed ? "On the DevKit: <code>polima studio start</code>" : 'Studio service not detected. <a href="/guide#devkit" target="_blank" rel="noopener">Complete DevKit installation ↗</a>') : s ? esc(s.error) : "Studio is not answering. On the DevKit run <code>polima studio start</code>.") + "</p>";
     var actions = (b.online ? '<a class="btn primary" target="_blank" rel="noopener" href="' + esc(b.address) + '">Open Studio</a> ' : "") +
       (b.name ? '<button class="btn" data-remove="' + esc(b.name) + '">Remove</button>' : "");
     return '<div class="panel"><div class="panel-h"><h3 class="mono">' + esc(b.name || b.address) + "</h3>" + heads.join(" ") + '</div><div class="panel-b board">' +
@@ -423,22 +521,86 @@ tbody tr.sel { background:var(--accent-soft); }
 
   // Writes carry the session's CSRF token (header + SameSite cookie), as in Studio.
   var session = null;
-  function post(path, body) {
-    session = session || fetch("/api/v1/session").then(function (r) { return r.json(); });
-    return session.then(function (s) {
-      return fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-CSRF-Token": s.csrf_token}, body: JSON.stringify(body)});
-    }).then(function (r) {
-      return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || "failed"); return d; });
-    });
+  async function write(path, options) {
+    for (var attempt=0; attempt<2; attempt++) {
+      session = session || fetch('/api/v1/session').then(function(r) {
+        if (!r.ok) throw new Error('Could not renew the session. Retry the upload.');
+        return r.json();
+      }).catch(function(error) { session=null; throw error; });
+      var auth = await session;
+      var response = await fetch(path, {...options, headers:{...options.headers, 'X-CSRF-Token':auth.csrf_token}});
+      var result = await response.json();
+      if (response.status === 403 && ['invalid CSRF token', 'Invalid session'].includes(result.error)) {
+        session=null;
+        if (attempt === 0) continue;
+        throw new Error('Session expired. Refresh the page and retry the upload.');
+      }
+      if (!response.ok) throw new Error(result.error || 'Request failed.');
+      return result;
+    }
   }
+  function post(path, body) {
+    return write(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  }
+  var pendingUpload = null;
+  async function upload() {
+    var task = pendingUpload;
+    if (!task || task.running) return;
+    task.running = true; $("upload-retry").hidden = $("upload-discard").hidden = true;
+    $("upload-checkpoint").disabled = $("upload-dataset").disabled = true;
+    $("upload-progress").hidden = false;
+    try {
+      var manifest = task.files.map(f => ({path:f.webkitRelativePath || f.name, size:f.size}));
+      var status = task.id ? await post('/api/v1/imports/status', {id:task.id}) : await post('/api/v1/imports', {kind:task.kind, files:manifest});
+      task.id = status.id;
+      var completed = status.received;
+      for (var i=0; i<task.files.length; i++) {
+        var file = task.files[i], entry = status.files[i];
+        for (var offset=entry.received; offset<file.size;) {
+          var chunk = file.slice(offset, offset+16*1024*1024);
+          $("upload-message").textContent = 'Uploading '+entry.path;
+          var result = await write('/api/v1/imports/chunk?'+new URLSearchParams({id:task.id,path:entry.path,offset:offset}), {method:'PUT',body:chunk});
+          if (!result.ok) throw new Error(result.error || 'Upload interrupted. Resume to continue.');
+          completed += result.received-offset; offset=result.received;
+          $("upload-progress").value = status.total ? 100*completed/status.total : 100;
+        }
+      }
+      var item = await post('/api/v1/imports/finish', {id:task.id});
+      $("upload-message").textContent = 'Imported '+item.name+'.';
+      if (task.kind === 'dataset') $("dataset").value = item.path;
+      pendingUpload = null; load(true);
+    } catch(e) {
+      $("upload-message").textContent = e.message;
+      $("upload-retry").hidden = $("upload-discard").hidden = !task.id;
+    } finally {
+      task.running=false;
+      $("upload-checkpoint").disabled = $("upload-dataset").disabled = false;
+    }
+  }
+  ['checkpoint','dataset'].forEach(function(kind) {
+    $("upload-"+kind).addEventListener('change', function() {
+      if (!this.files.length) return;
+      pendingUpload={kind:kind, files:Array.from(this.files)}; upload();
+    });
+  });
+  $("upload-retry").addEventListener('click', upload);
+  $("upload-discard").addEventListener('click', async function() {
+    if (!pendingUpload || pendingUpload.running) return;
+    try {
+      await post('/api/v1/imports/cancel', {id:pendingUpload.id});
+      pendingUpload=null;
+      $("upload-message").textContent='Upload discarded.';
+      $("upload-retry").hidden=$("upload-discard").hidden=$("upload-progress").hidden=true;
+    } catch(e) { $("upload-message").textContent=e.message; }
+  });
   $("dk-add").addEventListener("click", function () {
     var button = this, msg = $("dk-msg");
-    button.disabled = true; msg.textContent = "Checking over ssh…";
-    post("/api/v1/devkits", {host: $("dk-host").value, name: $("dk-name").value, key: $("dk-key").value}).then(function (d) {
-      msg.textContent = "Saved " + d.name + (d.ssh.reachable ? " · ssh ok" : " · ssh failed: " + d.ssh.error);
-      ["dk-host", "dk-name", "dk-key"].forEach(function (id) { $(id).value = ""; });
+    button.disabled = true; msg.textContent = "Connecting…";
+    post("/api/v1/devkits", {host: $("dk-host").value, name: $("dk-name").value, key: $("dk-key").value, password: $("dk-password").value}).then(function (d) {
+      msg.textContent = d.ssh.reachable ? 'Connected · ' + d.name : 'Connection failed. ' + d.ssh.error;
+      ["dk-host", "dk-name", "dk-key", "dk-password"].forEach(function (id) { $(id).value = ""; });
       load();
-    }).catch(function (e) { msg.textContent = e.message; }).then(function () { button.disabled = false; });
+    }).catch(function (e) { msg.textContent = e.message; }).then(function () { button.disabled = false; $("dk-password").value = ""; });
   });
   $("boards").addEventListener("click", function (e) {
     var name = e.target.getAttribute("data-remove");
@@ -460,7 +622,7 @@ tbody tr.sel { background:var(--accent-soft); }
 
   // Readiness is decided on the server (polima.workbench.app.readiness), where its rules are tested.
   function readinessRows(bd) {
-    var words = {done: "Done", needs_action: "To do", unavailable: "Not yet"};
+    var words = {done: "Done", needs_action: "To do", unavailable: "Unavailable"};
     return bd.map(function (b) {
       var r = b.readiness, s = r.summary;
       var marks = r.stages.map(function (st) {
@@ -477,13 +639,13 @@ tbody tr.sel { background:var(--accent-soft); }
     }).join("") || empty(9, "No bundles found. Start the Workbench with --bundles <folder>.");
   }
 
-  // One row per online board: a download of its reviewed failures, read through this server.
+  // One row per online DevKit: a download of its reviewed failures, read through this server.
   function manifestExport(boards) {
     return boards.map(function (b, i) {
       if (!b.online) return "";
       var where = '<span class="mono">' + esc(b.address) + "</span>";
       var pending = b.runs_needing_review ? ' <span class="sub">Some runs still need review</span>' : "";
-      if (!b.manifest) return "<div>" + where + ' <span class="sub">This board\'s Studio cannot export yet; update PoLiMa on the board.</span></div>';
+      if (!b.manifest) return "<div>" + where + ' <span class="sub">This DevKit\'s Studio cannot export yet; update PoLiMa on the DevKit.</span></div>';
       if (!b.manifest.exported_runs) return "<div>" + where + " No reviewed failures to export" + pending + "</div>";
       return '<div><a class="btn" href="/api/v1/improvement-manifest?board=' + i + '">Export failures (' + b.manifest.exported_runs +
         ")</a> " + where + " · " + b.manifest.failed + " failed, " + b.manifest.partial + " partial" +
@@ -498,19 +660,75 @@ tbody tr.sel { background:var(--accent-soft); }
       "</td><td>" + esc(l.failures).replace(/ x(\d)/g, "&nbsp;x$1") + '</td><td class="num nw">' + esc(l.latency) + "</td>";
   }
 
-  function command() {
-    var m = (data.checkpoints || []).find(function (c) { return c.path === $("ckpt").value; });
-    if (!m) { $("command").textContent = "Choose a checkpoint."; return; }
-    var slug = (m.run + "-" + m.step).replace(/[^A-Za-z0-9._-]+/g, "-"), cmd;
-    if (m.policy === "ACT") {
-      cmd = "polima compile --policy act \\\n  --checkpoint " + m.path + " \\\n  --build-dir ~/polima-builds/" + slug;
-    } else if (m.policy.indexOf("GR00T") === 0) {
-      cmd = "Compiling GR00T yourself comes in the next PoLiMa version.\nUse a prebuilt GR00T bundle for now.";
-    } else {
-      cmd = m.policy + " comes in a later PoLiMa version.";
-    }
-    $("command").textContent = cmd;
+  function options(id, list, key, label) {
+    var select = $(id), previous = select.value;
+    select.innerHTML = list.map(function(x) { return '<option value="' + esc(x[key]) + '">' + esc(label(x)) + '</option>'; }).join("");
+    if (list.some(function(x) { return x[key] === previous; })) select.value = previous;
   }
+  function inspect() {
+    var b = data.bundles.find(function(b) { return b.path === $("inspect-build").value; });
+    if (!b) { $("inspection").textContent = "No compiled bundle selected."; return; }
+    var details = b.inspection || {}, stages = (b.evidence && b.evidence.stages || []).filter(function(s) { return Number.isFinite(s.ms) && s.ms >= 0; });
+    var total = stages.reduce(function(t, s) { return t + s.ms; }, 0);
+    $("inspection").innerHTML = '<p class="sub">Graph mapping and runtime profile</p>' +
+      (stages.length ? '<h4>Measured runtime stages</h4><p class="sub">Shares of recorded stage time (' + total.toFixed(1) + ' ms); this profile is separate from the multi-run median.</p>' + stages.map(function(s) {
+        var parts = s.name.split(':'), matches = (details.graphs || []).filter(function(g) {
+          return g.name === parts.slice(1).join(':') || (g.runtime_steps || []).some(function(step) { return step.op === parts[0] && step.out === parts.slice(1).join(':'); });
+        });
+        var linked = matches.map(function(g) { return '<p><b>' + esc(g.name) + '</b> · ' + esc(g.precision || 'Precision not recorded') + ' · ' + esc(g.placement || 'Placement not recorded') + '</p><p class="sub">Artifact: ' + esc(g.elf || 'Not recorded') + '. Expand this graph below for runtime calls and tensor sizes.</p>'; }).join('');
+        return '<details><summary>' + esc(s.name) + ' · ' + s.ms.toFixed(1) + ' ms' + (total ? ' · ' + (s.ms / total * 100).toFixed(0) + '% of profiled time' : '') + '</summary><p class="sub">Match this runtime operation and output to the graph steps below. Prioritize the largest measured stages when investigating latency.</p>' + (linked || '<p class="sub">No packaged graph matched this runtime stage.</p>') + '</details>';
+      }).join('') : '<p class="sub">Run a Studio benchmark to collect stage timings.</p>') +
+      (details.graphs || []).map(function(g) {
+        return '<details><summary><b>' + esc(g.name) + '</b> · ' + esc(g.precision || 'Precision not recorded') + '</summary><dl class="kv">' +
+          [['Profiled runtime', (b.evidence?.stages || []).filter(function(s) { var parts=s.name.split(':'); return g.name===parts.slice(1).join(':') || (g.runtime_steps || []).some(function(step) { return step.op===parts[0] && step.out===parts.slice(1).join(':'); }); }).map(function(s) { return s.name + ': ' + s.ms.toFixed(2) + ' ms (stage total)'; }).join(' · ') || 'Not measured'], ['Compile time', Number.isFinite(b.validation?.graphs?.[g.name]?.compile_seconds) ? b.validation.graphs[g.name].compile_seconds.toFixed(1) + ' s' : null], ['Runtime calls', (g.runtime_steps || []).length], ['Artifact', g.elf], ['Device placement', g.placement], ['Artifact size', g.elf_bytes == null ? null : (g.elf_bytes / 1e6).toFixed(1) + ' MB'], ['Input tensor elements', g.input_elements], ['Output tensor elements', g.output_elements], ['Runtime steps', (g.runtime_steps || []).map(function(s) { return s.index + ': ' + s.op + ' → ' + s.out; }).join('; ')]].map(function(r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1] == null || r[1] === '' ? 'Unavailable' : r[1]) + '</dd>'; }).join('') +
+          '</dl><p class="sub"></p></details>';
+      }).join('') + '<details><summary>All runtime steps</summary><pre class="log">' + esc((details.steps || []).map(function(s) { return s.index + ': ' + s.op + ' → ' + s.out; }).join('\n') || 'Not recorded') + '</pre></details>';
+  }
+  $("inspect-build").addEventListener("change", inspect);
+  var setupReady = false, setupRequest = 0;
+  async function checkSetup() {
+    var request = ++setupRequest;
+    setupReady = false; $("compile-start").disabled = true;
+    var model = (data.checkpoints || []).find(c => c.path === $("ckpt").value);
+    if (!model) { $("compile-checks").textContent = 'Upload a checkpoint to check build requirements.'; return; }
+    try {
+      var result = await post('/api/v1/prerequisites', {policy:model.policy, dataset:$("dataset").value});
+      if (request !== setupRequest) return;
+      setupReady = result.checks.length > 0 && result.checks.every(c => c.ok);
+      $("compile-checks").innerHTML = result.checks.map(c => '<li><span>'+esc(c.label)+(c.ok ? '' : '<span class="sub">'+esc(c.help)+'</span>')+'</span>'+chip(c.ok ? 'ok' : 'warn', c.ok ? 'Found' : 'Setup required')+'</li>').join('');
+      $("compile-start").disabled = !setupReady || (data.workflow && data.workflow.status === 'running');
+    } catch (e) { if (request === setupRequest) $("compile-checks").textContent = e.message; }
+  }
+  $("check-setup").addEventListener('click', checkSetup);
+  $("dataset").addEventListener('input', function() { setupReady=false; $("compile-start").disabled=true; });
+  $("dataset").addEventListener('change', checkSetup);
+  function command() {
+    var m = (data.checkpoints || []).find(function(c) { return c.path === $("ckpt").value; });
+
+    checkSetup();
+    $("command").textContent = m ? m.policy + ' · ' + m.path + '\nThe exact command appears here when compilation starts.' : 'Choose a checkpoint.';
+  }
+  function workflow(job) {
+    var busy = job && job.status === 'running';
+    $("compile-start").disabled = !!busy || !$("ckpt").value || !setupReady;
+    $("deploy-start").disabled = !!busy || !$("deploy-bundle").value || !$("deploy-devkit").value;
+    if (!job) return;
+    var message = job.kind + ' · ' + job.status + (job.error ? ': ' + job.error : '') + (job.status === 'failed' ? ' — inspect Build log on the Compile page.' : '');
+    $("workflow-message").textContent = message;
+    $("deploy-message").textContent = message;
+    $("workflow-log").textContent = job.log || 'Waiting for output…';
+    $("command").textContent = (job.command || []).map(function(a) { return "'" + a.replace(/'/g, "'\"'\"'") + "'"; }).join(' ');
+  }
+  function launch(body) {
+    $("compile-start").disabled = $("deploy-start").disabled = true;
+    post('/api/v1/workflow', body).then(workflow).catch(function(e) {
+      workflow(null);
+      $("workflow-message").textContent = $("deploy-message").textContent = e.message;
+    });
+  }
+  $("compile-start").addEventListener('click', function() { launch({kind:'compile', checkpoint:$("ckpt").value, dataset:$("dataset").value}); });
+  $("deploy-start").addEventListener('click', function() { launch({kind:'deploy', bundle:$("deploy-bundle").value, devkit:$("deploy-devkit").value, start_server:$("deploy-server").checked}); });
+  setInterval(function() { fetch('/api/v1/workflow').then(function(r) { if (!r.ok) throw new Error('Workflow status unavailable'); return r.json(); }).then(workflow).catch(function() {}); }, 2000);
   $("ckpt").addEventListener("change", command);
   $("copy").addEventListener("click", function () {
     var text = $("command").textContent, b = this;
@@ -520,7 +738,7 @@ tbody tr.sel { background:var(--accent-soft); }
   $("refresh").addEventListener("click", function () { load(true); });
   function load(refresh) {
     fetch("/api/v1/snapshot" + (refresh === true ? "?refresh=1" : "")).then(function (r) { return r.json(); }).then(function (d) {
-      data = d; $("error").hidden = true; render();  // a drawing error is logged, never reported as a dead server
+      data = d; $("error").hidden = true; render();
     }, function () { $("error").hidden = false; $("error").textContent = "The Workbench server is not answering. Is `polima workbench` still running?"; });
   }
   load();

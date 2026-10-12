@@ -1,12 +1,7 @@
 """The compile path's pure logic.
 
-The expensive part (afe) cannot run here, and is covered instead by the Phase-1b
-reproduction proof: driving these modules against the checkpoint that produced
-the deployed bundle regenerates `encoder_layer_01_stage1_mla.elf` byte for byte
-(sha256 09609ded..., 17189232 bytes).
-
-What is left is exactly the logic that unifying three divergent copies could get
-wrong quietly -- calibration shaping, resume keys, and command construction.
+The compiler itself (afe) cannot run here. What is tested is the logic that can
+go wrong quietly -- calibration shaping, resume keys, and command construction.
 """
 
 from __future__ import annotations
@@ -57,8 +52,8 @@ def test_rank4_nhwc_is_left_alone(tmp_path):
 
 
 def test_low_rank_tensors_are_never_transposed(tmp_path):
-    """This is the bug SmolVLA's copy existed to avoid: the curated helper
-    transposes unconditionally, which corrupts rank-2/3 action-side tensors."""
+    """The curated helper transposes unconditionally, which corrupts rank-2/3
+    action-side tensors."""
     path = tmp_path / "c.npz"
     np.savez(path, hidden=np.zeros((2, 601, 512), np.float32))
     sample = calib.from_npz(path, ["hidden"], [(601, 512)], "NCHW")[0]
@@ -204,8 +199,8 @@ def test_unpack_rejects_an_archive_with_no_elf(tmp_path):
 
 
 def test_has_elf_detects_an_apu_fallback(tmp_path):
-    """A compile can exit 0 and produce an mpk with no ELF; both legacy
-    controllers check for this because the board failure is much later."""
+    """A compile can exit 0 and produce an mpk with no ELF; catch it here, because
+    the DevKit failure comes much later."""
     with_elf = tmp_path / "a_mpk.tar.gz"
     without = tmp_path / "b_mpk.tar.gz"
     _archive(with_elf, {"a.elf": "ELF"})
@@ -239,8 +234,8 @@ def _write_inputs(driver: Driver, graph, onnx: bytes = b"onnx", calib_bytes: byt
     path.write_bytes(calib_bytes)
 
 
-def test_argv_reproduces_the_legacy_invocation(tmp_path):
-    """compile_deploy_act_som.sh: bf16, per-graph layout, npz calibration,
+def test_argv_reproduces_the_compiler_invocation(tmp_path):
+    """ACT: bf16, per-graph layout, npz calibration,
     tessellation, and a retained dir that is where the ELF is then read from."""
     driver = _driver(tmp_path)
     graph = get_policy("act").compile.graph("vision_backbone")
@@ -283,64 +278,6 @@ def test_shared_graph_argv_requests_rank4_hwc_boundaries(tmp_path):
     assert "--mla-tessellation" not in argv
 
 
-def test_smolvla_vision_keeps_plain_model_io(tmp_path):
-    driver = Driver(
-        spec=get_policy("smolvla"), build_dir=tmp_path,
-        compiler_python="/nonexistent/python",
-    )
-    argv = driver.argv(get_policy("smolvla").compile.graph("vision"), "bf16")
-    assert "--mla-tessellation" not in argv
-    assert "--retain-compile-dir" in argv
-    assert "--exit-on-stable-elf" in argv
-    assert "--no-simplify" in argv
-
-
-def test_smolvla_denoise_uses_calibrated_split_precision(tmp_path):
-    driver = Driver(
-        spec=get_policy("smolvla"), build_dir=tmp_path,
-        compiler_python="/nonexistent/python",
-    )
-    graph = get_policy("smolvla").compile.graph("denoise")
-    argv = driver.argv(graph, "bf16")
-    assert argv[argv.index("--activation-precision") + 1] == "bf16"
-    assert argv[argv.index("--weight-precision") + 1] == "int8"
-    assert argv[argv.index("--calibration-raw-f32") + 1].endswith(
-        "calibration/denoise.f32"
-    )
-
-
-def test_smolvla_prefix_uses_plain_bf16_hwc_boundaries(tmp_path):
-    driver = Driver(
-        spec=get_policy("smolvla"), build_dir=tmp_path,
-        compiler_python="/nonexistent/python",
-    )
-    graph = get_policy("smolvla").compile.graph("prefix")
-    argv = driver.argv(graph, graph.precision)
-    assert "--activation-precision" not in argv
-    assert "--weight-precision" not in argv
-    assert "--mla-tessellation" not in argv
-    assert argv[argv.index("--external-dram-layout") + 1] == "HWC"
-    assert argv[argv.index("--retain-compile-dir") + 1].endswith("retained/prefix")
-    assert "--exit-on-stable-elf" in argv
-
-
-def test_smolvla_vision_uses_plain_bf16_hwc_boundaries(tmp_path):
-    driver = Driver(
-        spec=get_policy("smolvla"), build_dir=tmp_path,
-        compiler_python="/nonexistent/python",
-    )
-    graph = get_policy("smolvla").compile.graph("vision")
-    argv = driver.argv(graph, graph.precision)
-    assert argv[argv.index("--precision") + 1] == "bf16"
-    assert "--activation-precision" not in argv
-    assert "--weight-precision" not in argv
-    assert argv[argv.index("--external-dram-layout") + 1] == "HWC"
-    assert "--promote-rank3-hwc" in argv
-    assert "--calibration-raw-f32" not in argv
-    assert argv[argv.index("--retain-compile-dir") + 1].endswith("retained/vision")
-    assert "--exit-on-stable-elf" in argv
-
-
 def test_stage_key_is_stable_for_unchanged_inputs(tmp_path):
     driver = _driver(tmp_path)
     graph = get_policy("act").compile.graph("encoder_layer_01")
@@ -358,8 +295,8 @@ def test_stage_key_tracks_the_onnx(tmp_path):
 
 
 def test_stage_key_tracks_the_calibration_data(tmp_path):
-    """The legacy --resume only checked that an ELF existed, so re-exporting and
-    re-running silently kept the stale one."""
+    """An existing ELF alone is not a resume hit: re-exporting and re-running must
+    not silently keep a stale one."""
     driver = _driver(tmp_path)
     graph = get_policy("act").compile.graph("encoder_layer_01")
     _write_inputs(driver, graph)
@@ -462,7 +399,7 @@ def test_tensor_cli_defaults_to_bf16_modalix():
 
 
 def test_tensor_cli_accepts_the_smolvla_surface():
-    """The SmolVLA copy's extra knobs must all still be expressible."""
+    """Every extra compiler knob must be expressible."""
     args = build_parser().parse_args([
         "--model-path", "m.onnx", "--build-dir", "b", "--device", "mlsoc",
         "--calibration-raw-f32", "c.f32", "--input-shapes", "1,601,512",
@@ -556,10 +493,10 @@ def test_checkpoint_without_a_build_dir_is_rejected(capsys):
     assert "--build-dir" in capsys.readouterr().err
 
 
-def test_import_legacy_and_build_dir_are_mutually_exclusive(capsys):
+def test_import_build_and_build_dir_are_mutually_exclusive(capsys):
     from polima.cli import compile as compile_cli
 
-    assert compile_cli.run(["--import-legacy", "/a", "--build-dir", "/b"]) == 2
+    assert compile_cli.run(["--import-build", "/a", "--build-dir", "/b"]) == 2
     assert "not both" in capsys.readouterr().err
 
 
@@ -571,11 +508,11 @@ def test_no_arguments_lists_the_choices(capsys):
     assert "--checkpoint" in error and "--build-dir" in error
 
 
-def test_import_legacy_still_needs_no_compiler():
-    """Phase 1a depends on this path running where afe does not exist."""
+def test_import_build_still_needs_no_compiler():
+    """This path must run where afe does not exist."""
     from polima.cli import compile as compile_cli
 
-    assert compile_cli.needs_capability(["--import-legacy", "/x"]) is None
+    assert compile_cli.needs_capability(["--import-build", "/x"]) is None
     assert compile_cli.needs_capability(["--build-dir", "/x"]) == "compile"
     assert compile_cli.needs_capability(["--checkpoint", "/x"]) == "compile"
 
@@ -584,9 +521,8 @@ def test_import_legacy_still_needs_no_compiler():
 
 
 def test_bf16_ignores_supplied_calibration():
-    """bf16 has no scales to fit. Verified against hardware: ACT's
-    decoder_action_tail compiled with 8 real dataset samples and with 1 random
-    sample produces the identical ELF, b1eece6992dbddc6..."""
+    """bf16 has no scales to fit: ACT's decoder_action_tail compiled with 8 real
+    dataset samples and with 1 random sample produces the identical ELF."""
     kind, source, note = calib.plan("bf16", "bf16", npz="/big/file.npz")
     assert kind == "random" and source is None
     assert "no scales" in note
@@ -652,51 +588,39 @@ def test_a_failing_activation_yields_no_changes(tmp_path):
     assert activation_env(script) == {}
 
 
-def test_compiler_env_keeps_its_own_settings_over_the_activation(tmp_path):
-    """The activation runs first so the explicit PATH prefix still wins."""
+def test_compiler_env_adds_missing_sdk_tools(tmp_path, monkeypatch):
     from polima.compile.toolchain import compiler_env
 
-    (tmp_path / "activate-model-compiler").write_text("export PATH=/only/this\n")
+    helper = tmp_path / "mla-masm"
+    helper.write_text("#!/bin/sh\n")
+    helper.chmod(0o755)
+    monkeypatch.setattr("polima.compile.toolchain.find_activation", lambda _: None)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
     env = compiler_env(tmp_path)
-    assert env["PATH"].startswith(f"{tmp_path}:")
+    assert env["PATH"] == f"{tmp_path}:/usr/bin:/bin"
     assert env["CUDA_VISIBLE_DEVICES"] == ""
 
 
-# -------------------------------------------------------------- bin launcher
+def test_compiler_env_preserves_available_sdk_tools(tmp_path, monkeypatch):
+    from polima.compile.toolchain import compiler_env
+
+    helper = tmp_path / "mla-masm"
+    helper.write_text("#!/bin/sh\n")
+    helper.chmod(0o755)
+    monkeypatch.setattr("polima.compile.toolchain.find_activation", lambda _: None)
+    path = f"/usr/bin:{tmp_path}:/bin"
+    monkeypatch.setenv("PATH", path)
+    assert compiler_env(tmp_path)["PATH"] == path
 
 
-def _launcher(name: str = "polima"):
-    from pathlib import Path
+def test_activation_path_is_shell_quoted(tmp_path):
+    from polima.compile.toolchain import activation_env
 
-    return Path(__file__).resolve().parents[2] / "bin" / name
-
-
-def test_launcher_runs_without_an_install():
-    """The Palette container is recreated and mounts the workspace at a
-    different path, so an editable install done on the host would bake in a
-    path that does not exist inside it."""
-    import subprocess
-
-    result = subprocess.run([str(_launcher()), "--version"],
-                            capture_output=True, text=True, timeout=120)
-    assert result.returncode == 0
-    assert result.stdout.strip().startswith("polima ")
-
-
-def test_stage_symlinks_dispatch_on_their_name():
-    """`polima-deploy` must behave as `polima deploy`, matching pip's scripts."""
-    import subprocess
-
-    assert _launcher("polima-deploy").is_symlink()
-    result = subprocess.run([str(_launcher("polima-deploy")), "--help"],
-                            capture_output=True, text=True, timeout=120)
-    assert result.returncode == 0
-    assert "polima-deploy" in result.stdout
-
-
-def test_every_stage_has_a_launcher():
-    for stage in ("compile", "deploy", "run", "robot", "doctor"):
-        assert _launcher(f"polima-{stage}").exists(), stage
+    folder = tmp_path / "SDK files $(false)"
+    folder.mkdir()
+    script = folder / "activate-model-compiler"
+    script.write_text("export MODEL_SDK_ROOT=quoted\n")
+    assert activation_env(script)["MODEL_SDK_ROOT"] == "quoted"
 
 
 # ------------------------------------------------- resume across mount points
@@ -721,7 +645,7 @@ def test_recorded_elf_is_relative_to_the_build_tree(tmp_path):
 
 def test_a_tree_compiled_elsewhere_still_reuses(tmp_path):
     """Record as if the compile happened at a container path, then reuse from
-    the host path -- which is exactly the round trip that failed."""
+    the host path -- the round trip this protects."""
     import shutil as _shutil
 
     container = tmp_path / "workspace" / "build"
@@ -749,9 +673,9 @@ def test_an_elf_outside_the_tree_stays_absolute(tmp_path):
 
 
 def test_a_stale_absolute_path_heals_instead_of_recompiling(tmp_path):
-    """State written before paths were relative holds an absolute path from the
-    other mount. Falling back to the conventional location avoids repeating ~9
-    minutes of identical work, and re-records it relative."""
+    """State holding an absolute path from the other mount falls back to the
+    conventional location, avoiding ~9 minutes of identical work, and is
+    re-recorded relative."""
     driver = _driver(tmp_path)
     graph = get_policy("act").compile.graph("encoder_layer_01")
     _write_inputs(driver, graph)
@@ -772,9 +696,8 @@ def test_a_stale_absolute_path_heals_instead_of_recompiling(tmp_path):
 
 
 def test_jobs_defaults_to_sequential(tmp_path):
-    """Memory is the limit, not CPU, and it is policy-dependent: SmolVLA's
-    compile script runs its vision and prefix stages sequentially because they
-    'each require substantial host RAM'. Parallelism is opt-in."""
+    """Memory is the limit, not CPU, and it is policy-dependent: large stages can
+    each require substantial host RAM. Parallelism is opt-in."""
     assert _driver(tmp_path).jobs == 1
 
 
@@ -914,3 +837,60 @@ def test_other_compile_errors_are_never_swallowed(tmp_path):
     elf.write_bytes(b"\x7fELF" + bytes(64))
     assert not mpk_only_failure(RuntimeError("TVMError: Assert fail"), elf,
                                 settle_seconds=0.0)
+
+
+@pytest.mark.parametrize("contents", [b"", b"not-an-elf" * 16, b"\x7fELF"])
+def test_watchdog_does_not_accept_incomplete_output(tmp_path, monkeypatch, contents):
+    from polima.compile import tensor
+
+    path = tmp_path / "model.elf"
+    path.write_bytes(contents)
+    targets = []
+    monkeypatch.setattr(tensor.threading, "Thread", lambda **kw: type(
+        "Thread", (), {"start": lambda self: targets.append(kw["target"])})())
+    stop = tensor._start_elf_watchdog(path, stable_seconds=0)
+    waits = iter([False, False, False, True])
+    monkeypatch.setattr(stop, "wait", lambda _: next(waits))
+    monkeypatch.setattr(tensor.os, "_exit", lambda _: pytest.fail("invalid ELF accepted"))
+    targets[0]()
+
+
+def test_watchdog_normal_completion_is_cancellable(tmp_path, monkeypatch):
+    from polima.compile import tensor
+
+    path = tmp_path / "model.elf"
+    path.write_bytes(b"\x7fELF" + bytes(64))
+    targets = []
+    monkeypatch.setattr(tensor.threading, "Thread", lambda **kw: type(
+        "Thread", (), {"start": lambda self: targets.append(kw["target"])})())
+    stop = tensor._start_elf_watchdog(path, stable_seconds=0)
+    stop.set()
+    monkeypatch.setattr(tensor.os, "_exit", lambda _: pytest.fail("normal completion interrupted"))
+    targets[0]()
+
+
+def test_watchdog_waits_for_cleanup_and_restarts_after_output_changes(tmp_path, monkeypatch):
+    from polima.compile import tensor
+
+    path = tmp_path / "model.elf"
+    path.write_bytes(b"\x7fELF" + bytes(64))
+    targets, exits = [], []
+    monkeypatch.setattr(tensor.threading, "Thread", lambda **kw: type(
+        "Thread", (), {"start": lambda self: targets.append(kw["target"])})())
+    stop = tensor._start_elf_watchdog(path)
+    clock = iter([0, 299, 300, 599, 600])
+    current = [0]
+
+    def wait(_):
+        if stop.is_set():
+            return True
+        current[0] = next(clock)
+        if current[0] == 300:
+            path.write_bytes(b"\x7fELF" + bytes(128))
+        return False
+
+    monkeypatch.setattr(stop, "wait", wait)
+    monkeypatch.setattr(tensor.time, "monotonic", lambda: current[0])
+    monkeypatch.setattr(tensor.os, "_exit", lambda code: (exits.append((code, current[0])), stop.set()))
+    targets[0]()
+    assert exits == [(0, 600)]

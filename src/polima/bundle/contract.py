@@ -1,9 +1,9 @@
 """Restore the exact policy contract carried by a deployable bundle.
 
-Registry policy specs describe the historical/default robot. A compiled bundle
-may specialize that architecture for a different robot (for example a
-7-channel MyCobot instead of the 6-channel SO-101), so consumers must not go
-back to registry defaults after loading ``bundle.json``.
+Registry policy specs describe the default robot. A compiled bundle may
+specialize that architecture for a different robot (for example a 7-channel
+arm instead of the 6-channel SO-101), so consumers must not go back to
+registry defaults after loading ``bundle.json``.
 """
 
 from __future__ import annotations
@@ -19,12 +19,12 @@ def spec_from_bundle(spec: PolicySpec, bundle: Bundle) -> PolicySpec:
     """Return ``spec`` specialized to the contract in ``bundle.plan_path``.
 
     New plans contain a complete ``profile`` block. The fallback reconstructs
-    the same fields from the ``robot`` and ``wire`` blocks already present in
-    older bundles, including the first MyCobot ACT bundles.
+    the same fields from the ``robot`` and ``wire`` blocks of a plan without
+    one.
     """
 
     plan = read_json(bundle.plan_path)
-    profile = plan.get("profile") or _profile_from_legacy_plan(plan)
+    profile = plan.get("profile") or _profile_from_plan_blocks(plan)
     if profile and spec.profile_entry:
         spec = spec.specialize_profile(profile=profile)
 
@@ -59,7 +59,7 @@ def spec_from_bundle(spec: PolicySpec, bundle: Bundle) -> PolicySpec:
     return spec
 
 
-def _profile_from_legacy_plan(plan: dict) -> dict:
+def _profile_from_plan_blocks(plan: dict) -> dict:
     robot = plan.get("robot") or {}
     wire = plan.get("wire") or {}
     calibration_id = robot.get("calibration_id")

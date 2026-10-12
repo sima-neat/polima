@@ -1,17 +1,11 @@
 """Core configuration objects.
 
-Replaces two things at once:
+One typed place for the DevKit address, ports, paths and runtime settings.
 
-  * the ~40 `ACT_*` / `SMOLVLA_*` environment variables used as shell->Python IPC
-    (ACT_SOM_DIRECT, ACT_PERSPECTIVE_CAMERA, ACT_REST_SNAP_TOLERANCE,
-    ACT_AUTO_*, ACT_LIVE_PORT, ...), which exist only because
-    run_robot_client_with_live_view.py has no argparse of its own; and
-  * the board address / port / path constants hardcoded across ~8 legacy files.
-
-The board address has no default: every network is different, so it comes from
+The DevKit address has no default: every network is different, so it comes from
 `--board`, `$POLIMA_BOARD` or `board.host` in `.polima.yaml` (see
-`.polima.yaml.example`). The other defaults match a stock Modalix SoM: aarch64,
-16 cores, the NVMe drive mounted at /media/nvme.
+`.polima.yaml.example`). The other defaults match a stock Modalix DevKit:
+aarch64, 16 cores, the NVMe drive mounted at /media/nvme.
 """
 
 from __future__ import annotations
@@ -19,45 +13,40 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# No default board: set it with --board, $POLIMA_BOARD or .polima.yaml.
+# No default DevKit: set it with --devkit, $POLIMA_DEVKIT or .polima.yaml.
 DEFAULT_BOARD_HOST = ""
 NO_BOARD_MESSAGE = (
-    "no board address: pass --board user@host, set POLIMA_BOARD, "
+    "no DevKit address: pass --devkit user@host, set POLIMA_DEVKIT, "
     "or set board.host in .polima.yaml (see .polima.yaml.example)"
 )
 DEFAULT_BOARD_ROOT = "/media/nvme/polima"
 
-# Legacy servers currently occupy 8081 (smolvla_som_server) and 8082 (act_llima).
-# PoLiMa deploys default to the 809x band so both stacks can serve side by side
-# during the Phase-1 parity proof.
-DEFAULT_PORTS = {"act": 8092, "smolvla": 8091, "groot": 8093, "groot17": 8094}
-
 
 @dataclass
 class BoardConfig:
-    """A Modalix SoM target."""
+    """A Modalix DevKit target."""
 
     host: str = DEFAULT_BOARD_HOST
     root: str = DEFAULT_BOARD_ROOT
     port: int | None = None                 # None -> PolicySpec.wire.default_port
-    ssh_options: tuple[str, ...] = ("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no")
+    # accept-new: a new DevKit is trusted on first contact; a changed identity is refused.
+    ssh_options: tuple[str, ...] = ("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new")
     control_master: bool = True             # one multiplexed connection per deploy
-    # The board has 16 cores; both legacy deploy scripts hardcode -j2.
+    # The DevKit has 16 cores.
     build_jobs: int = 8
     # Refuse to deploy unless free space is this multiple of the bundle size.
     free_space_factor: float = 1.5
     health_timeout_s: float = 30.0
     #: SIGTERM grace before `stop` escalates to SIGKILL. Generous on purpose:
     #: a killed server never releases its DMA-coherent buffers, so every
-    #: escalation fragments the MLA's CMA pool a little more, and a SmolVLA
-    #: bundle unloading 1.3 GB across four models does not finish in 10s.
+    #: escalation fragments the MLA's CMA pool a little more, and a large
+    #: bundle unloading several models does not finish in 10s.
     stop_timeout_s: float = 30.0
     connect_timeout_s: float = 10.0
     #: Directory under `root` holding deployed model trees. `models` rather than
-    #: `bundles` so PoLiMa bundles sit alongside the hand-built deploy roots
-    #: already there (e.g. ACT_<task>_100000) instead of
-    #: creating a second place to look. Bundle names stay content-addressed, so
-    #: they cannot collide with the hand-named trees.
+    #: `bundles` so PoLiMa bundles sit alongside any hand-built model trees
+    #: instead of creating a second place to look. Bundle names stay
+    #: content-addressed, so they cannot collide with hand-named trees.
     bundles_subdir: str = "models"
 
     @property
@@ -81,7 +70,7 @@ class BoardConfig:
 
     @property
     def native_src_dir(self) -> str:
-        return self.path("src", "native")
+        return self.path("src", "runtime")
 
     @property
     def python_src_dir(self) -> str:
@@ -108,15 +97,22 @@ class BoardConfig:
 class PathsConfig:
     """Host-side locations. The training host keeps its existing layout --
     /ml_datasets and the conda envs are NOT relocated to /media/nvme; that
-    applies to the board only."""
+    applies to the DevKit only."""
 
     dataset_parent: Path = Path("/ml_datasets")
     outputs: Path | None = None             # None -> polima/outputs
     build_root: Path | None = None          # None -> <outputs>/build
     # $HOME/sima-sdk-extensions/model-compiler/bin -- overridable by
-    # $MODEL_COMPILER_BIN, which the legacy controllers already honour.
+    # $MODEL_COMPILER_BIN.
     model_compiler_bin: Path | None = None
     lerobot_dir: Path | None = None         # host clone used for training
+    # GR00T compile (`polima compile --policy groot`): each model family's export
+    # interpreter and its Isaac-GR00T checkout. $POLIMA_GROOT16_PYTHON etc.
+    groot16_python: Path | None = None
+    groot16_source: Path | None = None
+    groot17_python: Path | None = None
+    groot17_source: Path | None = None
+    groot17_backbone: str = ""             # Hub repository id or local directory
 
 
 @dataclass

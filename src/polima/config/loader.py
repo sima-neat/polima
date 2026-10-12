@@ -1,19 +1,8 @@
-"""Layered config loading. Stdlib only (PyYAML optional).
+"""Load configuration from defaults, package and user files, environment, and CLI.
 
 Precedence, lowest to highest:
-
-    1. dataclass defaults              (polima.config.base)
-    2. polima/.polima.yaml             (or .polima.json when PyYAML is absent)
-    3. $POLIMA_* environment variables
-    4. --config FILE
-    5. explicit CLI flags
-
-This is deliberately not pydantic: pydantic is installed in none of the eight
-conda envs, none of the model-compiler venv, and not on the board -- and
-polima.config is imported by polima.compile.afe_compile, which runs inside the
-compiler venv. Nor is it draccus as the core: draccus lives only in the training
-envs and wants to own sys.argv. draccus appears at exactly two boundaries where
-lerobot already owns the CLI (see polima.config.draccus_adapter).
+    defaults -> package .polima.yaml/.json -> user config.json -> environment
+    -> --config FILE -> explicit CLI flags.
 """
 
 from __future__ import annotations
@@ -36,6 +25,7 @@ ENV_PREFIX = "POLIMA_"
 ENV_MAP = {
     "BOARD": "board.host",
     "BOARD_HOST": "board.host",
+    "DEVKIT": "board.host",  # wins over the older names above
     "BOARD_ROOT": "board.root",
     "BOARD_PORT": "board.port",
     "BUILD_JOBS": "board.build_jobs",
@@ -43,21 +33,32 @@ ENV_MAP = {
     "OUTPUTS": "paths.outputs",
     "MODEL_COMPILER_BIN": "paths.model_compiler_bin",
     "LEROBOT_DIR": "paths.lerobot_dir",
+    "GROOT16_PYTHON": "paths.groot16_python",
+    "GROOT16_SOURCE": "paths.groot16_source",
+    "GROOT17_PYTHON": "paths.groot17_python",
+    "GROOT17_SOURCE": "paths.groot17_source",
+    "GROOT17_BACKBONE": "paths.groot17_backbone",
     "CONDA_BASE": "conda_base",
     "OFFLINE": "offline",
     "DRY_RUN": "dry_run",
     "LOG_LEVEL": "log_level",
 }
 
-# Legacy env vars PoLiMa still honours so an operator's existing shell keeps
-# working. These predate PoLiMa and are read by the legacy scripts too.
-LEGACY_ENV_MAP = {
+# Unprefixed env vars PoLiMa also honours, so an operator's existing shell keeps
+# working.
+UNPREFIXED_ENV_MAP = {
     "MODEL_COMPILER_BIN": "paths.model_compiler_bin",
 }
 
 
 def config_file_candidates() -> list[Path]:
     return [package_root() / ".polima.yaml", package_root() / ".polima.json"]
+
+
+def user_config_file() -> Path:
+    """The current user's persistent settings, independent of installation location."""
+    root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config").expanduser()
+    return root / "polima" / "config.json"
 
 
 def load(
@@ -73,6 +74,10 @@ def load(
         if candidate.is_file():
             data = merge(data, _read_config_file(candidate))
             break
+
+    user_file = user_config_file()
+    if user_file.is_file():
+        data = merge(data, _read_config_file(user_file))
 
     if use_env:
         data = merge(data, _from_env())
@@ -93,7 +98,7 @@ def load(
 
 def save(config: SiteConfig, path: str | Path) -> Path:
     """Write a config back out. Used by `polima deploy` to ship robot.json to the
-    board, which is what retires the env-var IPC."""
+    DevKit."""
     from polima.util.jsonio import write_json
 
     return write_json(path, to_dict(config))
@@ -102,7 +107,7 @@ def save(config: SiteConfig, path: str | Path) -> Path:
 def _read_config_file(path: Path) -> dict:
     if path.suffix in (".yaml", ".yml"):
         try:
-            import yaml  # noqa: PLC0415 - optional, absent on the board
+            import yaml
         except ImportError as exc:
             raise ConfigError(
                 f"{path} needs PyYAML; install it or use .polima.json instead"
@@ -121,7 +126,7 @@ def _from_env() -> dict:
         value = os.environ.get(ENV_PREFIX + suffix)
         if value not in (None, ""):
             flat[dotted] = value
-    for name, dotted in LEGACY_ENV_MAP.items():
+    for name, dotted in UNPREFIXED_ENV_MAP.items():
         value = os.environ.get(name)
         if value not in (None, "") and dotted not in flat:
             flat[dotted] = value

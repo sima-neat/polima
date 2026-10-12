@@ -1,44 +1,26 @@
-"""GR00T N1.6 -- Eagle VLM + flow-matching DiT, third port into PoLiMa.
+"""GR00T N1.6 -- Eagle VLM + flow-matching DiT.
 
-Every constant is transcribed from the working GR00T-N1.6 stack, not invented:
+## Graph structure
 
-  GR00T-N1.6/devkit/groot_full_llima/groot_full_llima.cpp       pipeline, sizes
-  GR00T-N1.6/scripts/export_groot_modalix_eagle.py              the Eagle cut
-  GR00T-N1.6/scripts/export_groot_modalix_action.py             the action cut
-  GR00T-N1.6/scripts/groot_modalix_compile_controller.py        per-graph flags
-  GR00T-N1.6/train_groot_local.sh                               fine-tune, cameras
-  GR00T-N1.6/config/modality.json                               SO-101 modalities
-
-## How it differs from SmolVLA, structurally
-
-SmolVLA cuts into four graphs. GR00T cuts into forty-five, because neither the
-Eagle backbone nor the 32-block DiT fits the compiler in one piece: the VLM is
-split into 26 stages and the action head into 19. That is the whole reason this
-spec is generated rather than typed out.
+GR00T cuts into forty-five graphs, because neither the Eagle backbone nor the
+32-block DiT fits the compiler in one piece: the VLM is split into 26 stages and
+the action head into 19. That is the whole reason this spec is generated rather
+than typed out.
 
 Forty-five graphs would also mean forty-five upload/download round trips, which
 is what the two `run_elf_chain` steps exist to avoid -- sixteen vision ELFs and
-nine language ELFs each run device-resident behind a single transfer. The build
-tree's own validation records what that is worth: Eagle fell from 362 ms to
-169 ms when the chains landed, taking the full image-to-action pipeline from
-652 ms to 457 ms.
+nine language ELFs each run device-resident behind a single transfer.
 
-## Two horizons, and which one this spec declares
+## Action horizon
 
-The compiled artifacts in `GR00T-N1.6/outputs/modalix_groot_n1d6_base_gr1/` are
-the *base* GR1 checkpoint: 50-step action horizon, embodiment id 20, 128-wide
-state and action lanes. `train_groot_local.sh` fine-tunes the same architecture
-on the local two-camera SO-101 dataset under `NEW_EMBODIMENT` with a 16-step
-horizon (`config/so101_config.py`).
-
-This spec declares the 50-step geometry, because that is the only decomposition
-that has been exported, compiled, and measured end to end. A 16-step bundle is
-the same graph shapes with `CHUNK = 16`; `runtime.CHUNK` is the single place
-that changes, and every dependent size is derived from it.
+This spec declares the 50-step geometry of the base GR1 checkpoint (embodiment
+id 20, 128-wide state and action lanes). A 16-step bundle is the same graph
+shapes with `CHUNK = 16`; `runtime.CHUNK` is the single place that changes, and
+every dependent size is derived from it.
 
 ## Language conditioning
 
-Like SmolVLA, GR00T is language-conditioned, so `single_task` is False.
+GR00T is language-conditioned, so `single_task` is False.
 Export discovers every trained instruction from the dataset and precomputes one
 prompt row in `constants/prompt_embeddings`. The request header's flags select
 that row, so all trained tasks share one set of compiled ELFs without shipping
@@ -52,12 +34,10 @@ from polima.policies.base import (
     CalibrationSource,
     CompilePlan,
     DatasetContract,
-    DatasetConverter,
     GraphSpec,
     PolicySpec,
     RobotSpec,
     TensorSpec,
-    TrainSpec,
     WireSpec,
 )
 from polima.policies.groot.runtime import (
@@ -86,7 +66,7 @@ from polima.policies.groot.runtime import (
 )
 from polima.policies.registry import register_policy
 
-#: SO-101 follower joints, in dataset order. Same arm as ACT and SmolVLA.
+#: SO-101 follower joints, in dataset order. Same arm as ACT.
 JOINT_NAMES = (
     "shoulder_pan.pos",
     "shoulder_lift.pos",
@@ -168,9 +148,8 @@ def _eagle_graphs() -> tuple[GraphSpec, ...]:
     # The connector breaks the chain: the host folds the vision grid into
     # C*4 channels between post_norm and here. ModelSDK 2.1.3 accepts the
     # tessellated input boundary but the raw connector ELF returns ordinary
-    # contiguous BF16, not HWC16. This was confirmed on Modalix with the
-    # MyCobot fixture: plain decoding matched the ONNX range while HWC16
-    # byte-plane decoding manufactured non-finite values.
+    # contiguous BF16, not HWC16. On Modalix, plain decoding matches the ONNX
+    # range while HWC16 byte-plane decoding produces non-finite values.
     graphs.append(GraphSpec(
         name="eagle_vision_connector",
         builder="polima.policies.groot.graphs:eagle_vision_connector",
@@ -264,7 +243,7 @@ GROOT_SPEC = PolicySpec(
         camera_keys=("observation.images.overhead", "observation.images.wrist"),
         camera_shape=(CAPTURE_HEIGHT, CAPTURE_WIDTH, 3),
         fps=30,
-        codebase_version="v3.0",
+        codebase_version=("v2.0", "v2.1"),
         single_task=False,
         task_canonicalizer="polima.data.contract:canonical_task",
         # GR00T addresses cameras by modality name, not by LeRobot feature key.
@@ -273,41 +252,6 @@ GROOT_SPEC = PolicySpec(
             "observation.images.overhead": "front",
             "observation.images.wrist": "wrist",
         },
-        # GR00T trains on LeRobot v2.1, which v3.0 datasets have to be
-        # downgraded into -- in a second environment, because the converter and
-        # the trainer need incompatible lerobot versions.
-        converter=DatasetConverter(
-            name="lerobot-v3-to-v2.1",
-            conda_env="groot-n1.6-convert",
-            entrypoint=("scripts/lerobot_conversion/convert_v3_to_v2.py",),
-            target_codebase_version="v2.1",
-            # modality.json lands in the *converted* v2.1 tree, which is why it
-            # is post_copy here and not extra_meta_files: requiring it of the
-            # v3.0 source would reject every dataset before conversion runs.
-            post_copy=(("config/mycobot_modality.json", "meta/modality.json"),),
-        ),
-    ),
-    # ------------------------------------------------- checkpoint provenance --
-    train=TrainSpec(
-        backend="groot-launch-finetune",
-        conda_env="groot-n1.6",
-        repo_dir_hint="GR00T-N1.6/Isaac-GR00T",
-        entrypoint=("gr00t/experiment/launch_finetune.py",),
-        build_args="polima.policies.groot.train:build_args",
-        defaults={
-            "steps": 20_000,
-            "batch_size": 8,
-            "embodiment_tag": "NEW_EMBODIMENT",
-            "action_horizon": 16,
-            "tune_projector": True,
-            "tune_diffusion_model": True,
-            "tune_llm": False,
-            "tune_visual": False,
-        },
-        augmentation_tfs=(
-            '{"brightness": 0.3, "contrast": 0.4, "saturation": 0.5, "hue": 0.08}'
-        ),
-        checkpoint_glob="checkpoint-*",
     ),
     # --------------------------------------------------------------- compile --
     compile=CompilePlan(
@@ -316,9 +260,8 @@ GROOT_SPEC = PolicySpec(
         fixture_entry="polima.policies.groot.graphs:write_fixtures",
         normalization_entry="polima.policies.groot.graphs:write_normalization",
         fixture_file="groot_fixture.npz",
-        # The Eagle stack accumulates BF16 error over 26 stages; the build
-        # tree's own report records cosine 0.9977 against the BF16 reference,
-        # so the chain tolerance is looser than SmolVLA's.
+        # The Eagle stack accumulates BF16 error over 26 stages (cosine 0.9977
+        # against the BF16 reference), so the chain tolerance is loose.
         verify_atol=1e-2,
         verify_rtol=1e-2,
         graphs=(*_eagle_graphs(), *_action_graphs()),
@@ -341,7 +284,7 @@ GROOT_SPEC = PolicySpec(
             TensorSpec("noise", (CHUNK, ACTION_LANE)),
         ),
         response_shape=(CHUNK, ACTION_DIM),
-        # Server-side, as for SmolVLA: the board already holds the statistics
+        # Server-side: the DevKit already holds the statistics
         # because the state lane is normalized before it is projected.
         normalization_side="server",
         stats_file="normalization_stats.npz",
@@ -355,7 +298,7 @@ GROOT_SPEC = PolicySpec(
         default_fps=30,
         max_relative_target=12,
         aggregate_fn="weighted_average",
-        # Short 16-action plans: always request the next one (20 trials, 11 picks).
+        # Short 16-action plans: always request the next one.
         chunk_threshold=1.0,
         image_preprocessor="polima.policies.groot.graphs:patchify_for_wire",
     ),

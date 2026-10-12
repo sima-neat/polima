@@ -1,33 +1,8 @@
-"""`polima-compile` -- produce a deployable bundle.
+"""Export a checkpoint, compile its graphs and package a deployment bundle.
 
-Two ways in:
-
-  --import-legacy <build_dir>   adopt an already-built compiler tree unchanged.
-                                Needs no compiler, so it runs anywhere.
-  --build-dir <dir>             quantize and compile the ONNX graphs in that
-                                tree into ELFs, then pack a bundle.
-
-The second path replaces the per-policy shell loops in
-`ACT/scripts/compile_deploy_act_som.sh` and
-`SmolVLA/scripts/compile_deploy_smolvla_som.sh`. It is verified by reproduction:
-run against the tree that produced the deployed ACT bundle, it regenerates the
-ELFs byte for byte.
-
-`--stop-after compile` leaves the build tree without packing, which is what you
-want while iterating on a single graph.
-
-A compile recompiles. The per-graph content key still exists and is still
-recorded, but skipping on it is opt-in via `--reuse` -- "it said reused and I
-wanted a build" is a worse failure than spending the nine minutes, especially
-when the export step re-runs either way and makes it look like work happened.
-
-Run with NO arguments at a terminal, it opens an interactive session instead of
-printing the flags to read: the checkpoints and build trees are on disk, so it
-finds them and offers them (see polima.cli.wizard). The session only composes a
-command line -- it prints the exact `polima compile ...` it is about to run and
-asks first -- so there is still one code path, and using it teaches the flags.
-Piped or scripted invocations are untouched: no TTY means the old message and
-exit 2.
+ACT uses --checkpoint with --build-dir. GR00T uses --policy groot with
+--checkpoint, --dataset and --output. Existing graph builds can be compiled
+with --build-dir; --reuse explicitly retains graphs with matching content keys.
 """
 
 from __future__ import annotations
@@ -38,7 +13,6 @@ import json
 import sys
 from pathlib import Path
 
-from polima.cli import wizard
 from polima.compile.precision import PRECISION_PROFILES, apply_precision_profile
 from polima.config.loader import load
 from polima.policies.registry import get_policy
@@ -48,11 +22,11 @@ from polima.util import table
 def needs_capability(argv: list[str]) -> str | None:
     """Return the external capability needed by the requested terminal stage.
 
-    Importing legacy artifacts and stopping after checkpoint-to-ONNX export do
+    Importing an already-built tree and stopping after checkpoint-to-ONNX export do
     not need ModelSDK. Quantization, compilation, and packing fresh artifacts
     still require the compiler venv to be reachable as a subprocess.
     """
-    if any(a == "--import-legacy" or a.startswith("--import-legacy=") for a in argv):
+    if any(a == "--import-build" or a.startswith("--import-build=") for a in argv):
         return None
     export_only = "--stop-after=export" in argv or any(
         current == "--stop-after" and following == "export"
@@ -60,26 +34,24 @@ def needs_capability(argv: list[str]) -> str | None:
     )
     if export_only:
         return None
-    # A bare call opens the interactive session, which offers packing (no
-    # compiler needed) alongside the compile paths and reports the gap itself.
-    # Gating it here would exit 3 before it could say any of that.
     if not argv:
-        return None
+        return None  # prints usage
     return "compile"
 
 
 
 def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
-    if wizard.bare_invocation_is_interactive(argv):
-        composed = _session(parent)
-        if composed is None:
-            return 130
-        argv = composed
+    if _groot_build(argv):
+        # Checkpoint + dataset -> optimised robot bundle, staged and resumable
+        # (polima.compile.groot); the --build-dir/--import-build paths stay below.
+        from polima.compile.groot import main as groot_main
 
-    parser = argparse.ArgumentParser(prog="polima-compile")
+        return groot_main(argv, load(config_file=getattr(parent, "config", None)))
+
+    parser = argparse.ArgumentParser(prog="polima compile")
     parser.add_argument("--policy", default="act")
     parser.add_argument(
-        "--import-legacy", metavar="BUILD_DIR", help=argparse.SUPPRESS,
+        "--import-build", metavar="BUILD_DIR", help=argparse.SUPPRESS,
     )
     parser.add_argument("--build-dir", metavar="DIR",
                         help="build tree holding onnx/ and calibration/ to compile")
@@ -106,8 +78,8 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
                         help="skip graphs whose content key is unchanged "
                              "(off by default: a compile recompiles)")
     parser.add_argument("--force", action="store_true",
-                        help=argparse.SUPPRESS)   # now the default; kept so old
-                                                  # commands and scripts still run
+                        help=argparse.SUPPRESS)   # accepted as a no-op: recompiling
+                                                  # is already the default
     parser.add_argument("-j", "--jobs", type=int, default=1, metavar="N",
                         help="compile N graphs at once (afe is ~1 core and "
                              "~1.6 GB per graph; memory is the limit, not CPU)")
@@ -124,8 +96,8 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     )
     dry_run = bool(getattr(parent, "dry_run", False))
 
-    if args.import_legacy and args.build_dir:
-        print("polima-compile: pass either --import-legacy or --build-dir, not both",
+    if args.import_build and args.build_dir:
+        print("polima compile: pass either --import-build or --build-dir, not both",
               file=sys.stderr)
         return 2
 
@@ -133,45 +105,26 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
         return _compile(args, config, output_root, dry_run)
 
     if args.checkpoint:
-        print("polima-compile: --checkpoint also needs --build-dir, naming where "
+        print("polima compile: --checkpoint also needs --build-dir, naming where "
               "the exported graphs and ELFs go", file=sys.stderr)
         return 2
 
-    if not args.import_legacy:
+    if not args.import_build:
         print(
-            "polima-compile: nothing to do. Pass --checkpoint <path> and --build-dir <dir>.",
+            "polima compile: nothing to do. Pass --checkpoint <path> and --build-dir <dir>.",
             file=sys.stderr,
         )
         return 2
 
-    return _import_legacy(args, output_root)
+    return _import_build(args, output_root)
 
 
-def _session(parent: argparse.Namespace | None) -> list[str] | None:
-    """Compose an argv interactively, then fall through to the normal parse.
-
-    Returns None when the user cancels, which `run` reports as 130 -- the shell
-    convention for an interrupted command, so a cancelled session is
-    distinguishable from a failed compile.
-    """
-    from polima import role
-    from polima.policies.registry import load_all
-
-    # load_all, not available(): the latter lists built-ins whose module may not
-    # import here, and offering one only to raise on get_policy is worse than
-    # not offering it.
-    specs = load_all(strict=False)
-    if not specs:
-        print("polima-compile: no policy is loadable here", file=sys.stderr)
-        return None
-    try:
-        return wizard.compose(specs, can_compile=role.detect().can_compile)
-    except wizard.Cancelled:
-        print("\n  cancelled")
-        return None
-    except KeyboardInterrupt:
-        print("\n  cancelled")
-        return None
+def _groot_build(argv: list[str]) -> bool:
+    """`--policy groot` without --build-dir/--import-build: checkpoint-to-bundle build."""
+    policy = next((argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--policy"),
+                  next((a.split("=", 1)[1] for a in argv if a.startswith("--policy=")), None))
+    paths = ("--build-dir", "--import-build")
+    return policy == "groot" and not any(a.split("=", 1)[0] in paths for a in argv)
 
 
 # ------------------------------------------------------------------- compile
@@ -195,7 +148,7 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
             args.precision_profile,
         )
     except (OSError, TypeError, ValueError) as error:
-        print(f"polima-compile: {error}", file=sys.stderr)
+        print(f"polima compile: {error}", file=sys.stderr)
         return 2
 
     if args.checkpoint:
@@ -215,7 +168,7 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
     try:
         compiler_python = require_compiler_python(config)
     except FileNotFoundError as error:
-        print(f"polima-compile: {error}", file=sys.stderr)
+        print(f"polima compile: {error}", file=sys.stderr)
         return 2
 
     # The compiler venv has no polima installed, so it needs our src/ on
@@ -243,7 +196,7 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
             "  without it afe fails on a missing libLLVM."
         )
         print(
-            f"polima-compile: {compiler_python} cannot import afe.\n"
+            f"polima compile: {compiler_python} cannot import afe.\n"
             f"  {detail}\n"
             f"{hint}\n"
             "  Set MODEL_COMPILER_BIN, or run from the modelsdk environment.",
@@ -261,7 +214,7 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
     try:
         results = driver.run(only=args.graph)
     except CompileError as error:
-        print(f"polima-compile: {error}", file=sys.stderr)
+        print(f"polima compile: {error}", file=sys.stderr)
         return 2
 
     built = [r for r in results if r.status == "compiled"]
@@ -282,11 +235,11 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
 
     if args.stop_after == "compile" or dry_run:
         print(f"\n  build tree {build_dir}")
-        print(f"next:  polima-compile --build-dir {build_dir}   # to pack a bundle")
+        print(f"next:  polima compile --build-dir {build_dir}   # to pack a bundle")
         return 0
 
-    # A freshly compiled tree has the same shape as a legacy one -- that is
-    # deliberate (see Driver's docstring), so the Phase-1a packer takes it as is.
+    # A freshly compiled tree has the same shape as an imported one -- that is
+    # deliberate (see Driver's docstring), so the same packer takes it as is.
     return _pack(args, build_dir, output_root, spec)
 
 
@@ -303,7 +256,7 @@ def _export(args, spec, build_dir: Path, dry_run: bool) -> int:
     try:
         from polima.export.driver import export
     except ImportError as error:      # pragma: no cover - environment dependent
-        print(f"polima-compile: export needs torch + lerobot ({error}).\n"
+        print(f"polima compile: export needs torch + lerobot ({error}).\n"
               "  Rebuild the self-contained environment with `make venv`,\n"
               "  or compile an already-exported tree with --build-dir alone.",
               file=sys.stderr)
@@ -320,9 +273,8 @@ def _export(args, spec, build_dir: Path, dry_run: bool) -> int:
     except ModuleNotFoundError as error:   # pragma: no cover - environment dependent
         # The guard above only covers importing the driver. torch and lerobot
         # are reached later, inside the policy's own graph module, so without
-        # this the wrong environment produced a bare traceback -- easy to hit now
-        # that a bare `polima compile` offers checkpoints.
-        print(f"\npolima-compile: export needs {error.name}, which this "
+        # this the wrong environment would produce a bare traceback.
+        print(f"\npolima compile: export needs {error.name}, which this "
               f"interpreter does not have.\n"
               "  Rebuild the self-contained environment with `make venv`,\n"
               "  or compile an already-exported tree with --build-dir alone.",
@@ -340,7 +292,7 @@ def _export(args, spec, build_dir: Path, dry_run: bool) -> int:
     print(f"  verify    {verdict}  max_abs={report['max_abs']:.3e} "
           f"mean_abs={report['mean_abs']:.3e} (atol={report.get('atol', 'n/a')})")
     if not report["ok"]:
-        print("\npolima-compile: the ONNX chain does not match PyTorch, so "
+        print("\npolima compile: the ONNX chain does not match PyTorch, so "
               "compiling it would bake in the error.\n"
               "  This is an export bug, not a quantization one -- nothing has "
               "been quantized yet.", file=sys.stderr)
@@ -349,32 +301,32 @@ def _export(args, spec, build_dir: Path, dry_run: bool) -> int:
 
 
 def _pack(args, build_dir: Path, output_root: Path, spec=None) -> int:
-    from polima.bundle.import_legacy import import_legacy
+    from polima.bundle.importer import import_build
 
     spec = spec or apply_precision_profile(
         _specialize_spec(get_policy(args.policy), build_dir=build_dir),
         args.precision_profile,
     )
-    bundle = import_legacy(build_dir, spec, output_root=output_root,
+    bundle = import_build(build_dir, spec, output_root=output_root,
                            dataset=args.dataset, steps=args.steps,
                            source="polima-compile")
     return _report(bundle, args.json)
 
 
-def _import_legacy(args, output_root: Path) -> int:
-    from polima.bundle.import_legacy import import_legacy
+def _import_build(args, output_root: Path) -> int:
+    from polima.bundle.importer import import_build
 
     try:
         spec = apply_precision_profile(
             _specialize_spec(
-                get_policy(args.policy), build_dir=Path(args.import_legacy).resolve()
+                get_policy(args.policy), build_dir=Path(args.import_build).resolve()
             ),
             args.precision_profile,
         )
     except (OSError, TypeError, ValueError) as error:
-        print(f"polima-compile: {error}", file=sys.stderr)
+        print(f"polima compile: {error}", file=sys.stderr)
         return 2
-    bundle = import_legacy(args.import_legacy, spec, output_root=output_root,
+    bundle = import_build(args.import_build, spec, output_root=output_root,
                            dataset=args.dataset, steps=args.steps)
     return _report(bundle, args.json)
 
@@ -393,9 +345,9 @@ def _report(bundle, as_json: bool) -> int:
         headers=["graph", "precision", "elf", "sha256", "in", "out"],
     ))
     print(f"\n  root      {bundle.root}")
-    print(f"  source    {bundle.source} <- {bundle.legacy_source_dir}")
+    print(f"  source    {bundle.source} <- {bundle.source_dir}")
     print(f"  total     {bundle.total_elf_bytes / 1048576:.1f} MiB of ELF")
-    print(f"\nnext:  polima-deploy --bundle {bundle.bundle_id}")
+    print(f"\nnext:  polima deploy --bundle {bundle.bundle_id}")
     return 0
 
 
@@ -422,8 +374,8 @@ def _specialize_spec(
         checkpoint = contract.get("checkpoint")
         dataset_root = dataset_root or contract.get("dataset_root")
 
-    # Old build contracts did not record a profile. Preserve their historical
-    # policy spec when the original checkpoint is no longer mounted.
+    # A build contract without a profile keeps the registry policy spec when
+    # the original checkpoint is not mounted.
     usable_checkpoint = checkpoint and Path(checkpoint).is_dir()
     if not profile and not usable_checkpoint:
         return spec

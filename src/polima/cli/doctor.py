@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -52,6 +51,9 @@ CORE_MODULES = (
 COMPILER_BIN_CANDIDATES = toolchain.SEARCH_PATH
 
 
+#: Policies in the code that are not part of this release; doctor does not list them.
+UNRELEASED: tuple[str, ...] = ()
+
 #: Sections about the build computer; a DevKit has no compiler or datasets.
 HOST_ONLY_SECTIONS = ("model compiler", "datasets")
 
@@ -78,9 +80,10 @@ class Doctor:
 def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     parser = argparse.ArgumentParser(prog="polima doctor", description=__doc__)
     parser.add_argument("--json", action="store_true", help="machine-readable output")
-    parser.add_argument("--board", action="store_true", help="only the board checks")
+    parser.add_argument("--devkit", "--board", dest="board", action="store_true", help="only the DevKit checks")
     parser.add_argument("--imports", action="store_true", help="only the import matrix")
-    parser.add_argument("--no-board", action="store_true", help="skip board reachability")
+    parser.add_argument("--no-devkit", "--no-board", dest="no_board", action="store_true",
+                        help="skip the DevKit checks")
     parser.add_argument("--all", action="store_true",
                         help="run every section, including ones this machine's role skips")
     args = parser.parse_args(argv)
@@ -94,7 +97,7 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
 
     capabilities = role.detect()
     # A board runs the host-only sections only when explicitly asked. The role,
-    # not the flag, is the default: `polima-doctor` should be clean on a healthy
+    # not the flag, is the default: `polima doctor` should be clean on a healthy
     # SoM without anyone having to know which flags to pass.
     on_board = capabilities.role == role.BOARD
     host_side = args.all or not on_board
@@ -171,7 +174,7 @@ def skip_host_sections(doc: Doctor, capabilities) -> None:
     doc.heading("host-only checks")
     doc.record(
         table.SKIP, ", ".join(HOST_ONLY_SECTIONS),
-        f"not applicable on this {capabilities.machine} board "
+        f"not applicable on this {capabilities.machine} DevKit "
         f"-- pass --all to run them anyway",
     )
 
@@ -214,7 +217,7 @@ def check_import_matrix(doc: Doctor, config) -> None:
 
     source_root = str(Path(__file__).resolve().parents[2])
     snippet = (
-        "import sys; sys.path.insert(0, %r);\n" % source_root
+        f"import sys; sys.path.insert(0, {source_root!r});\n"
         + "import importlib\n"
         + f"mods = {list(CORE_MODULES)!r}\n"
         + "bad = []\n"
@@ -229,7 +232,7 @@ def check_import_matrix(doc: Doctor, config) -> None:
             doc.record(table.SKIP, f"imports [{label}]", "interpreter not found")
             continue
         result = subprocess.run(
-            [python, "-c", snippet], capture_output=True, text=True, timeout=120
+            [python, "-c", snippet], capture_output=True, text=True, timeout=120, check=False
         )
         failures = result.stdout.strip()
         version = _capture([python, "-c", "import sys;print(sys.version.split()[0])"]).strip()
@@ -281,8 +284,8 @@ def check_compiler(doc: Doctor, config) -> None:
     # at /sdk-extensions/..., which exists only inside the SDK container.
     lmm = _capture(
         [python, "-c",
-         "import sima_lmm.host.compile_lmm as m;"
-         "print(','.join(n for n in ('main','gen_files') if hasattr(m,n)))"]
+         ("import sima_lmm.host.compile_lmm as m;"
+          "print(','.join(n for n in ('main','gen_files') if hasattr(m,n)))")]
     ).strip()
     doc.record(
         table.OK if "gen_files" in lmm else table.FAIL,
@@ -312,7 +315,7 @@ def check_policies(doc: Doctor) -> None:
     from polima.policies.registry import BUILTIN, load_all
 
     specs = load_all(strict=False)
-    for name in BUILTIN:
+    for name in (n for n in BUILTIN if n not in UNRELEASED):
         spec = specs.get(name)
         if spec is None:
             doc.record(table.SKIP, f"policy {name}", "not ported yet")
@@ -362,10 +365,10 @@ def check_board(doc: Doctor, config, *, local: bool = False) -> None:
     """Probe the board -- over ssh from a host, directly when this IS the board."""
     board = config.board
     if not local and not board.host:
-        doc.heading("board")
-        doc.record(table.WARN, "board address", NO_BOARD_MESSAGE)
+        doc.heading("DevKit")
+        doc.record(table.WARN, "DevKit address", NO_BOARD_MESSAGE)
         return
-    doc.heading("board (this machine)" if local else f"board {board.host}")
+    doc.heading("DevKit (this machine)" if local else f"DevKit {board.host}")
     probe = (
         "echo VER=$(uname -m); "
         "echo CORES=$(nproc); "
@@ -381,7 +384,7 @@ def check_board(doc: Doctor, config, *, local: bool = False) -> None:
         else ["ssh", *board.ssh_options, "-o", f"ConnectTimeout={int(board.connect_timeout_s)}",
               board.host, probe]
     )
-    result = subprocess.run(argv, capture_output=True, text=True)
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         doc.record(
             table.WARN, "reachable",
@@ -410,7 +413,7 @@ def check_board(doc: Doctor, config, *, local: bool = False) -> None:
     )
     doc.record(
         table.OK if facts.get("JSON") else table.WARN,
-        "nlohmann/json", facts.get("JSON") or "absent -- vendor it into native/third_party",
+        "nlohmann/json", facts.get("JSON") or "absent -- vendor it into runtime/third_party",
     )
     doc.record(
         table.OK if facts.get("POLIMA") else table.SKIP,
@@ -423,7 +426,7 @@ def check_board(doc: Doctor, config, *, local: bool = False) -> None:
 
 def _capture(argv: list[str], timeout: float = 60) -> str:
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
         return result.stdout if result.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""

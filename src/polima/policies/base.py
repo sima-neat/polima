@@ -4,10 +4,9 @@ Adding a policy should mean writing one PolicySpec, not copying ~3,000 lines.
 A spec declares, declaratively and in one place:
 
   * DatasetContract  -- what the on-disk LeRobotDataset must look like
-  * TrainSpec        -- how to invoke training (lerobot-train vs launch_finetune)
   * CompilePlan      -- the ONNX subgraph decomposition and how each graph compiles
   * RuntimePlan      -- what runs on the MLA, in what order, with what host glue
-  * WireSpec         -- the TCP protocol between the robot client and the SoM server
+  * WireSpec         -- the TCP protocol between the robot client and the server
   * RobotSpec        -- cameras, joints, chunk size for the robot client
 
 Everything here is a frozen dataclass and JSON round-trippable, because a spec
@@ -23,10 +22,11 @@ STDLIB ONLY. No numpy, no torch. See the dependency-floor note in pyproject.toml
 from __future__ import annotations
 
 import importlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
 from math import prod
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Literal
 
 Layout = Literal["NCHW", "NHWC"]
 Precision = Literal["int8", "bf16", "mixed"]
@@ -67,7 +67,7 @@ class TensorSpec:
     crosses the accelerator boundary. 'hwc16' means the 16-lane byte-planed
     tessellated form that TensorDRAMLayout.HWC16 produces; the runtime needs
     logical_width/logical_channels to reverse it. Bare ModelSDK ELFs can expose
-    plain output even when a legacy MPK-based application applied this transform.
+    plain output even where an MPK-based application applies this transform.
     """
 
     name: str
@@ -94,29 +94,10 @@ class TensorSpec:
 
 
 @dataclass(frozen=True)
-class DatasetConverter:
-    """A required dataset rewrite before training.
-
-    Exists for GR00T, which needs LeRobotDataset v3.0 downgraded to v2.1 in a
-    *second* conda env (groot-n1.6-convert). Expressing it here is what stops
-    that from being 200 lines of interleaved bash in train_groot_local.sh.
-    """
-
-    name: str
-    conda_env: str
-    entrypoint: tuple[str, ...]
-    target_codebase_version: str
-    post_copy: tuple[tuple[str, str], ...] = ()  # (src_in_repo, dst_relative_to_dataset)
-    space_factor: float = 2.2  # convert needs ~2.2x the source size
-
-
-@dataclass(frozen=True)
 class DatasetContract:
     """What a dataset must look like for this policy to train on it.
 
-    Generalizes ACT/scripts/validate_act_datasets.py, whose SO-101 assertions are
-    hardcoded. Making them data means SmolVLA and GR00T get real validation for
-    free instead of an inline `[[ -f meta/info.json ]]`.
+    Making the rules data means every policy gets the same validation.
     """
 
     state_names: tuple[str, ...]
@@ -130,12 +111,11 @@ class DatasetContract:
     #: dataset that renamed them would otherwise fail deep inside torch.
     state_key: str = "observation.state"
     action_key: str = "action"
-    codebase_version: str = "v3.0"
+    codebase_version: str | tuple[str, ...] = "v3.0"  # one version, or the accepted ones
     single_task: bool = True  # False => language-conditioned
     task_canonicalizer: str | None = None  # dotted path
     rename_map: Mapping[str, str] = field(default_factory=dict)
     empty_cameras: int = 0
-    converter: DatasetConverter | None = None
     extra_meta_files: tuple[str, ...] = ()
 
     def validate(self, where: str) -> None:
@@ -147,39 +127,6 @@ class DatasetContract:
             raise SpecError(f"{where}: at least one camera key is required")
         if len(self.camera_shape) != 3:
             raise SpecError(f"{where}: camera_shape must be (H, W, C)")
-
-
-# ------------------------------------------------------------ checkpoint origin
-
-
-@dataclass(frozen=True)
-class TrainSpec:
-    """Where a checkpoint came from. PoLiMa does not train.
-
-    Training stays with `lerobot-train` in the model stacks; PoLiMa picks up at
-    the checkpoint and covers compile, deploy and robot control. What survives
-    here is only what the *export* stage needs in order to read a checkpoint
-    someone else produced:
-
-      conda_env        which environment has the torch + lerobot that can load it
-      checkpoint_glob  where checkpoints live under a run directory
-      backend          which trainer wrote it, so a mismatch is legible
-
-    The remaining fields describe the training invocation. They are retained
-    because they document how the checkpoints in this tree were produced -- and
-    because reading them is how `polima data validate` knows what a run expected
-    -- but nothing in PoLiMa executes them.
-    """
-
-    backend: Literal["lerobot-train", "groot-launch-finetune"]
-    conda_env: str
-    entrypoint: tuple[str, ...]
-    build_args: str  # dotted path -> (cfg, spec) -> list[str]
-    defaults: Mapping[str, Any] = field(default_factory=dict)
-    repo_dir_hint: str | None = None  # cwd for the invocation, e.g. "ACT/lerobot"
-    augmentation_tfs: str | None = None  # the ColorJitter/RandomAffine JSON blob
-    checkpoint_glob: str = "checkpoints/*/pretrained_model"
-    requires_offline_env: bool = True
 
 
 # --------------------------------------------------------------------- compile
@@ -222,11 +169,11 @@ class GraphSpec:
     #: large graphs.  Opt in to the stable-file watchdog in that case.
     exit_on_stable_elf: bool = False
     #: Directory names this graph is known by in hand-built trees. PoLiMa names
-    #: graphs for what they are (`vision`); the legacy SmolVLA scripts encode the
+    #: graphs for what they are (`vision`); hand-built trees may encode the
     #: precision and compiler in the directory (`vision_llima_bf16`). Listing the
-    #: aliases is what lets --import-legacy adopt an existing build instead of
+    #: aliases is what lets --import-build adopt an existing build instead of
     #: demanding it be recompiled under new names.
-    legacy_names: tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
     llima_args: tuple[str, ...] = ()
     #: Force the compiler-visible MLA input and output tensors to the same DRAM
     #: representation.  HWC is the contract used by device-resident chains:
@@ -288,8 +235,8 @@ class CompilePlan:
     normalization_entry: str | None = None
     #: Reference tensors written by `fixture_entry` and read back by the verify
     #: step and by bundle packing. Named here so the generic export driver has no
-    #: policy-specific filename in it; ACT keeps its legacy `act_fixture.npz`
-    #: because existing build trees on disk use that name.
+    #: policy-specific filename in it; ACT keeps `act_fixture.npz` because
+    #: existing build trees use that name.
     fixture_file: str = "fixture.npz"
     verify_atol: float = 1e-4
     verify_rtol: float = 1e-3
@@ -308,9 +255,8 @@ class CompilePlan:
 # ---------------------------------------------------------- on-device runtime
 
 
-#: Opcodes the native plan interpreter (native/src/plan.cpp) understands.
-#: ACT needs only run_elf/pack/gather_strided -- that is the whole Phase-1
-#: interpreter. The rest land with SmolVLA in Phase 4.
+#: Opcodes the native plan interpreter (runtime/src/plan.cpp) understands.
+#: ACT needs only run_elf/pack/gather_strided.
 OPCODES = (
     "run_elf",  # Runner[graph].run(in -> out)
     "run_elf_chain",  # one upload/download around compatible device-resident ELFs
@@ -344,11 +290,10 @@ class Step:
 
 @dataclass(frozen=True)
 class RuntimePlan:
-    """Serialized to plan.json and interpreted on the board.
+    """Serialized to plan.json and interpreted on the DevKit.
 
-    This is what replaces act_llima.cpp's hand-written predict(): the ELF paths,
-    element counts and packing offsets currently baked into the binary's
-    constructor become data, so one polima_server serves every bundle.
+    The ELF paths, element counts and packing offsets are data, so one
+    polima_server serves every bundle.
     """
 
     buffers: Mapping[str, int]
@@ -421,11 +366,10 @@ class RuntimePlan:
 
 @dataclass(frozen=True)
 class WireSpec:
-    """The SoM TCP protocol.
+    """The DevKit TCP protocol.
 
-    Both legacy clients (act_som_client.py, smolvla_som_client.py) hardcode
-    struct.Struct("<IIII") / ("<IIIIfI") independently. Here it is data, so
-    polima.wire.protocol derives the packers and there is one client.
+    The framing is data, so polima.wire.protocol derives the packers and there is
+    one client for every policy.
     """
 
     magic: int
@@ -466,14 +410,9 @@ class RobotSpec:
     chunk_threshold: float = 0.5
     task_string: str | None = None
     image_preprocessor: str | None = None  # dotted path; None => identity
-    #: Default camera pixel format for the legacy SO-101 rigs. MyCobot profile
-    #: specialization overrides this with its separately measured dual-camera
-    #: contract; format is hardware/topology-specific, not a universal policy
-    #: constant.
+    #: Camera pixel format.
     camera_fourcc: str = "MJPG"
-    #: Per-role hardware capture rates. These are independent of the policy
-    #: control rate: the reference MyCobot cameras expose different valid V4L2
-    #: rates even though observations are consumed at 20 Hz.
+    #: Per-role camera capture rates, independent of the control rate.
     camera_capture_fps: Mapping[str, int] = field(default_factory=dict)
     #: role -> substring of the /dev/v4l/by-id name identifying that camera.
     #: Discovery matches on these instead of falling back on enumeration order:
@@ -489,8 +428,6 @@ class RobotSpec:
     def camera_config(self, devices: Mapping[str, str], fps: int | None = None) -> str:
         """Render lerobot's --robot.cameras draccus blob.
 
-        One place builds this string; the legacy stacks each hand-wrote it, which
-        is how the MJPG fix had to be applied twice.
         """
         entries = ", ".join(
             f"{key}: {{type: opencv, index_or_path: '{devices[key]}', "
@@ -512,18 +449,7 @@ def camera_hints_for_profile(
     roles: tuple[str, ...],
     inherited: Mapping[str, str],
 ) -> Mapping[str, str]:
-    """Return stable camera identities for a specialized robot profile.
-
-    The reference MyCobot capture rig was trained with the WSD camera as the
-    fixed/front view and the Generic camera as the arm-mounted/wrist view. Use
-    stable serial substrings, not enumeration order or broad product names. A
-    different rig therefore asks the operator instead of silently swapping two
-    otherwise valid image tensors.
-    """
-
-    if calibration_id == "mycobot280":
-        known = {"front": "202406051510", "wrist": "20220523"}
-        return {role: known[role] for role in roles if role in known}
+    """Stable camera identities for a specialized robot profile."""
     return {role: hint for role, hint in inherited.items() if role in roles}
 
 
@@ -533,16 +459,7 @@ def camera_capture_for_profile(
     inherited_fourcc: str,
     inherited_fps: Mapping[str, int],
 ) -> tuple[str, Mapping[str, int]]:
-    """Return the verified capture contract for a specialized robot.
-
-    The MyCobot rig has two cameras on a shared USB 2.0 path. After correcting
-    their semantic roles, the reproducible combination is WSD/front at 30 FPS
-    and Generic/wrist at 25 FPS, both YUYV. The policy loop remains 20 Hz.
-    """
-
-    if calibration_id == "mycobot280":
-        known = {"front": 30, "wrist": 25}
-        return "YUYV", {role: known[role] for role in roles if role in known}
+    """Camera pixel format and capture rates for a specialized robot profile."""
     return inherited_fourcc, {
         role: int(inherited_fps[role]) for role in roles if role in inherited_fps
     }
@@ -555,7 +472,7 @@ def camera_capture_for_profile(
 class SmokeSpec:
     """Pass/fail bar for the deployed-vs-PyTorch fixture check.
 
-    Defaults are ACT's, inherited from compile_deploy_act_som.sh. A policy
+    Defaults are ACT's. A policy
     whose graphs are quantized lands further from the reference and says so
     here, rather than every policy sharing one bar only ACT can meet.
     """
@@ -572,16 +489,13 @@ class PolicySpec:
     name: str
     display_name: str
     dataset: DatasetContract
-    train: TrainSpec
     compile: CompilePlan
     wire: WireSpec
     robot: RobotSpec
     runtime_plan_builder: str
     checkpoint_validator: str | None = None
     #: Optional pure-Python adapter that specializes a shared policy architecture
-    #: for the robot profile recorded by a checkpoint/build contract. ACT uses
-    #: this to keep one policy name while serving both 6-DoF SO-101 and 7-DoF
-    #: MyCobot checkpoints.
+    #: for the robot profile recorded by a checkpoint/build contract.
     profile_entry: str | None = None
     #: Policy-specific shape/runtime facts discovered from a checkpoint trace.
     #: GR00T uses this for prompt length and image-token windows; keeping them
@@ -690,8 +604,6 @@ class PolicySpec:
                 "magic_ascii": self.wire.magic_ascii,
                 "default_port": self.wire.default_port,
             },
-            "train_backend": self.train.backend,
-            "conda_env": self.train.conda_env,
         }
 
 

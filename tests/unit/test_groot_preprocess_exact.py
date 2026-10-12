@@ -1,10 +1,9 @@
 """prepare_groot_image must stay bit-identical to the per-pixel implementation.
 
-The lookup-table normalisation (2026-10-04) evaluates the same float32
-arithmetic once per (channel, byte) instead of once per pixel. The legacy
-functions below are verbatim copies of the code it replaced; every output is
-compared byte for byte on random, constant and gradient frames, for both SO-101
-GR00T contracts (N1.6 Eagle, N1.7 Qwen3).
+The lookup-table normalisation evaluates the same float32 arithmetic once per
+(channel, byte) instead of once per pixel. The reference functions below compute
+it per pixel; every output is compared byte for byte on random, constant and
+gradient frames, for both SO-101 GR00T contracts (N1.6 Eagle, N1.7 Qwen3).
 """
 
 from __future__ import annotations
@@ -45,7 +44,7 @@ QWEN_CONTEXT = {
 SKEWED = {"image_mean": [0.481, 0.458, 0.408], "image_std": [0.269, 0.261, 0.276]}
 
 
-def legacy_eagle(image: np.ndarray, context: dict) -> np.ndarray:
+def reference_eagle(image: np.ndarray, context: dict) -> np.ndarray:
     from PIL import Image
 
     from polima.policies.groot.runtime import PATCH, PATCH_CHANNELS
@@ -70,7 +69,7 @@ def legacy_eagle(image: np.ndarray, context: dict) -> np.ndarray:
     return folded.transpose(0, 2, 1, 3, 4).reshape(rows * columns, PATCH_CHANNELS)
 
 
-def legacy_qwen(image: np.ndarray, context: dict) -> np.ndarray:
+def reference_qwen(image: np.ndarray, context: dict) -> np.ndarray:
     from torchvision.transforms.functional import InterpolationMode, resize
 
     config = context["image_preprocess"]
@@ -110,17 +109,17 @@ def with_stats(context: dict, key: str) -> dict:
 
 
 @pytest.mark.parametrize(
-    ("context", "legacy"),
+    ("context", "reference"),
     [
-        (EAGLE_CONTEXT, legacy_eagle),
-        (with_stats(EAGLE_CONTEXT, "eagle"), legacy_eagle),
-        (QWEN_CONTEXT, legacy_qwen),
-        (with_stats(QWEN_CONTEXT, "qwen"), legacy_qwen),
+        (EAGLE_CONTEXT, reference_eagle),
+        (with_stats(EAGLE_CONTEXT, "eagle"), reference_eagle),
+        (QWEN_CONTEXT, reference_qwen),
+        (with_stats(QWEN_CONTEXT, "qwen"), reference_qwen),
     ],
 )
-def test_prepare_groot_image_bit_identical(context: dict, legacy) -> None:
+def test_prepare_groot_image_bit_identical(context: dict, reference) -> None:
     for frame in frames():
-        expected = legacy(frame, context)
+        expected = reference(frame, context)
         actual = policy.prepare_groot_image(frame, context)
         assert actual.dtype == expected.dtype == np.float32
         assert actual.shape == expected.shape

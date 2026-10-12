@@ -1,8 +1,4 @@
-"""Dataset contract validation.
-
-Pins the behaviour that ACT/scripts/validate_act_datasets.py implements with
-hardcoded SO-101 constants, now driven by DatasetContract.
-"""
+"""Dataset contract validation, driven by DatasetContract."""
 
 from __future__ import annotations
 
@@ -39,7 +35,7 @@ def write_dataset(root, *, features=None, fps=30, episodes=10, frames=1000,
         tasks_path = root / "meta" / "tasks.parquet"
         try:
             import pyarrow as arrow
-            import pyarrow.parquet as parquet
+            from pyarrow import parquet
         except ImportError:
             # PyArrow is optional for the base package; validation records that
             # the task check was skipped when it is not installed.
@@ -49,8 +45,7 @@ def write_dataset(root, *, features=None, fps=30, episodes=10, frames=1000,
     return root
 
 
-def test_canonical_task_matches_legacy_behaviour():
-    # Verbatim semantics from validate_act_datasets.py:20-21.
+def test_canonical_task():
     assert canonical_task("Pick up the RED cube.") == "pick up the red cube"
     assert canonical_task("  multiple   spaces  ") == "multiple spaces"
     assert canonical_task("Trailing!!!") == "trailing"
@@ -113,7 +108,7 @@ def test_wrong_camera_shape(tmp_path):
 
 
 def test_all_violations_collected_not_just_the_first(tmp_path):
-    """The legacy validator raises on the first problem; this one reports all."""
+    """Every problem is reported, not just the first."""
     features = {
         "observation.state": {"shape": [7], "names": ["a"]},
         "action": {"shape": [7], "names": ["a"]},

@@ -69,8 +69,10 @@ def create_app(root: Path | str = "/media/nvme/polima", runtime: StudioRuntime |
 
     @app.get("/api/v1/session")
     def session():
-        token = secrets.token_urlsafe(24)
-        csrf_tokens.add(token)
+        token = request.cookies.get("polima_csrf")
+        if token not in csrf_tokens:
+            token = secrets.token_urlsafe(24)
+            csrf_tokens.add(token)
         response = make_response(jsonify(csrf_token=token))
         response.set_cookie(
             "polima_csrf", token, httponly=True, samesite="Strict", secure=False, max_age=86400,

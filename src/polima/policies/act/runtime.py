@@ -1,8 +1,6 @@
 """ACT's on-device execution plan.
 
-This function emits, as data, exactly what
-ACT/devkit/act_llima/act_llima.cpp::ActModel::predict() does in hand-written C++
-(lines 124-147):
+This function emits, as data, the pipeline:
 
     camera0 = vision.run(image0)          -> run_elf
     camera1 = vision.run(image1)          -> run_elf
@@ -17,14 +15,14 @@ ACT/devkit/act_llima/act_llima.cpp::ActModel::predict() does in hand-written C++
         actions[step*D : +D] = padded[step*16 : +D]
 
 The offsets are not arbitrary: the stem graph reshapes its input to (1, 601, 512)
-and slices the profile-selected 6 or 7 state lanes, `[:, 1:301]` for camera 0,
-and `[:, 301:601]`
-for camera 1 (see EncoderStemPacked in ACT/scripts/export_act_modalix.py:125-129),
-so token 0 holds the state and each camera occupies 300 tokens of 512.
+and slices the profile's state lanes from token 0, `[:, 1:301]` for camera 0,
+and `[:, 301:601]` for camera 1 (see EncoderStemPacked in
+`polima.policies.act.graphs`), so token 0 holds the state and each camera
+occupies 300 tokens of 512.
 
 The 16-wide action head is also deliberate: DecoderActionRank4 widens the
-profile's 6- or 7-DoF head for MLA channel alignment and zero-fills the rest
-(export_act_modalix.py:145-149), so the host strides past 10 pad values per step.
+profile's action head for MLA channel alignment and zero-fills the rest, so the
+host strides past the padding in every step.
 """
 
 from __future__ import annotations
@@ -106,7 +104,6 @@ def build_plan(spec: PolicySpec, context: Any = None) -> RuntimePlan:
         steps=tuple(steps),
         result="actions",
         # ACT normalizes on the client from normalization_stats.npz, so the
-        # server needs no constants. (SmolVLA currently bakes 24 float literals
-        # into its binary; Phase 4 moves those to constants/normalization.json.)
+        # server needs no constants.
         sidecars=(),
     )

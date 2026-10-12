@@ -25,10 +25,9 @@ class RunConfig:
     wrist_camera: str
     preview: bool = True
     repeat: bool = True
-    #: The legacy clients' grasp-release episode detection: watch the gripper,
-    #: decide the task is finished, and drive back to the dataset rest pose.
-    #: Off means the arm executes the model's action chunk and nothing else.
-    autocomplete: bool = True
+    #: None selects the policy default; GR00T disables the gripper heuristic.
+    autocomplete: bool | None = None
+    speed: str = "fast"
     fps: int | None = None
     actions_per_chunk: int | None = None
     max_relative_target: float | None = None
@@ -39,6 +38,9 @@ class RunConfig:
         missing = [key for key in required if not str(value.get(key, "")).strip()]
         if missing:
             raise ValueError("missing run configuration: " + ", ".join(missing))
+        speed = value.get("speed", "slow" if value.get("fps") == 15 else "fast")
+        if speed not in ("fast", "slow"):
+            raise ValueError("speed must be fast or slow")
         fps = value.get("fps")
         actions = value.get("actions_per_chunk")
         target = value.get("max_relative_target")
@@ -56,7 +58,8 @@ class RunConfig:
             wrist_camera=str(value["wrist_camera"]),
             preview=bool(value.get("preview", True)),
             repeat=bool(value.get("repeat", True)),
-            autocomplete=bool(value.get("autocomplete", True)),
+            autocomplete=bool(value["autocomplete"]) if value.get("autocomplete") is not None else None,
+            speed=speed,
             fps=int(fps) if fps is not None else None,
             actions_per_chunk=int(actions) if actions is not None else None,
             max_relative_target=float(target) if target is not None else None,

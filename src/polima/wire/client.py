@@ -1,14 +1,7 @@
-"""One client for every policy's SoM server.
+"""One client for every policy's DevKit server.
 
-Replaces ACT/scripts/act_som_client.py (75 lines) and
-SmolVLA/scripts/smolvla_som_client.py (124), which implement the same wire
-format twice with their own `_recv_exact`, struct layouts, image coercion and
-`>1.0 => /255` heuristic.
-
-The one genuine asymmetry between them is where normalization happens: ACT
-normalizes on the client from normalization_stats.npz, while SmolVLA has the
-constants compiled into its C++ binary. That is `WireSpec.normalization_side`.
-Phase 4 moves SmolVLA to "client" too, after which the branch is dead code.
+Where normalization happens is `WireSpec.normalization_side`: ACT normalizes on
+the client from normalization_stats.npz, while GR00T normalizes on the server.
 """
 
 from __future__ import annotations
@@ -28,8 +21,8 @@ from polima.wire.protocol import DTYPE, Protocol, ProtocolError, coerce_image
 class Normalization:
     """Per-checkpoint mean/std, read from normalization_stats.npz.
 
-    Written by ACT/scripts/export_act_modalix.py::export_stats from the
-    checkpoint's policy_preprocessor.json / policy_postprocessor.json.
+    Written at export from the checkpoint's policy_preprocessor.json /
+    policy_postprocessor.json.
     """
 
     state_mean: np.ndarray
@@ -60,12 +53,7 @@ class Normalization:
 
 
 class PolimaSOMClient:
-    """Talk to a polima_server (or a legacy act_llima / smolvla_som_server).
-
-    The framing is unchanged from the legacy clients -- byte-for-byte, asserted
-    in tests/unit/test_wire.py -- so this also drives the old binaries, which is
-    what makes the Phase-1a A/B comparison possible.
-    """
+    """Talk to a polima_server."""
 
     def __init__(
         self,
@@ -85,8 +73,8 @@ class PolimaSOMClient:
         self.normalization: Normalization | None = None
         if stats is not None and spec.wire.normalization_side == "client":
             self.normalization = Normalization.load(stats, len(spec.dataset.camera_keys))
-        # Matches act_som_client.py: seed from the clock so concurrent clients
-        # are unlikely to collide on request ids.
+        # Seed from the clock so concurrent clients are unlikely to collide on
+        # request ids.
         self.request_id = int(time.time()) & 0xFFFFFFFF
 
     # ------------------------------------------------------------- transport
@@ -191,8 +179,8 @@ class PolimaSOMClient:
 
 
 def _recv_exact(stream: socket.socket, count: int) -> bytes:
-    """Read exactly `count` bytes. Both legacy clients implement this
-    separately; a short read otherwise silently truncates an action chunk."""
+    """Read exactly `count` bytes; a short read would silently truncate an
+    action chunk."""
     chunks = bytearray()
     while len(chunks) < count:
         part = stream.recv(count - len(chunks))
@@ -207,8 +195,8 @@ def _recv_exact(stream: socket.socket, count: int) -> bytes:
 def wait_for_port(host: str, port: int, timeout: float = 30.0, interval: float = 0.5) -> bool:
     """Poll until the server accepts connections.
 
-    The legacy deploy scripts do this with `</dev/tcp/host/port` in bash, which
-    cannot distinguish "refused" from "no route" and needs a subshell per probe.
+    A real socket connect can distinguish "refused" from "no route" and needs no
+    subshell per probe.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

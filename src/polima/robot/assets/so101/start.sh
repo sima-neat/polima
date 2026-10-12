@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reuse the established SO101 loop with bundle-driven GR00T transport.
+# Run the SO-101 control loop for the bundle this script lives in.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="${LEROBOT_VENV:-/media/nvme/lerobot}"

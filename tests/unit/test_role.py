@@ -21,7 +21,6 @@ import pytest
 
 from polima import role
 from polima.cli import main as cli_main
-from polima.cli.entry import _split_globals
 
 #: Everything the board must be able to import with numpy alone.
 CORE_MODULES = [
@@ -64,7 +63,7 @@ def test_core_imports_without_heavy_dependencies():
     # since numpy is a legitimate dependency. The point is a clean sys.modules,
     # not a clean sys.path.
     result = subprocess.run(
-        [sys.executable, "-I", "-c", program], capture_output=True, text=True, timeout=120
+        [sys.executable, "-I", "-c", program], capture_output=True, text=True, timeout=120, check=False
     )
     assert result.returncode == 0, result.stderr
     leaked = result.stdout.strip().removeprefix("LEAKED:").strip()
@@ -107,51 +106,27 @@ def test_wrong_machine_gives_exit_code_3(monkeypatch, capsys):
     assert "model-compiler" in message
 
 
-def test_import_legacy_is_exempt_from_the_compiler_gate(monkeypatch, tmp_path, capsys):
-    """--import-legacy only copies built ELFs, so it must run on a board too.
+def test_import_build_is_exempt_from_the_compiler_gate(monkeypatch, tmp_path, capsys):
+    """--import-build only copies built ELFs, so it must run on a DevKit too.
 
-    Gating the whole `compile` command on afe would block the one path Phase 1a
-    depends on.
+    Gating the whole `compile` command on afe would block it.
     """
     monkeypatch.setattr(role, "detect", lambda: BOARD)
     # Reaches the command (and fails on the empty dir), rather than exiting 3.
     with pytest.raises(FileNotFoundError):
-        cli_main.main(["compile", "--import-legacy", str(tmp_path / "absent")])
+        cli_main.main(["compile", "--import-build", str(tmp_path / "absent")])
 
 
 def test_needs_capability_refines_by_argv():
     from polima.cli import compile as compile_cli
 
     assert compile_cli.needs_capability(["--policy", "act"]) == "compile"
-    assert compile_cli.needs_capability(["--import-legacy", "/x"]) is None
-    assert compile_cli.needs_capability(["--import-legacy=/x"]) is None
-
-
-def test_umbrella_dispatch_matches_entry_points():
-    from polima.cli import entry
-
-    for command in ("compile", "deploy", "run", "robot"):
-        attribute = {"compile": "compile_", "run": "run_"}.get(command, command)
-        assert hasattr(entry, attribute), f"missing console-script entry for {command}"
-
-
-@pytest.mark.parametrize(
-    ("argv", "expected_globals", "expected_rest"),
-    [
-        (["--policy", "act"], [], ["--policy", "act"]),
-        (["--dry-run", "--policy", "act"], ["--dry-run"], ["--policy", "act"]),
-        (["--config", "x.yaml", "--policy", "act"], ["--config", "x.yaml"], ["--policy", "act"]),
-        (["--log-level", "DEBUG"], ["--log-level", "DEBUG"], []),
-        (["--config=x.yaml", "-v"], ["--config=x.yaml"], ["-v"]),
-        ([], [], []),
-    ],
-)
-def test_entry_splits_shared_flags(argv, expected_globals, expected_rest):
-    assert _split_globals(argv) == (expected_globals, expected_rest)
+    assert compile_cli.needs_capability(["--import-build", "/x"]) is None
+    assert compile_cli.needs_capability(["--import-build=/x"]) is None
 
 
 def test_split_argv_finds_the_command():
-    assert cli_main.split_argv(["list", "--graphs"]) == ([], "list", ["--graphs"])
+    assert cli_main.split_argv(["run", "--fixture"]) == ([], "run", ["--fixture"])
     assert cli_main.split_argv(["--dry-run", "deploy", "--bundle", "x"]) == (
         ["--dry-run"], "deploy", ["--bundle", "x"]
     )

@@ -1,10 +1,6 @@
 """Episode range specs: "0-9", "0,2,5-8", "3".
 
-Replaces three independent bash implementations of the same grammar
-(episodes_json() in ACT/train_act_local.sh, parse_episode_filter() in
-SmolVLA/train_smolvla_local.sh, and the equivalent in
-GR00T-N1.6/train_groot_local.sh), none of which validate that start <= end --
-"9-0" silently produces an empty selection there.
+Ranges are validated: "9-0" is an error, not an empty selection.
 """
 
 from __future__ import annotations

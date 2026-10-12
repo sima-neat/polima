@@ -57,7 +57,7 @@ def from_dict(cls: type[T], data: Any, *, path: str = "") -> T:
         )
 
     kwargs: dict[str, Any] = {}
-    for name, field in fields.items():
+    for name in fields:
         if name not in data:
             continue
         kwargs[name] = _coerce(hints.get(name, Any), data[name], f"{path}.{name}" if path else name)

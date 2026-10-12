@@ -1,8 +1,7 @@
-"""Deploy logic that can be tested without a board.
+"""Deploy logic that can be tested without a DevKit.
 
-The board-dependent paths are covered by the Phase-1a hardware proof; these
-cover the pure logic, especially the shell-quoting and command-shape bugs that
-cost real debugging time on hardware.
+These cover the pure logic, especially shell quoting and command shape, which
+otherwise fail only on hardware.
 """
 
 from __future__ import annotations
@@ -58,8 +57,8 @@ def test_deploy_directory_is_configurable():
     assert BoardConfig(bundles_subdir="bundles").bundles_dir.endswith("/bundles")
 
 
-def test_default_build_jobs_is_not_the_legacy_two():
-    """The board has 16 cores; both legacy deploy scripts hardcode -j2."""
+def test_default_build_jobs_uses_the_devkit_cores():
+    """The DevKit has 16 cores; the build must not default to -j2."""
     assert BoardConfig().build_jobs > 2
 
 
@@ -97,8 +96,8 @@ def test_identical_arrays_pass():
     assert result.mean_abs == 0.0
 
 
-def test_thresholds_match_the_legacy_shell_assertion():
-    """compile_deploy_act_som.sh asserts cosine >= 0.999 and mean_abs <= 0.01."""
+def test_default_thresholds():
+    """The default bar: cosine >= 0.999 and mean_abs <= 0.01."""
     assert DEFAULT_COSINE_MIN == 0.999
     assert DEFAULT_MEAN_ABS_MAX == 0.01
 
@@ -151,14 +150,14 @@ def test_summary_is_readable():
     assert "FAIL" in compare("b", values, values * 9).summary()
 
 
-# ------------------------------------------------------- carry-forward fixes
+# ---------------------------------------------------------- camera capture
 
 
 def test_camera_config_emits_mjpg():
     """Two 640x480@30 USB cameras exceed the bus budget in uncompressed YUYV.
 
-    Both legacy launchers were fixed to pass `fourcc: MJPG`; regressing this
-    degrades control silently, so it is pinned here. See docs/carry-forward.md.
+    The cameras must use `fourcc: MJPG`; regressing this degrades control
+    silently, so it is pinned here.
     """
     from polima.policies.act import ACT_SPEC
 
@@ -187,9 +186,8 @@ def test_camera_config_skips_absent_devices():
 
 # --------------------------------------------------------------- MLA recovery
 #
-# The wedge these cover cost a live board an afternoon: a SIGKILLed server
-# leaves DMA buffers behind, CMA fragments, and every later load fails with
-# MLA_LOAD_FAILED as if the ELF were corrupt.
+# A SIGKILLed server leaves DMA buffers behind, CMA fragments, and every
+# later load fails with MLA_LOAD_FAILED as if the ELF were corrupt.
 
 
 class _FakeResult:
@@ -394,4 +392,56 @@ def test_deploy_without_a_board_says_how_to_name_one(monkeypatch, capsys):
     monkeypatch.delenv("POLIMA_BOARD_HOST", raising=False)
     monkeypatch.setattr("polima.config.loader.config_file_candidates", list)
     assert deploy_cli.run(["--status"]) == 2
-    assert "POLIMA_BOARD" in capsys.readouterr().err
+    assert "POLIMA_DEVKIT" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("layer, expected", [("user", "user/model"), ("env", "env/model"),
+                                             ("file", "file/model"), ("cli", "cli/model")])
+def test_persistent_config_precedence(tmp_path, monkeypatch, layer, expected):
+    import json
+
+    from polima.config import loader
+
+    package = tmp_path / "package.json"
+    package.write_text(json.dumps({"paths": {"groot17_backbone": "package/model"},
+                                   "log_level": "DEBUG"}))
+    monkeypatch.setattr(loader, "config_file_candidates", lambda: [package])
+    user = tmp_path / "config/polima/config.json"
+    user.parent.mkdir(parents=True)
+    user.write_text(json.dumps({"paths": {"groot17_backbone": "user/model"}}))
+    monkeypatch.delenv("POLIMA_GROOT17_BACKBONE", raising=False)
+    monkeypatch.delenv("POLIMA_LOG_LEVEL", raising=False)
+    explicit = tmp_path / "explicit.json"
+    explicit.write_text(json.dumps({"paths": {"groot17_backbone": "file/model"}}))
+    if layer in ("env", "file", "cli"):
+        monkeypatch.setenv("POLIMA_GROOT17_BACKBONE", "env/model")
+    config = loader.load(config_file=explicit if layer in ("file", "cli") else None,
+                         overrides={"paths.groot17_backbone": "cli/model"} if layer == "cli" else None)
+    assert config.paths.groot17_backbone == expected
+    assert config.log_level == "DEBUG"
+    assert loader.load(use_env=False).paths.groot17_backbone == "user/model"
+
+
+def test_missing_user_config_preserves_package_defaults(tmp_path, monkeypatch):
+    from polima.config import loader
+
+    package = tmp_path / "package.json"
+    package.write_text('{"log_level":"DEBUG"}')
+    monkeypatch.setattr(loader, "config_file_candidates", lambda: [package])
+    config = loader.load(use_env=False)
+    assert config.log_level == "DEBUG"
+    assert config.paths.groot17_backbone == ""
+    assert not (tmp_path / "config").exists()
+
+
+def test_user_config_defaults_to_home_config_directory(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from polima.config import loader
+
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    user = tmp_path / ".config/polima/config.json"
+    user.parent.mkdir(parents=True)
+    user.write_text('{"paths":{"groot17_backbone":"customer/backbone"}}')
+    assert loader.load(use_env=False).paths.groot17_backbone == "customer/backbone"

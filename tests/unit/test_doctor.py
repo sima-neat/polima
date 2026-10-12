@@ -1,10 +1,8 @@
 """`polima doctor` checks the platform it is on.
 
-Every landmine doctor was written for is a host landmine -- the workspace
-checkout, the legacy lerobot clones, the SiMa compiler venv, /ml_datasets. A SoM
-has none of them, so before the platform gate a board install reported
-`fail=1 warn=8` that no board action could clear, and `polima-doctor` exited 1
-on a perfectly healthy board.
+Most checks are host checks -- the workspace checkout, the lerobot clones, the
+SiMa compiler venv, /ml_datasets. A DevKit has none of them, so those sections
+are skipped there and a healthy DevKit install exits 0.
 """
 
 from __future__ import annotations
@@ -118,7 +116,7 @@ def test_an_unconfigured_board_is_a_warning_not_an_ssh(monkeypatch):
 
 
 def test_a_healthy_board_exits_zero(ran, monkeypatch):
-    """The regression this gate exists for: `polima-doctor` on a working SoM."""
+    """`polima-doctor` on a working DevKit exits 0."""
     _as(monkeypatch, BOARD)
     assert doctor.run([]) == 0
 

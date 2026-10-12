@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -156,8 +157,8 @@ def test_preview_readiness_is_emitted_after_delayed_startup(tmp_path: Path) -> N
     runtime.emit = lambda kind, **data: emitted.append({"type": kind, **data})
 
     runtime.start_preview("demo", run.overhead_camera, run.wrist_camera)
-    # This is the snapshot timing that previously stranded the UI: the child
-    # is running, but has not announced its stream URL yet.
+    # The snapshot timing this protects: the child is running, but has not
+    # announced its stream URL yet.
     assert runtime.snapshot()["preview_url"] is None
     deadline = time.time() + 2
     while not any(event["type"] == "preview" for event in emitted) and time.time() < deadline:
@@ -199,16 +200,16 @@ def test_control_stop_waits_for_client_then_stops_server(tmp_path: Path) -> None
 
 def test_bundle_listing_exposes_launcher_task_and_manifest_tasks(tmp_path: Path) -> None:
     models = tmp_path / "models"
-    legacy = models / "legacy"
-    legacy.joinpath("robot_client").mkdir(parents=True)
-    legacy.joinpath("bundle.json").write_text('{"policy":"act"}')
-    legacy.joinpath("robot_client/start.sh").write_text(
+    older = models / "older"
+    older.joinpath("robot_client").mkdir(parents=True)
+    older.joinpath("bundle.json").write_text('{"policy":"act"}')
+    older.joinpath("robot_client/start.sh").write_text(
         'TASK="${POLIMA_TASK:-Place the grey eraser in white basket.}"\n'
     )
     modern = models / "modern"
     modern.mkdir()
     modern.joinpath("bundle.json").write_text(
-        '{"policy":"smolvla","default_task":"Pick red cube.",'
+        '{"policy":"groot","default_task":"Pick red cube.",'
         '"tasks":["Pick blue cube."]}'
     )
     fixed = models / "fixed"
@@ -219,8 +220,8 @@ def test_bundle_listing_exposes_launcher_task_and_manifest_tasks(tmp_path: Path)
     )
 
     bundles = {item["id"]: item for item in StudioRuntime(tmp_path).bundles()}
-    assert bundles["legacy"]["default_task"] == "Place the grey eraser in white basket."
-    assert bundles["legacy"]["tasks"] == ["Place the grey eraser in white basket."]
+    assert bundles["older"]["default_task"] == "Place the grey eraser in white basket."
+    assert bundles["older"]["tasks"] == ["Place the grey eraser in white basket."]
     assert bundles["modern"]["tasks"] == ["Pick red cube.", "Pick blue cube."]
     assert bundles["fixed"]["default_task"] == "Place the yellow cube in the tray."
 
@@ -341,10 +342,43 @@ def _run_config(**overrides):
     return RunConfig.from_json({**base, **overrides})
 
 
-def test_autocomplete_defaults_on_and_round_trips():
-    assert _run_config().autocomplete is True
+def test_autocomplete_defaults_to_policy_and_round_trips():
+    assert _run_config().autocomplete is None
+    assert _run_config(autocomplete=None).autocomplete is None
     assert _run_config(autocomplete=False).autocomplete is False
     assert _run_config(autocomplete=False).to_json()["autocomplete"] is False
+
+
+def test_speed_defaults_fast_and_validates():
+    assert _run_config().speed == "fast"
+    assert _run_config(speed="slow").to_json()["speed"] == "slow"
+    with pytest.raises(ValueError, match="speed"):
+        _run_config(speed="unknown")
+
+
+def _started_env(tmp_path, monkeypatch, config, policy="groot"):
+    from polima.studio.runtime import StudioRuntime
+
+    engine = StudioRuntime(tmp_path)
+    (tmp_path / "models" / "b").mkdir(parents=True)
+    (tmp_path / "models" / "b" / "bundle.json").write_text(json.dumps({"policy": policy}))
+    captured: dict = {}
+    monkeypatch.setattr(engine, "_spawn", lambda *a, **k: captured.update(args=a[1], env=a[4] if len(a) > 4
+                                                                          else k.get("env")))
+    monkeypatch.setattr(engine.store, "begin_run", lambda *a, **k: 1)
+    import json as _json
+    import time as _time
+    engine._arm_tokens["t"] = (_time.time() + 60, _json.dumps(config.to_json(), sort_keys=True))
+    engine.start_robot(config, "t")
+    return captured
+
+
+def test_studio_speed_choices_reach_the_robot_run(tmp_path, monkeypatch):
+    started = _started_env(tmp_path, monkeypatch, _run_config(bundle="b"))
+    assert started["env"]["POLIMA_FAST"] == "1" and "--fast" in started["args"]
+    started = _started_env(tmp_path / "2", monkeypatch, _run_config(bundle="b", speed="slow"))
+    assert started["env"]["POLIMA_FAST"] == "0" and "--slow" in started["args"]
+    assert "POLIMA_CYCLE_RESET" not in started["env"]
 
 
 def test_autocomplete_reaches_the_launcher_under_the_policys_own_name(tmp_path, monkeypatch):
@@ -356,7 +390,7 @@ def test_autocomplete_reaches_the_launcher_under_the_policys_own_name(tmp_path, 
     engine = StudioRuntime(tmp_path)
     bundle = tmp_path / "models" / "b"
     bundle.mkdir(parents=True)
-    (bundle / "bundle.json").write_text('{"policy": "smolvla"}')
+    (bundle / "bundle.json").write_text('{"policy": "groot"}')
 
     captured: dict = {}
     monkeypatch.setattr(engine, "_spawn",
@@ -370,12 +404,12 @@ def test_autocomplete_reaches_the_launcher_under_the_policys_own_name(tmp_path, 
                                        sort_keys=True))
 
     engine.start_robot(_run_config(bundle="b", autocomplete=False), token)
-    assert captured["env"]["SMOLVLA_AUTO_COMPLETE"] == "0"
+    assert captured["env"]["GROOT_AUTO_COMPLETE"] == "0"
     assert captured["env"]["POLIMA_AUTO_COMPLETE"] == "0"
 
 
 def test_lease_is_taken_over_rather_than_refused():
-    """A stale tab used to lock everyone out for the rest of the 30s lease."""
+    """A stale tab must not lock everyone out for the rest of the 30s lease."""
     import tempfile
     from pathlib import Path
 
@@ -428,3 +462,47 @@ def test_reset_route_needs_no_controller_lease():
     source = inspect.getsource(studio_app.create_app)
     reset = source.split('"/api/v1/system/reset"', 1)[1].split("@app.", 1)[0]
     assert "lease=False" in reset
+
+
+def test_studio_serve_passes_its_options_to_studio(monkeypatch):
+    from polima.cli import studio as studio_cli
+    from polima.studio import main as studio_main
+
+    seen = []
+    monkeypatch.setattr(studio_main, "main", lambda argv: seen.append(argv) or 0)
+    assert studio_cli.run(["serve", "--port", "8081", "--host", "127.0.0.1"]) == 0
+    assert seen == [["--port", "8081", "--host", "127.0.0.1"]]
+
+
+def test_opening_another_tab_preserves_the_session(tmp_path):
+    pytest.importorskip("flask")
+    from polima.studio.app import create_app
+
+    client = create_app(tmp_path).test_client()
+    first = client.get("/api/v1/session").get_json()["csrf_token"]
+    second = client.get("/api/v1/session").get_json()["csrf_token"]
+    assert second == first
+    response = client.post("/api/v1/lease", json={}, headers={"X-CSRF-Token": first})
+    assert response.status_code == 200
+
+
+def test_failed_accelerator_reset_is_reported(tmp_path, monkeypatch):
+    from polima.deploy import mla
+
+    engine = StudioRuntime(tmp_path)
+    monkeypatch.setattr(engine, "server_status", lambda: {"running": False})
+    monkeypatch.setattr(mla, "reset", lambda *a, **k: mla.ResetReport(False, "recovery-script", detail="reset: rc=1"))
+    with pytest.raises(RuntimeError, match="Accelerator reset failed"):
+        engine.reset()
+    assert engine.fault and "Accelerator reset failed" in engine.fault
+
+
+@pytest.mark.parametrize("policy,setting,expected", [
+    ("groot", None, "0"), ("groot", True, "1"), ("groot", False, "0"),
+    ("act", None, "1"), ("act", False, "0"),
+])
+def test_completion_policy_default_reaches_robot(tmp_path, monkeypatch, policy, setting, expected):
+    run = _run_config(autocomplete=setting)
+    started = _started_env(tmp_path, monkeypatch, run, policy)
+    assert started["env"]["POLIMA_AUTO_COMPLETE"] == expected
+    assert started["env"]["ACT_AUTO_COMPLETE"] == expected

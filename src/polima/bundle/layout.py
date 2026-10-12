@@ -2,9 +2,7 @@
 
 A bundle is one deployable unit: the compiled ELFs, the runtime plan, the
 constants and the fixtures needed to prove it works. Its id is content-addressed,
-which is the direct answer to what the board looks like today -- 26 accreted
-roots (ACT_rcwb_f_t_100000, SmolVLA_combined_035000{,_e2e,_final,_llima,_packed},
-10 sima_mpk_extract* trees, ...) with no way to tell which one is live.
+so it is always clear which build is live on a DevKit.
 
 With a content hash:
   * redeploying an identical build is a no-op (`sync-bundle` skips it),
@@ -28,7 +26,7 @@ BUNDLE_ID_RE = re.compile(r"^(?P<policy>[a-z0-9]+)-(?P<dataset>.+)-(?P<steps>\d+
 
 
 READABLE_ID_RE = re.compile(
-    r"^(?P<policy>[a-z0-9]+)-(?P<robot>so101|mycobot|gr1)-"
+    r"^(?P<policy>[a-z0-9]+)-(?P<robot>so101|gr1)-"
     r"(?P<dataset>.+?)(?:-v(?P<version>\d+(?:\.\d+)+))?-"
     r"(?P<steps>\d+)(?P<unit>k?)-(?P<precision>[a-z0-9]+)-(?P<sha>[0-9a-f]{8})$"
 )
@@ -141,9 +139,8 @@ class GraphArtifact:
 class Bundle:
     """The manifest written to <bundle>/bundle.json.
 
-    Replaces, all at once: input_contract.json, artifact_manifest.json,
-    action_runtime_manifest.json, and the ELF paths plus element counts
-    hardcoded in act_llima.cpp's ActModel constructor (lines 117-122).
+    The single description of the bundle's input contract, artifacts, ELF
+    paths and element counts.
     """
 
     root: Path
@@ -152,10 +149,10 @@ class Bundle:
     checkpoint: str = ""
     graphs: list[GraphArtifact] = field(default_factory=list)
     sidecars: list[str] = field(default_factory=list)
-    source: str = "compile"                    # compile | legacy-import
-    legacy_source_dir: str | None = None
+    source: str = "compile"                    # compile | import
+    source_dir: str | None = None
     tool_versions: dict = field(default_factory=dict)
-    #: The policy's smoke thresholds, copied here so the board can apply the
+    #: The policy's smoke thresholds, copied here so the DevKit can apply the
     #: same bar as the host without shipping the Python policy package.
     smoke: dict = field(default_factory=dict)
     tasks: list[str] = field(default_factory=list)
@@ -190,10 +187,8 @@ class Bundle:
     def model_elf(self, graph: str) -> Path:
         """Always models/<graph>/share/<graph>_stage1_mla.elf.
 
-        Unifies the two legacy conventions: SmolVLA explodes *_mpk.tar.gz into
-        etc/lib/share, ACT copies retained/<g>/<g>_stage1_mla.elf into a
-        hand-made models_uncompressed/<g>/share/. Verified on the live board:
-        ACT's *deployed* tree already has exactly this shape.
+        One shape whether the ELF came from an exploded *_mpk.tar.gz
+        (etc/lib/share) or from retained/<g>/<g>_stage1_mla.elf.
         """
         for artifact in self.graphs:
             if artifact.name == graph:
@@ -221,7 +216,7 @@ class Bundle:
             "policy": self.policy,
             "checkpoint": self.checkpoint,
             "source": self.source,
-            "legacy_source_dir": self.legacy_source_dir,
+            **({"source_dir": self.source_dir} if self.source_dir else {}),
             "graphs": [artifact.to_dict() for artifact in self.graphs],
             "sidecars": sorted(self.sidecars),
             "tool_versions": self.tool_versions,
@@ -241,7 +236,7 @@ class Bundle:
             graphs=[GraphArtifact(**g) for g in data.get("graphs", [])],
             sidecars=list(data.get("sidecars", [])),
             source=data.get("source", "compile"),
-            legacy_source_dir=data.get("legacy_source_dir"),
+            source_dir=data.get("source_dir") or data.get("legacy_source_dir"),  # older bundles
             tool_versions=data.get("tool_versions", {}),
             smoke=data.get("smoke", {}),
             tasks=list(data.get("tasks", [])),

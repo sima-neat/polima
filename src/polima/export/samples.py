@@ -1,10 +1,10 @@
 """Draw calibration samples from the dataset the checkpoint was trained on.
 
-Shared by every policy: ACT, SmolVLA and GR00T all calibrate against real
-observations passed through the checkpoint's own preprocessor, because that is
-what the graphs will see at inference. Calibrating on raw dataset tensors instead
-would quantize against the wrong range entirely -- the preprocessor is where
-normalization happens.
+Shared by every policy: each calibrates against real observations passed
+through the checkpoint's own preprocessor, because that is what the graphs will
+see at inference. Calibrating on raw dataset tensors instead would quantize
+against the wrong range entirely -- the preprocessor is where normalization
+happens.
 
 The dataset is resolved from `train_config.json` inside the checkpoint rather
 than being asked for, so calibration cannot silently use a different dataset than
@@ -36,7 +36,7 @@ def _processor_overrides(
 ) -> dict[str, dict[str, str]]:
     """Resolve checkpoint-relative processor artifacts for older LeRobot loaders.
 
-    Newer checkpoints record portable assets such as SmolVLA's tokenizer in an
+    Newer checkpoints record portable assets such as a tokenizer in an
     ``artifacts`` mapping. The compiler's pinned LeRobot pipeline predates that
     resolution step and otherwise interprets ``tokenizer`` as a Hub repository.
     Passing the resolved paths as normal step overrides works with both loader
@@ -73,15 +73,13 @@ def _load_pretrained_processors(policy, checkpoint: str | Path):
     """Restore a supported policy's saved pipelines without the global factory.
 
     LeRobot's factory imports configuration modules for unrelated optional
-    policies at module load time. ACT and SmolVLA checkpoints already serialize
-    their complete processor pipelines, so restoring those pipelines directly
-    is both narrower and more faithful to training.
+    policies at module load time. ACT checkpoints already serialize their
+    complete processor pipelines, so restoring those pipelines directly is both
+    narrower and more faithful to training.
     """
     policy_type = getattr(policy.config, "type", None)
-    if policy_type not in {"act", "smolvla"}:
-        raise ValueError(
-            f"shared LeRobot sample loading supports ACT and SmolVLA, got {policy_type!r}"
-        )
+    if policy_type != "act":
+        raise ValueError(f"shared LeRobot sample loading supports ACT, got {policy_type!r}")
 
     from lerobot.processor import (
         AbsoluteActionsProcessorStep,
@@ -142,7 +140,7 @@ def load(policy, checkpoint: str | Path, observation_keys: Sequence[str],
 
     repo_id, root = resolve_dataset(checkpoint, dataset_root)
     # A checkpoint may rename raw dataset features before the model sees them
-    # (the combined SmolVLA run maps overhead/wrist to camera1/camera2).  The
+    # (e.g. overhead/wrist to camera1/camera2).  The
     # graph module names processed tensors; dataset lookup must use the inverse
     # map and then let the saved preprocessor perform the rename normally.
     inverse_rename: dict[str, str] = {}
@@ -167,9 +165,7 @@ def load(policy, checkpoint: str | Path, observation_keys: Sequence[str],
         processed = preprocessor(observation)
         # Language-conditioned preprocessors replace the string ``task`` with
         # generated token and attention-mask tensors. Preserve every tensor the
-        # processor emits rather than projecting back down to the raw keys;
-        # ACT sees the same state/images as before, while SmolVLA also receives
-        # ``observation.language.{tokens,attention_mask}``.
+        # processor emits rather than projecting back down to the raw keys.
         samples.append({
             key: value.detach().cpu().float() if value.is_floating_point()
             else value.detach().cpu()

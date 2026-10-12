@@ -200,13 +200,13 @@ def test_the_latest_reviewed_outcome_is_the_newest_reviewed_run():
 
 def test_policy_is_reported_only_when_the_runs_agree():
     assert robot_run_stats([robot("b", policy="GR00T N1.6")])["b"]["policy"] == "GR00T N1.6"
-    assert robot_run_stats([robot("b", policy="ACT", start=1), robot("b", policy="SmolVLA", start=2)])["b"]["policy"] is None
+    assert robot_run_stats([robot("b", policy="ACT", start=1), robot("b", policy="GR00T N1.7", start=2)])["b"]["policy"] is None
     assert robot_run_stats([robot("b", policy=None)])["b"]["policy"] is None
 
 
 def test_compare_says_needs_review_or_no_reviewed_runs(tmp_path):
     folder = tmp_path / "bundles"
-    for bundle_id in ("act-x", "groot-y", "smolvla-z"):
+    for bundle_id in ("act-x", "groot-y", "groot17-z"):
         (folder / bundle_id).mkdir(parents=True)
         (folder / bundle_id / "bundle.json").write_text(json.dumps(
             {"bundle_id": bundle_id, "policy": bundle_id.split("-")[0], "graphs": []}))
@@ -220,10 +220,10 @@ def test_compare_says_needs_review_or_no_reviewed_runs(tmp_path):
     labels = {b["id"]: b["robot_labels"] for b in snapshot["bundles"]}
     assert labels["act-x"]["success"] == "1/2 success" and labels["act-x"]["failures"] == "jitter x1"
     assert labels["groot-y"]["reviewed"] == "Needs review" and labels["groot-y"]["success"] == "—"
-    assert labels["smolvla-z"]["reviewed"] == "No reviewed runs"
+    assert labels["groot17-z"]["reviewed"] == "No reviewed runs"
     by_id = {b["id"]: b for b in snapshot["bundles"]}
     assert by_id["act-x"]["robot_run"]["run_id"] == "r3"  # the latest run is still shown
-    assert by_id["smolvla-z"]["robot_stats"] is None
+    assert by_id["groot17-z"]["robot_stats"] is None
 
 
 MANIFEST = {"schema_version": "polima-improvement-manifest-v1", "created_at": 1790956800,
@@ -334,12 +334,12 @@ def test_reviewed_successes_need_no_export_but_need_another_policy_to_compare():
 def test_without_a_board_or_an_exporting_studio_stages_are_unavailable_not_failed():
     stages, action, result = stages_of({}, boards=[])
     assert stages["installed"] == "unavailable" and action == "Add a DevKit" and not result["complete"]
-    assert result["stages"][0]["note"] == "No board online"
+    assert result["stages"][0]["note"] == "No DevKit online"
     old = [{"online": True, "bundles": ["act-x"], "manifest": None}]
     stages, _, result = stages_of({"evidence": {"median_ms": 28.0}, "robot_stats": stats_for("failed"),
                                    "robot_run": {"status": "failed", "outcome": "failed"}}, boards=old)
     assert stages["export"] == "unavailable"
-    assert next(s for s in result["stages"] if s["key"] == "export")["note"] == "The board's Studio cannot export yet"
+    assert next(s for s in result["stages"] if s["key"] == "export")["note"] == "The DevKit's Studio cannot export yet"
 
 
 def test_readiness_renders_for_a_board_with_an_older_studio(tmp_path):
@@ -352,3 +352,14 @@ def test_readiness_renders_for_a_board_with_an_older_studio(tmp_path):
     stages = {s["key"]: s["status"] for s in bundle["readiness"]["stages"]}
     assert stages["installed"] == "done" and bundle["readiness"]["next_action"] == "Run benchmark"
     assert bundle["readiness"]["summary"]["robot_run"] == "No robot run"
+
+
+def test_groot_bundles_are_labelled_by_their_compiled_family_not_their_name():
+    from polima.workbench.app import policy_label
+
+    def plan(image_format):
+        return {"profile": {"runtime_context": {"image_preprocess": {"format": image_format}}}}
+
+    assert policy_label({"policy": "groot"}, plan("groot-qwen3-image-v1")) == "GR00T N1.7"
+    assert policy_label({"policy": "groot"}, plan("groot-eagle-image-v1")) == "GR00T N1.6"
+    assert policy_label({"policy": "act"}, {}) == "ACT"

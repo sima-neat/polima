@@ -1,11 +1,10 @@
 """Assemble a deployable bundle.
 
-One convention, always: <bundle>/models/<graph>/{etc,lib,share}/. The two legacy
-conventions (SmolVLA's exploded *_mpk.tar.gz, ACT's hand-copied
-models_uncompressed/) both land here, so nothing downstream ever branches on
-where an ELF came from.
+One convention, always: <bundle>/models/<graph>/{etc,lib,share}/. ELFs from an
+exploded *_mpk.tar.gz and from a models_uncompressed/ tree both land here, so
+nothing downstream ever branches on where an ELF came from.
 
-Everything the board needs is inside the bundle and nothing else is: no ONNX, no
+Everything the DevKit needs is inside the bundle and nothing else is: no ONNX, no
 checkpoints, no calibration .npz, and above all no .tar.gz -- the deploy step
 refuses to ship archives, because the direct-MLA runtime never opens one.
 """
@@ -13,6 +12,7 @@ refuses to ship archives, because the direct-MLA runtime never opens one.
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -39,16 +39,26 @@ class BundleInputs:
     #: destination-relative path -> source file
     fixtures: dict[str, Path] = field(default_factory=dict)
     constants: dict[str, Path] = field(default_factory=dict)
-    #: Board-side LeRobot launcher and policy transport, relative to robot_client/.
+    #: DevKit-side LeRobot launcher and policy transport, relative to robot_client/.
     robot_files: dict[str, Path] = field(default_factory=dict)
     #: graph -> extra files to place beside the ELF (etc/*.json, lib/*.so)
     model_extras: dict[str, list[Path]] = field(default_factory=dict)
     source: str = "compile"
-    legacy_source_dir: str | None = None
+    source_dir: str | None = None
     tool_versions: dict = field(default_factory=dict)
     precisions: dict[str, str] = field(default_factory=dict)
     model_version: str | None = None
     task_label: str | None = None
+    #: Rewrites the spec's plan (as plan.json data) before the bundle id is taken: the
+    #: GR00T run_bound_chain DiT. Spec graphs the rewritten plan no longer runs may then
+    #: lack an ELF.
+    plan_rewrite: Callable[[dict], dict] | None = None
+    #: name -> GraphArtifact fields (precision, input/output_elements, persistent_bindings,
+    #: int8_inputs ...): overrides for spec graphs, whole entries for graphs outside the
+    #: spec (their ELFs in `elfs`).
+    extra_graphs: dict[str, dict] = field(default_factory=dict)
+    #: Bundle-level precision label (default: derived from the per-ELF labels).
+    precision_label: str | None = None
 
 
 def bundle_precision_label(labels: set[str]) -> str:
@@ -84,17 +94,23 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
     """
     spec = inputs.spec
     missing = [name for name in spec.compile.names if name not in inputs.elfs]
-    if missing:
+    if missing and not inputs.plan_rewrite:
         raise ValueError(f"missing ELF(s) for {missing}; have {sorted(inputs.elfs)}")
 
     plan = spec.build_runtime_plan()
-    _check_plan_against_elfs(spec, plan, inputs.elfs)
+    plan_data = _plan_dict(plan, wire=spec)
+    if inputs.plan_rewrite:
+        plan_data = inputs.plan_rewrite(plan_data)
+        _check_plan_data_against_elfs(plan_data, inputs.elfs)
+    else:
+        _check_plan_against_elfs(spec, plan, inputs.elfs)
     task_catalog = list(dict(spec.runtime_context).get("task_catalog") or ())
     tasks = [str(task["instruction"]) for task in task_catalog]
 
-    robot_label = {"so-arm101": "so101", "mycobot280": "mycobot", "gr1": "gr1"}.get(spec.robot.calibration_id)
-    labels = {_artifact_precision(g, inputs.precisions) for g in spec.compile.graphs}
-    precision_label = bundle_precision_label(labels)
+    robot_label = {"so-arm101": "so101", "gr1": "gr1"}.get(
+        spec.robot.calibration_id, spec.robot.calibration_id or None)
+    labels = {_artifact_precision(g, inputs.precisions) for g in spec.compile.graphs if g.name in inputs.elfs}
+    precision_label = inputs.precision_label or bundle_precision_label(labels)
     bundle_id = compute_bundle_id(
         policy=spec.name,
         dataset=inputs.task_label or inputs.dataset,
@@ -103,7 +119,7 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
         precision=precision_label,
         steps=inputs.steps,
         graph_digests={name: candidate.sha256 for name, candidate in inputs.elfs.items()},
-        plan=_plan_dict(plan, wire=spec),
+        plan=plan_data,
     )
 
     root = Path(output_root).resolve() / bundle_id
@@ -113,6 +129,8 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
 
     artifacts: list[GraphArtifact] = []
     for graph in spec.compile.graphs:
+        if graph.name not in inputs.elfs:
+            continue  # replaced by the plan rewrite
         candidate = inputs.elfs[graph.name]
         model_dir = root / "models" / graph.name
         for sub in ("etc", "lib", "share"):
@@ -135,9 +153,8 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
                 sha256=candidate.sha256,
                 elf_bytes=destination.stat().st_size,
                 # Explicit split precision is part of the graph contract and
-                # is more specific than an old build manifests outer output
-                # directory label (for example SmolVLA denoise was recorded as
-                # bf16 even though its compile command used A=BF16/W=INT8).
+                # is more specific than a build manifest's output directory
+                # label, which can say bf16 for a graph compiled A=BF16/W=INT8.
                 precision=_artifact_precision(graph, inputs.precisions),
                 input_elements=sum(t.elements for t in graph.inputs),
                 output_elements=sum(t.elements for t in graph.outputs),
@@ -147,6 +164,17 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
                 external_dram_layout=graph.external_dram_layout,
             )
         )
+        for key, value in inputs.extra_graphs.get(graph.name, {}).items():
+            setattr(artifacts[-1], key, value)
+
+    for name, fields in inputs.extra_graphs.items():
+        if name in spec.compile.names:
+            continue
+        destination = root / "models" / name / "share" / f"{name}_stage1_mla.elf"
+        _copy(inputs.elfs[name].path, destination)
+        artifacts.append(GraphArtifact(name=name, elf=str(destination.relative_to(root)),
+                                       sha256=inputs.elfs[name].sha256,
+                                       elf_bytes=destination.stat().st_size, **fields))
 
     for relative, source in sorted(inputs.fixtures.items()):
         _copy(source, root / "fixtures" / relative)
@@ -168,17 +196,18 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
         root=root,
         policy=spec.name,
         bundle_id=bundle_id,
-        checkpoint=inputs.checkpoint,
+        # The checkpoint by its last two path parts (e.g. output/checkpoint-50000), never a host path.
+        checkpoint="/".join(Path(inputs.checkpoint).parts[-2:]) if inputs.checkpoint else "",
         graphs=artifacts,
         sidecars=sidecars,
         source=inputs.source,
-        legacy_source_dir=inputs.legacy_source_dir,
+        source_dir=inputs.source_dir,
         tool_versions=inputs.tool_versions,
         smoke=spec.smoke.to_dict(),
         tasks=tasks,
     )
 
-    write_json(bundle.plan_path, _plan_dict(plan, wire=spec))
+    write_json(bundle.plan_path, plan_data)
     write_json(bundle.manifest_path, bundle.to_dict())
     _assert_no_archives(root)
 
@@ -240,9 +269,9 @@ def _plan_dict(plan: RuntimePlan, wire: PolicySpec | None = None) -> dict:
             "response_shape": list(wire.wire.response_shape),
             "response_elements": wire.wire.response_elements,
         }
-        # The robot description crosses to the board too. Without it the board
-        # would need the Python PolicySpec just to learn that the wrist camera
-        # is the Sonix one -- and the board deliberately has no polima Python.
+        # The robot description crosses to the DevKit too. Without it the
+        # DevKit would need the Python PolicySpec just to learn which camera is
+        # the wrist one -- and the DevKit deliberately has no polima Python.
         robot = wire.robot
         data["robot"] = {
             "camera_roles": [list(pair) for pair in robot.camera_roles],
@@ -292,6 +321,17 @@ def _check_plan_against_elfs(
             _ = spec.compile.graph(graph)
 
 
+def _check_plan_data_against_elfs(plan: dict, elfs: dict[str, ElfCandidate]) -> None:
+    """Every graph a rewritten plan runs must have an ELF."""
+    for index, step in enumerate(plan["steps"]):
+        args = step.get("args", {})
+        graphs = [args.get("graph")] if step["op"] == "run_elf" else \
+            [*args.get("prelude", ()), *args.get("graphs", ())]
+        for graph in graphs:
+            if graph and graph not in elfs:
+                raise ValueError(f"plan step {index} runs graph {graph!r} but no ELF was supplied")
+
+
 def _copy(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if (
@@ -306,8 +346,8 @@ def _copy(source: Path, destination: Path) -> None:
 def _assert_no_archives(root: Path) -> None:
     """A bundle must never contain a .tar.gz.
 
-    Both legacy deploy scripts guard for this on the board; PoLiMa catches it one
-    step earlier, at pack time, where the message can point at the offending file.
+    The DevKit runtime never opens an archive. Checking at pack time lets the
+    message point at the offending file.
     """
     archives = [p for p in root.rglob("*.tar.gz")]
     if archives:

@@ -19,15 +19,7 @@ from polima.policies.base import (
 )
 from polima.policies.groot import runtime as rt
 
-MYCOBOT_JOINT_NAMES = (
-    "joint_1.pos",
-    "joint_2.pos",
-    "joint_3.pos",
-    "joint_4.pos",
-    "joint_5.pos",
-    "joint_6.pos",
-    "gripper.pos",
-)
+KNOWN_ROBOTS = ("so-arm101", "gr1")
 
 
 def _json_file(path: Path) -> dict:
@@ -222,12 +214,35 @@ def checkpoint_state_encoding(checkpoint: str | Path, embodiment_tag: str | None
     return _state_encoding_contract(kwargs, state_config, widths)
 
 
+def _dataset_joint_names(dataset_root: Path, keys, widths) -> tuple[str, ...]:
+    """Joint names of the state groups, from the dataset's own feature names."""
+    info = _json_file(dataset_root / "meta/info.json")
+    names = list((info.get("features", {}).get("observation.state") or {}).get("names") or [])
+    if isinstance(names, dict):  # LeRobot v2.0 {"motors": [...]} form
+        names = next(iter(names.values()), [])
+    ranges = (_json_file(dataset_root / "meta/modality.json").get("state") or {})
+    selected = []
+    for key, width in zip(keys, widths, strict=True):
+        entry = ranges.get(key) or {}
+        start, end = entry.get("start"), entry.get("end")
+        if not isinstance(start, int) or not isinstance(end, int) or end - start != width:
+            raise ValueError(f"GR00T dataset modality.json state.{key} must select {width} values")
+        selected += [str(names[i]) if i < len(names) else f"{key}.{i - start}" for i in range(start, end)]
+    return tuple(selected)
+
+
 def checkpoint_metadata(
     checkpoint: str | Path,
     dataset_root: str | Path | None = None,
     embodiment_tag: str | None = None,
+    image_preprocess: bool = True,
 ) -> dict[str, Any]:
-    """Return the saved embodiment, real widths, horizon and camera contract."""
+    """Return the saved embodiment, real widths, horizon and camera contract.
+
+    SO-101 and Fourier GR1 keep their established profiles. Any other
+    layout is derived from the checkpoint (state/action groups, widths, horizon, video
+    keys) and the dataset (joint names, camera features in video-key order, fps).
+    """
 
     checkpoint = Path(checkpoint)
     processor = _processor_config(checkpoint)
@@ -252,15 +267,7 @@ def checkpoint_metadata(
         raise ValueError(f"GR00T state/action group widths differ: {state_widths}/{action_widths}")
     state_encoding = _state_encoding_contract(kwargs, modality.get("state") or {}, state_widths)
     width = sum(state_widths)
-    if width == 7 and state_keys == ("single_arm", "gripper") and state_widths == (6, 1):
-        calibration_id = "mycobot280"
-        state_names = MYCOBOT_JOINT_NAMES
-        expected_fps = 20
-        expected_cameras = (
-            "observation.images.front",
-            "observation.images.wrist",
-        )
-    elif width == 6 and state_keys == ("single_arm", "gripper") and state_widths == (5, 1):
+    if width == 6 and state_keys == ("single_arm", "gripper") and state_widths == (5, 1):
         calibration_id = "so-arm101"
         state_names = (
             "shoulder_pan.pos",
@@ -289,11 +296,16 @@ def checkpoint_metadata(
         expected_fps = 20
         expected_cameras = ("observation.images.ego_view",)
     else:
-        widths = dict(zip(state_keys, state_widths, strict=True))
-        raise ValueError(
-            "PoLiMa GR00T supports SO-101 (5+1), MyCobot (6+1), or Fourier GR1; "
-            f"checkpoint {tag!r} has groups {widths}"
-        )
+        if not dataset_root:
+            widths = dict(zip(state_keys, state_widths, strict=True))
+            raise ValueError(f"GR00T robot layout {tag!r} {widths} is derived from its dataset; pass it")
+        info = _json_file(Path(dataset_root) / "meta/info.json")
+        calibration_id = str(info.get("robot_type") or tag)
+        state_names = _dataset_joint_names(Path(dataset_root), state_keys, state_widths)
+        expected_fps = int(info.get("fps", 0))
+        video_meta = _json_file(Path(dataset_root) / "meta/modality.json").get("video") or {}
+        expected_cameras = tuple((video_meta.get(key) or {}).get("original_key") or f"observation.images.{key}"
+                                 for key in video_keys)
 
     delta_indices = tuple(action_cfg.get("delta_indices") or ())
     if not delta_indices or delta_indices != tuple(range(len(delta_indices))):
@@ -350,7 +362,9 @@ def checkpoint_metadata(
         mapped_cameras = tuple(
             (video_meta.get(key) or {}).get("original_key") for key in video_keys
         )
-        if calibration_id == "gr1":
+        if calibration_id not in KNOWN_ROBOTS:
+            camera_keys = mapped_cameras
+        elif calibration_id == "gr1":
             if len(mapped_cameras) != 1 or mapped_cameras[0] not in source_camera_keys:
                 raise ValueError(
                     "GR00T gr1 trained video alias must map to the dataset's one "
@@ -366,10 +380,9 @@ def checkpoint_metadata(
             # of the dataset's info.json features (the SO-101 data lists wrist first).
             camera_keys = mapped_cameras
     expected_video_keys = {
-        "mycobot280": {"front", "wrist"},
         "so-arm101": {"front", "wrist"},
         "gr1": {"ego_view_bg_crop_pad_res256_freq20"},
-    }[calibration_id]
+    }.get(calibration_id, set(video_keys))
     if set(video_keys) != expected_video_keys:
         raise ValueError(
             f"{calibration_id} GR00T video modalities must be "
@@ -378,6 +391,8 @@ def checkpoint_metadata(
     camera_layout_matches = (
         len(source_camera_keys) == 1
         if calibration_id == "gr1"
+        else set(camera_keys) == set(expected_cameras) and set(camera_keys) <= set(source_camera_keys)
+        if calibration_id not in KNOWN_ROBOTS
         else set(camera_keys) == set(expected_cameras)
     )
     if not camera_layout_matches or fps != expected_fps:
@@ -394,8 +409,10 @@ def checkpoint_metadata(
         raise ValueError(f"GR00T action representation is incomplete for {action_keys}")
     relative_width = 0
     absolute_seen = False
+    representations = []
     for key, group_width, config in zip(action_keys, action_widths, action_configs, strict=True):
         representation = str(config.get("rep", "")).lower()
+        representations.append(representation)
         if representation == "relative":
             if absolute_seen:
                 raise ValueError(
@@ -416,7 +433,7 @@ def checkpoint_metadata(
         "action_dim": width,
         "camera_keys": list(camera_keys),
         "source_camera_keys": list(source_camera_keys),
-        "image_preprocess": _image_preprocess_contract(checkpoint, kwargs),
+        **({"image_preprocess": _image_preprocess_contract(checkpoint, kwargs)} if image_preprocess else {}),
         "fps": fps,
         "calibration_id": calibration_id,
         "actions_per_chunk": horizon,
@@ -427,6 +444,8 @@ def checkpoint_metadata(
         "state_keys": list(state_keys),
         "action_keys": list(action_keys),
         "video_keys": list(video_keys),
+        "group_widths": list(state_widths),
+        "action_reps": representations,
     }
 
 
@@ -555,11 +574,9 @@ def specialize_spec(
     calibration_id = str(selected.get("calibration_id", ""))
     expected_names = {
         "so-arm101": spec.dataset.state_names,
-        "mycobot280": MYCOBOT_JOINT_NAMES,
         "gr1": tuple(selected.get("state_names") or ()),
     }
-    if calibration_id not in expected_names:
-        raise ValueError(f"unsupported GR00T robot profile {calibration_id!r}")
+    expected_names.setdefault(calibration_id, tuple(selected.get("state_names") or ()))  # any robot
     state_names = tuple(selected.get("state_names") or expected_names[calibration_id])
     state_dim = int(selected.get("state_dim", len(state_names)))
     action_dim = int(selected.get("action_dim", state_dim))
@@ -643,7 +660,6 @@ def specialize_geometry(spec: PolicySpec, reference: Mapping[str, Any]) -> Polic
 
 
 __all__ = [
-    "MYCOBOT_JOINT_NAMES",
     "checkpoint_metadata",
     "specialize_geometry",
     "specialize_spec",

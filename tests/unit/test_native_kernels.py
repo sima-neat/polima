@@ -1,4 +1,4 @@
-"""Host build of native/tests/test_kernels.cpp.
+"""Host build of runtime/tests/test_kernels.cpp.
 
 The kernels are header-only and need no MLA runtime, so the scalar fallbacks
 and the worker-pool chunking are checked here on every host run. The NEON
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-NATIVE = Path(__file__).resolve().parents[2] / "native"
+NATIVE = Path(__file__).resolve().parents[2] / "runtime"
 COMPILER = shutil.which("g++") or shutil.which("clang++")
 
 

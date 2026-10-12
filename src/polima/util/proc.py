@@ -1,13 +1,7 @@
 """The one subprocess runner.
 
-Replaces the `run(argv, cwd, log, env)` helpers independently written in all
-three compile controllers, plus the `| tee "$LOG_FILE"` + `mv` idiom in all
-three train scripts.
-
-The tee behaviour matters: today `train_act_local.sh` writes to
-`<output_dir>.log` and only `mv`s it to `<output_dir>/training.log` on clean
-exit, so Ctrl-C loses the destination. Here the log is streamed to its final
-path from the first byte.
+The log is streamed to its final path from the first byte, so an interrupted
+run keeps its log.
 """
 
 from __future__ import annotations
@@ -17,9 +11,9 @@ import shlex
 import signal
 import subprocess
 import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
 
 
 @dataclass
@@ -77,8 +71,7 @@ def run(
 ) -> Result:
     """Run a command, streaming output to stdout and (optionally) a log file.
 
-    stdout and stderr are merged so the log matches what a human sees -- the
-    legacy scripts rely on this for `classify_failure` heuristics over log text.
+    stdout and stderr are merged so the log matches what a human sees.
 
     `dry_run` returns a synthetic success without executing, which is what backs
     `polima train --dry-run` and `polima compile --dry-run`.

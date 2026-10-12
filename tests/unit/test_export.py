@@ -1,13 +1,7 @@
 """The export path's torch-free logic.
 
-The torch-dependent part is covered by reproduction instead: re-exporting the
-checkpoint that produced the deployed bundle regenerates all six ONNX graphs,
-all six calibration npz, and every fixture byte for byte, with the verify report
-matching the recorded 1.430511474609375e-06 exactly.
-
-Left here is what can go wrong without torch being involved: entry-point
-resolution, dataset resolution from the checkpoint, and the two indirections
-LeRobot puts between a checkpoint and its normalization statistics.
+Entry-point resolution, dataset resolution from the checkpoint, and the two
+indirections LeRobot puts between a checkpoint and its normalization statistics.
 """
 
 from __future__ import annotations
@@ -20,7 +14,6 @@ from polima.export import normalization
 from polima.export import samples as sampling
 from polima.export.driver import CONTRACT_FILE, ExportResult, _write_contract, resolve
 from polima.policies.registry import get_policy
-
 
 # ------------------------------------------------------------ entry points
 
@@ -150,5 +143,5 @@ def test_export_result_requires_a_passing_verification():
 
 def test_fixture_file_is_named_by_the_spec():
     """The generic export driver must carry no policy-specific filename; ACT
-    keeps the legacy name because build trees on disk already use it."""
+    keeps `act_fixture.npz` because existing build trees use it."""
     assert get_policy("act").compile.fixture_file == "act_fixture.npz"

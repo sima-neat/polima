@@ -4,11 +4,6 @@ Every manifest PoLiMa writes (bundle.json, plan.json, deploy_report.json,
 artifact_manifest.json) goes through here so byte-level comparison between two
 builds is meaningful -- `compute_bundle_id` hashes canonical JSON, so key order
 and separators must be stable.
-
-Generalizes the `write_json`/`read_json` pairs independently reimplemented in
-ACT/scripts/act_modalix_compile_controller.py,
-GR00T-N1.6/scripts/groot_modalix_compile_controller.py and
-SmolVLA/scripts/smolvla_modalix_compile_controller.py.
 """
 
 from __future__ import annotations

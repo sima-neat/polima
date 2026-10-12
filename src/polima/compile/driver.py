@@ -1,25 +1,22 @@
 """Drive the per-graph quantize/compile loop.
 
-This is the generic form of `ACT/scripts/act_modalix_compile_controller.py` and
-`SmolVLA/scripts/smolvla_modalix_compile_controller.py`, which implement the same
-loop twice with different graph lists hardcoded. Here the graph list comes from
-`PolicySpec.compile.graphs`, so a new policy needs no controller at all.
+The graph list comes from `PolicySpec.compile.graphs`, so a new policy needs no
+controller of its own.
 
-Three behaviours are inherited deliberately:
+Three behaviours matter:
 
 * **Precision fallback.** `GraphSpec.precisions` encodes each graph's declared
   attempt order; policies without a safe fallback stop on the primary failure.
 * **ELF presence is the success condition**, not the exit code. A compile can
   return 0 having quietly placed the graph on the APU, which only shows up as a
-  load failure on the board.
+  load failure on the DevKit.
 * **Resume.** Compiles take tens of minutes; a controller that cannot resume
   gets killed and restarted from scratch.
 
-Resume is upgraded from "does the output file exist" to a content key over the
-ONNX, the calibration data and the compile flags. That closes the hole the
-legacy `--resume` had -- editing the export and re-running kept the stale ELF --
-and generalizes SmolVLA's `--reuse-vision-dir`, whose whole purpose is to avoid
-recompiling a backbone that did not change. See docs/carry-forward.md.
+Resume uses a content key over the ONNX, the calibration data and the compile
+flags rather than "does the output file exist", so editing the export and
+re-running never keeps a stale ELF, and a graph that did not change (such as a
+vision backbone) need not be recompiled.
 """
 
 from __future__ import annotations
@@ -79,16 +76,16 @@ class CompileError(RuntimeError):
 class Driver:
     """Compiles every graph in a policy's `CompilePlan` into `build_dir`.
 
-    The build tree keeps the legacy layout on purpose:
+    The build tree keeps one fixed layout on purpose:
 
         onnx/<name>.onnx                       input, written by the export stage
         calibration/<name>.npz                 input, written by the export stage
         compiled/<precision>/<name>/           afe's own output
-        retained/<name>/<name>_stage1_mla.elf  the ELF the board actually runs
+        retained/<name>/<name>_stage1_mla.elf  the ELF the DevKit actually runs
         models_uncompressed/<name>/share/      what bundle packing reads
 
-    Keeping it identical means the bundle packer proven in Phase 1a consumes a
-    freshly compiled tree with no changes, and a legacy tree stays importable.
+    Keeping it fixed means the bundle packer consumes a freshly compiled tree
+    and an imported one the same way.
     """
 
     spec: object                     # PolicySpec
@@ -105,9 +102,8 @@ class Driver:
     #: retained directory.
     #:
     #: Default 1 because memory, not CPU, is the real limit and it is
-    #: policy-dependent. SmolVLA's compile script notes its vision and prefix
-    #: stages "each require substantial host RAM" and runs them sequentially for
-    #: that reason. Opt in with --jobs once you know the graph sizes.
+    #: policy-dependent: large vision and prefix stages each need substantial
+    #: host RAM. Opt in with --jobs once you know the graph sizes.
     jobs: int = 1
     precision_profile: str = "policy"
     _state_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -241,8 +237,8 @@ class Driver:
         if graph.mla_tessellation:
             command += ["--mla-tessellation"]
         # `elf_from=retained` is an output-selection contract, independent of
-        # tessellation.  Previously plain-HWC graphs did not receive a retained
-        # directory, so a successful compiler run could not be published.
+        # tessellation: plain-HWC graphs need a retained directory too, or a
+        # successful compiler run could not be published.
         if graph.elf_from == "retained" or graph.exit_on_stable_elf:
             command += ["--retain-compile-dir", str(self.retained_dir(graph.name))]
         if graph.exit_on_stable_elf:
@@ -259,9 +255,8 @@ class Driver:
     def locate_elf(self, graph, precision: str) -> Path | None:
         """Where the ELF ended up, honouring `GraphSpec.elf_from`.
 
-        `retained` is the direct path the ACT deploy script uses: afe's retained
-        temp dir holds the raw `<name>_stage1_mla.elf`. `mpk` goes through the
-        packed archive instead, which is what SmolVLA and GR00T do.
+        `retained` is the direct path: afe's retained temp dir holds the raw
+        `<name>_stage1_mla.elf`. `mpk` goes through the packed archive instead.
         """
         if graph.elf_from == "retained":
             candidate = self.elf_path(graph)
@@ -275,7 +270,7 @@ class Driver:
 
     def publish(self, graph, elf: Path) -> Path:
         """Copy the ELF to `models_uncompressed/<name>/share/`, which is where
-        both the bundle packer and the legacy deploy script read from."""
+        the bundle packer reads from."""
         destination = self.build_dir / "models_uncompressed" / graph.name / "share"
         destination.mkdir(parents=True, exist_ok=True)
         target = destination / graph.elf_name
@@ -306,11 +301,11 @@ class Driver:
         previous = self._state().get(name, {})
         if not self.force and previous.get("key") == key and previous.get("elf"):
             elf = self._resolve_elf(previous["elf"])
-            # A state file written before paths were stored relative holds an
-            # absolute path from whichever side compiled it. Rather than
-            # recompile nine minutes of identical work, fall back to where the
-            # convention says the ELF is -- and re-record it relative, so the
-            # tree heals itself the first time it is used from the other mount.
+            # A state file may hold an absolute path from whichever side
+            # compiled it. Rather than recompile identical work, fall back to
+            # where the convention says the ELF is -- and re-record it relative,
+            # so the tree heals itself the first time it is used from another
+            # mount.
             if (elf is None or not elf.exists()) and self.elf_path(graph).exists():
                 elf = self.elf_path(graph)
             if elf is not None and elf.exists():
@@ -465,7 +460,7 @@ class Driver:
             except json.JSONDecodeError:
                 existing = {}
 
-        # A targeted retry (``--graph denoise``) must not make a four-graph
+        # A targeted retry (``--graph <name>``) must not make a four-graph
         # build look like a one-graph build. Prefer the fresh result, retain
         # full records already present in the manifest, and finally recover a
         # minimal record from compile_state.json. The state file is updated per
@@ -532,7 +527,7 @@ class Driver:
                 note="recovered from compile_state.json",
             )))
 
-        # Do not retain stale historical names removed from the current policy.
+        # Do not retain graph names the current policy no longer declares.
         known = {graph.name for graph in self.spec.compile.graphs}
         merged.extend(asdict(result) for result in results if result.name not in known)
         existing.update({

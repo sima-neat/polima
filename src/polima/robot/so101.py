@@ -1,12 +1,4 @@
-"""Connect a compiled GR00T or SmolVLA bundle to the established ACT SO101 control loop.
-
-This module owns model selection and transport only. Motor initialization,
-camera acquisition, timed action queues, rest handling and shutdown remain in
-the existing packaged run_robot_client_with_live_view.py.
-
-`python -m polima.robot.so101` is every SO-101 bundle's launcher; an ACT bundle
-is handed to PoLiMa's own loop, polima.robot.so101_loop.
-"""
+"""Connect ACT and GR00T bundles to the SO-101 control client."""
 
 from __future__ import annotations
 
@@ -15,7 +7,6 @@ import json
 import os
 import runpy
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -23,16 +14,51 @@ import numpy as np
 from polima.bundle.contract import spec_from_bundle
 from polima.bundle.layout import Bundle
 from polima.policies.registry import get_policy
-from polima.robot import arm_gain, crossfade, reset_ease, smoothing, substeps
+from polima.robot import reset_ease, smoothing, substeps
 from polima.robot.policy import CompiledPolicyAdapter
 from polima.util.jsonio import read_json
 
-_TRIAL_METRICS = None
-# LeRobot's registered names plus Polima's position-aware hand-off.
-AGGREGATES = ("weighted_average", "latest_only", "average", "conservative", crossfade.NAME)
+AGGREGATES = ("weighted_average", "latest_only", "average", "conservative")
 
-#: Policies whose compiled bundles this transport can drive.
-SUPPORTED_POLICIES = ("groot", "smolvla")
+
+SUPPORTED_POLICIES = ("groot", "act")
+
+
+ACT_INSTRUCTION = "ACT (no language input)"
+
+
+RECIPES = {
+    "groot": {"fps": 15, "POLIMA_SMOOTH_MOVES": "5", "POLIMA_SUBSTEPS": "2",
+              "POLIMA_CHUNK_THRESHOLD": "0.5", "POLIMA_GROOT_NOISE": "zero",
+              "POLIMA_AUTO_COMPLETE": "0"},
+    "act": {"fps": 30, "POLIMA_SMOOTH_MOVES": "10", "POLIMA_SUBSTEPS": "1",
+            "POLIMA_CHUNK_THRESHOLD": "0.5"},
+}
+
+COMMON_RECIPE = {
+    smoothing.SHAPE_ENV: "smoothstep",
+    reset_ease.ENV: "smoothstep",
+}
+
+
+FAST_ENV = "POLIMA_FAST"
+FAST_RECIPE = {"fps": 30, "POLIMA_SMOOTH_MOVES": "10", "POLIMA_SUBSTEPS": "1",
+               "POLIMA_CHUNK_THRESHOLD": "0.6"}
+
+
+def fast_from_env(environ=os.environ) -> bool:
+    value = environ.get(FAST_ENV, "1").strip().lower()
+    if value in ("0", "false", "no"):
+        return False
+    if value in ("", "1", "true", "yes"):
+        return True
+    raise ValueError(f"{FAST_ENV} must be 1 or 0, not {value!r}")
+
+
+def policy_recipe(spec, environ=os.environ) -> dict:
+    """The policy's recipe, with the fast settings on top when --fast is on."""
+    return {**RECIPES[spec.name], **(FAST_RECIPE if spec.name == "groot" and fast_from_env(environ) else {})}
+
 
 JOINTS = tuple(
     f"{name}.pos"
@@ -59,16 +85,12 @@ def load_contract(root: Path, task: str | int = 0):
         or len(spec.robot.camera_keys) != 2
         or set(spec.robot.camera_keys) not in ({"front", "wrist"}, {"overhead", "wrist"})
     ):
-        raise ValueError("This launcher requires a two-camera SO101 GR00T or SmolVLA bundle")
-    if spec.name == "smolvla" and tuple(spec.robot.camera_keys) != ("overhead", "wrist"):
-        # SmolVLA has no per-camera token windows: wire slot image0 is simply
-        # the checkpoint's camera1, which every SO101 SmolVLA checkpoint maps
-        # from the overhead view. A wrist-first bundle runs and reaches for the
-        # wrong place, so refuse it rather than drive the arm.
-        raise ValueError(
-            "SO101 SmolVLA bundle must send overhead as image0 and wrist as image1; "
-            f"this bundle orders cameras {tuple(spec.robot.camera_keys)}. Repack it."
-        )
+        raise ValueError("This launcher requires a two-camera SO101 GR00T or ACT bundle")
+    if spec.name == "act" and not bundle.tasks:
+
+        if str(task) != "0":
+            raise ValueError(f"ACT has no task catalog; task must be 0, not {task!r}")
+        return bundle, spec, 0
     if not bundle.tasks:
         raise ValueError(
             f"{spec.name} bundle names no task; repack it so the robot client can "
@@ -85,20 +107,47 @@ def load_contract(root: Path, task: str | int = 0):
     return bundle, spec, task_id
 
 
+def recipe_environment(spec, environ=os.environ) -> dict[str, str]:
+    """The recipe's environment defaults for this policy (no control rate)."""
+    recipe = {**COMMON_RECIPE, **policy_recipe(spec, environ)}
+    recipe.pop("fps")
+    return recipe
+
+
+def apply_recipe(spec, environ=os.environ) -> dict[str, str]:
+    """Fill in every recipe setting the caller did not set; return what was filled.
+
+    A variable set to an empty string counts as not set (the policy default applies).
+    """
+    applied = {
+        name: value for name, value in recipe_environment(spec, environ).items()
+        if not environ.get(name, "").strip()
+    }
+    environ.update(applied)
+    return applied
+
+
+def control_fps(spec, args, environ=os.environ) -> int:
+    """Commands per second: --fps when given, otherwise the recipe rate (--fast: 30)."""
+    return policy_recipe(spec, environ)["fps"] if args.fps is None else args.fps
+
+
+def instruction(bundle, task_id: int) -> str:
+    """The instruction the bundle's compiled constants encode (a label for ACT)."""
+    return bundle.tasks[task_id] if bundle.tasks else ACT_INSTRUCTION
+
+
 class SO101PolicyClient:
-    """The existing ACT client's predict(overhead, wrist, state) interface."""
+    """Adapt the control client's camera and joint observations to the bundle."""
 
     def __init__(self, address: str, stats=None, timeout: float = 30.0):
-        # stats is accepted for compatibility with the established loop. GR00T
-        # normalization/action decoding already runs in the compiled plan.
+
         root = Path(os.environ["POLIMA_SO101_BUNDLE"])
         bundle, spec, task_id = load_contract(root, os.environ.get("POLIMA_TASK_ID", "0"))
         self.adapter = CompiledPolicyAdapter(
             spec, bundle, address, task_id=task_id, timeout=timeout,
-            noise=os.environ.get("POLIMA_GROOT_NOISE", "random"),
+            noise=(os.environ.get("POLIMA_GROOT_NOISE", "").strip() or "random"),
         )
-        if _TRIAL_METRICS is not None:
-            self.adapter.client.trace_event = _TRIAL_METRICS.record
         self.host = self.adapter.client.host
         self.port = self.adapter.client.port
 
@@ -107,46 +156,39 @@ class SO101PolicyClient:
         if state.shape != (6,) or not np.isfinite(state).all():
             raise ValueError("Expected six finite SO101 joint positions")
         observation = dict(zip(JOINTS, state))
-        # The control loop supplies named views; the bundle determines wire order.
+
         views = {"front": overhead, "overhead": overhead, "wrist": wrist}
         observation.update((role, views[role]) for role in self.adapter.spec.robot.camera_keys)
-        started = time.perf_counter()
         actions, latency = self.adapter.predict(observation)
-        if _TRIAL_METRICS is not None:
-            _TRIAL_METRICS.record("prediction", request_id=self.adapter.client.request_id, server_compute_ms=float(latency),
-                                  prediction_ms=(time.perf_counter() - started) * 1000)
         expected = tuple(self.adapter.spec.wire.response_shape)
         if actions.shape != expected or not np.isfinite(actions).all():
             raise ValueError(f"Expected finite actions shaped {expected}, got {actions.shape}")
         return actions, latency
 
 
-#: Where `polima robot calibrate` writes this DevKit's SO-101 calibration.
 DEVKIT_CALIBRATION = Path.home() / ".cache/huggingface/lerobot/calibration/robots/so_follower"
 
-
-def arm_calibration_dir(robot_dir: Path, devkit: Path = DEVKIT_CALIBRATION) -> Path:
+def arm_calibration_dir(robot_dir: Path, devkit: Path | None = None) -> Path:
     """The bundle's own arm calibration (set in Studio), else the DevKit's; never none."""
-    for folder in (robot_dir / "calibration", devkit):
+    for folder in (robot_dir / "calibration", devkit or DEVKIT_CALIBRATION):
         if (folder / "so-arm101.json").is_file():
             return folder
     raise FileNotFoundError("No SO-101 arm calibration on this DevKit: run `polima robot calibrate` "
                             "(or calibrate in Studio) before driving the arm")
 
-
 def client_configuration(root, spec, task_id, instruction, args):
-    """Build the same LeRobot launch contract used by the ACT SOM launcher."""
+    """Build the LeRobot launch configuration from the bundle contract."""
     robot_dir = root / "robot_client"
     rest = read_json(robot_dir / "robot_rest_position.json")
     if set(rest.get("positions", {})) != set(JOINTS):
         raise ValueError("Bundle rest pose must contain all six SO101 joints")
     if not all(np.isfinite(float(v)) for v in rest["positions"].values()):
         raise ValueError("Bundle rest pose contains nonfinite positions")
-    calibration_dir = arm_calibration_dir(robot_dir)
+    calibration = arm_calibration_dir(robot_dir)
     actions = (
         spec.robot.actions_per_chunk if args.actions_per_chunk is None else args.actions_per_chunk
     )
-    fps = spec.robot.default_fps if args.fps is None else args.fps
+    fps = control_fps(spec, args)
     if not 1 <= actions <= spec.robot.actions_per_chunk or fps <= 0:
         raise ValueError("Invalid action horizon or control rate")
     cameras = {
@@ -155,7 +197,7 @@ def client_configuration(root, spec, task_id, instruction, args):
             "index_or_path": path,
             "width": 640,
             "height": 480,
-            # Control frequency must not change camera capture modes.
+
             "fps": spec.robot.camera_capture_fps.get(
                 role, spec.robot.camera_capture_fps.get(
                     "front" if role == "overhead" else role, spec.robot.default_fps
@@ -168,7 +210,7 @@ def client_configuration(root, spec, task_id, instruction, args):
     env = {
         "POLIMA_SO101_BUNDLE": str(root),
         "POLIMA_TASK_ID": str(task_id),
-        # Compatibility settings consumed by the unmodified ACT control loop.
+
         "ACT_SOM_DIRECT": "1",
         "ACT_SOM_STATS": str(root / "fixtures/normalization_stats.npz"),
         "ACT_REST_POSITION": str(robot_dir / "robot_rest_position.json"),
@@ -176,20 +218,20 @@ def client_configuration(root, spec, task_id, instruction, args):
         "ACT_PERSPECTIVE_CAMERA": args.front_camera,
         "ACT_WRIST_CAMERA": args.wrist_camera,
     }
-    threshold = float(os.environ.get("POLIMA_CHUNK_THRESHOLD", "0.5"))
+    threshold = float(os.environ.get("POLIMA_CHUNK_THRESHOLD", "").strip() or "0.5")
     if not 0 <= threshold <= 1:
         raise ValueError("POLIMA_CHUNK_THRESHOLD must be between 0 and 1")
     smooth_moves = smoothing.moves_from_env()
-    # Validated here, before anything touches the robot.
+
     smoothing.shape_from_env()
     substeps.substeps_from_env()
     reset_ease.ease_from_env()
-    arm_gain.gain_from_env()
-    aggregate = os.environ.get("POLIMA_AGGREGATE", "latest_only" if smooth_moves else "weighted_average")
+    aggregate = (os.environ.get("POLIMA_AGGREGATE", "").strip()
+                 or ("latest_only" if smooth_moves else "weighted_average"))
     if aggregate not in AGGREGATES:
         raise ValueError(f"POLIMA_AGGREGATE must be one of {sorted(AGGREGATES)}")
     if smooth_moves and aggregate != "latest_only":
-        # An overlap blend splits the switch; its remainder would land after the smoothing.
+
         raise ValueError(f"{smoothing.ENV} replaces the overlap blend; leave POLIMA_AGGREGATE "
                          "unset or set it to latest_only")
     argv = [
@@ -198,13 +240,12 @@ def client_configuration(root, spec, task_id, instruction, args):
         "--robot.type=so101_follower",
         f"--robot.port={args.robot_port}",
         "--robot.id=so-arm101",
-        f"--robot.calibration_dir={calibration_dir}",
+        f"--robot.calibration_dir={calibration}",
         "--robot.use_degrees=true",
         f"--robot.max_relative_target={args.max_relative_target}",
         f"--robot.cameras={json.dumps(cameras)}",
         f"--task={instruction}",
-        # Direct-SOM overrides the model client; preserve the known LeRobot
-        # config discriminator without requesting its GR00T model loader.
+
         "--policy_type=act",
         "--pretrained_name_or_path=modalix-direct",
         "--policy_device=cpu",
@@ -217,29 +258,52 @@ def client_configuration(root, spec, task_id, instruction, args):
     return env, argv
 
 
-def _bundle_policy(argv) -> str | None:
-    """The policy of the bundle named by --bundle, read before any other option."""
-    for index, item in enumerate(argv):
-        if item.startswith("--bundle="):
-            value = item.split("=", 1)[1]
-        elif item == "--bundle" and index + 1 < len(argv):
-            value = argv[index + 1]
-        else:
-            continue
+_RECORDER = None
+_RUN_STATUS = "completed"
+
+
+def record(kind: str, **fields) -> None:
+    """Record telemetry without changing the control loop on storage errors."""
+    global _RUN_STATUS
+    if kind == "action_sent" and not fields.get("positions"):
+        return
+    if kind == "error":
+        _RUN_STATUS = "failed"
+    elif kind == "operator_stop" and _RUN_STATUS != "failed":
+        _RUN_STATUS = "interrupted"
+    if _RECORDER is not None:
         try:
-            return read_json(Path(value) / "bundle.json").get("policy")
-        except (OSError, ValueError):
-            return None
-    return None
+            _RECORDER.event(kind, **fields)
+        except OSError:
+            pass
+
+
+def start_record(root, bundle, spec, task_id, args):
+    from polima.robot.evidence import RunRecorder
+    from polima.util.hashing import sha256_file
+
+    calibration = arm_calibration_dir(root / "robot_client") / "so-arm101.json"
+    try:
+        return RunRecorder.create(
+            bundle_id=bundle.bundle_id, policy=spec.display_name,
+            robot={"type": "SO-101 follower", "calibration_id": spec.robot.calibration_id,
+                   "port": args.robot_port},
+            task={"id": task_id, "instruction": instruction(bundle, task_id)},
+            cameras={"overhead": args.front_camera, "wrist": args.wrist_camera,
+                     "capture_fps": dict(spec.robot.camera_capture_fps)},
+            calibration={"file": calibration.name, "sha256": sha256_file(calibration)},
+            settings={"fps": control_fps(spec, args),
+                      "actions_per_chunk": args.actions_per_chunk or spec.robot.actions_per_chunk,
+                      "max_relative_target": args.max_relative_target,
+                      "auto_complete": os.environ.get("ACT_AUTO_COMPLETE", "1") != "0",
+                      "auto_repeat": os.environ.get("ACT_AUTO_REPEAT", "1") != "0",
+                      **recipe_environment(spec)})
+    except OSError as error:
+        print(f"Run recording unavailable: {error}", file=sys.stderr)
+        return None
 
 
 def main(argv=None):
-    if _bundle_policy(sys.argv[1:] if argv is None else argv) == "act":
-        # ACT bundles run PoLiMa's own SO-101 loop; the path below is
-        # GR00T/SmolVLA through the established ACT control loop.
-        from polima.robot.so101_loop import main as act_loop
-
-        return act_loop(argv)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--robot-port", required=True)
@@ -251,45 +315,48 @@ def main(argv=None):
     parser.add_argument("--fps", type=int)
     parser.add_argument("--actions-per-chunk", type=int)
     parser.add_argument("--max-relative-target", type=float, default=12)
+    speed = parser.add_mutually_exclusive_group()
+    speed.add_argument("--fast", action="store_true", help="30 commands/s (default)")
+    speed.add_argument("--slow", action="store_true", help="15 commands/s")
     args = parser.parse_args(argv)
+    if args.fast:
+        os.environ[FAST_ENV] = "1"
+    if args.slow or args.fps == 15:
+        os.environ[FAST_ENV] = "0"
+    fast_from_env()
     root = args.bundle.resolve()
     bundle, spec, task_id = load_contract(root, os.environ.get("POLIMA_TASK_ID", "0"))
-    env, client_args = client_configuration(root, spec, task_id, bundle.tasks[task_id], args)
+    applied = apply_recipe(spec)
+    env, client_args = client_configuration(root, spec, task_id, instruction(bundle, task_id), args)
     for name, value in env.items():
         os.environ[name] = value
+    for name in ("AUTO_COMPLETE", "AUTO_REPEAT", "AUTO_REPEAT_PAUSE"):
+        if f"POLIMA_{name}" in os.environ:
+            os.environ[f"ACT_{name}"] = os.environ[f"POLIMA_{name}"]
     if os.environ.get("POLIMA_NO_AUTO_COMPLETE"):
         os.environ["ACT_AUTO_COMPLETE"] = "0"
-    aggregate = next(a.split("=", 1)[1] for a in client_args if a.startswith("--aggregate_fn_name="))
     smooth_moves = smoothing.moves_from_env()
     substep_count = substeps.substeps_from_env()
     ease = reset_ease.ease_from_env()
-    gain = arm_gain.gain_from_env()
-    substep_state = None
-    if aggregate == crossfade.NAME or smooth_moves or substep_count > 1:
-        # Before the bundle script runs: it captures and wraps the merge, the action
-        # conversion, control_loop_action and __init__ at import.
+    if smooth_moves or substep_count > 1:
+
         from lerobot.async_inference.robot_client import RobotClient
-        if aggregate == crossfade.NAME:
-            import lerobot.async_inference.configs as lerobot_configs
-            crossfade.install(lerobot_configs, RobotClient)
         if smooth_moves:
             smoothing.install(RobotClient, smooth_moves, shape=smoothing.shape_from_env())
         if substep_count > 1:
-            substep_state = substeps.install(RobotClient, substep_count)
-    if gain is not None:
-        # The follower connects (and configures) inside the bundle script's client.
-        from lerobot.robots.so_follower import SOFollower
-        arm_gain.install(SOFollower, gain)
-    # Identical robot lifecycle; swap only the transport imported by that loop.
+            substeps.install(RobotClient, substep_count)
+
     sys.path.insert(0, str(root / "robot_client"))
     sys.argv = client_args
-    print(f"{spec.name} SO101: {bundle.bundle_id}; task {task_id}: {bundle.tasks[task_id]}; "
+    print(f"{spec.name} SO101: {bundle.bundle_id}; task {task_id}: {instruction(bundle, task_id)}; "
           f"cameras {list(spec.robot.camera_keys)}", flush=True)
+    print(f"{control_fps(spec, args)} commands/s; "
+          + ", ".join(f"{name}={os.environ[name]}" for name in recipe_environment(spec))
+          + (f" (recipe defaults: {', '.join(sorted(applied))})" if applied else ""), flush=True)
     def run():
         restore = None
         if ease != "linear":
-            # After run_instrumented set its entry point (so the action trace's
-            # return-to-rest hook wraps the eased function); before the script imports it.
+
             import lerobot.async_inference.robot_client as robot_client_module
             restore = reset_ease.install(robot_client_module, ease)
         try:
@@ -297,45 +364,22 @@ def main(argv=None):
         finally:
             if restore is not None:
                 restore()
-    metrics_dir = os.environ.get("POLIMA_METRICS_DIR")
-    if metrics_dir:
-        # The transport shim imports the canonical module even when this file
-        # is launched with -m and therefore executes as __main__.
-        import polima.robot.so101 as transport
-        from polima.robot.metrics import TrialMetrics, run_instrumented
-        metrics = TrialMetrics(metrics_dir, {
-            "bundle": bundle.bundle_id, "mode": "async",
-            "fps": spec.robot.default_fps if args.fps is None else args.fps,
-            "actions_per_chunk": spec.robot.actions_per_chunk if args.actions_per_chunk is None else args.actions_per_chunk,
-            "chunk_threshold": float(os.environ.get("POLIMA_CHUNK_THRESHOLD", "0.5")),
-            "max_relative_target": args.max_relative_target,
-            "aggregate_fn_name": aggregate,
-            "smooth_moves": smooth_moves,
-            "smooth_shape": smoothing.shape_from_env(),
-            "substeps": substep_count,
-            "reset_ease": ease,
-            "arm_p": gain,
-            "groot_noise": os.environ.get("POLIMA_GROOT_NOISE", "random"),
-            "task_id": task_id, "camera_order": list(spec.robot.camera_keys),
-            "server_address": args.server_address,
-            "camera_capture_fps": {
-                role: config["fps"] for role, config in json.loads(next(
-                    arg.split("=", 1)[1] for arg in client_args
-                    if arg.startswith("--robot.cameras=")
-                )).items()
-            },
-        })
-        transport._TRIAL_METRICS = metrics
-        if substep_state is not None:
-            substep_state.record = metrics.record
-        try:
-            run_instrumented(run, metrics)
-        finally:
-            transport._TRIAL_METRICS = None
-            if substep_state is not None:
-                substep_state.record = None
-    else:
+    import polima.robot.so101 as transport
+    transport._RECORDER = start_record(root, bundle, spec, task_id, args)
+    transport._RUN_STATUS = "completed"
+    try:
         run()
+    except BaseException as error:
+        transport.record("operator_stop" if isinstance(error, KeyboardInterrupt) else "error",
+                         message=str(error))
+        raise
+    finally:
+        if transport._RECORDER is not None:
+            try:
+                transport._RECORDER.finish(transport._RUN_STATUS)
+            except OSError as error:
+                print(f"Run summary unavailable: {error}", file=sys.stderr)
+            transport._RECORDER = None
     return 0
 
 

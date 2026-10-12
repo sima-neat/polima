@@ -5,19 +5,19 @@ import. Lazy because importing a policy module may pull in torch-side helpers
 that do not exist in the model-compiler venv or on the board.
 
 Third-party policies can register through the "polima.policies" entry-point
-group; the three first-party specs are imported directly so there is no
+group; the first-party specs are imported directly so there is no
 discovery cost and no import-ordering surprise.
 """
 
 from __future__ import annotations
 
 import importlib
-from typing import Iterator
+from collections.abc import Iterator
 
 from polima.policies.base import PolicySpec, SpecError
 
-#: Policies shipped with PoLiMa, in the order they were ported.
-BUILTIN = ("act", "smolvla", "groot", "groot17")
+#: Policies shipped with PoLiMa.
+BUILTIN = ("act", "groot")
 
 _REGISTRY: dict[str, PolicySpec] = {}
 

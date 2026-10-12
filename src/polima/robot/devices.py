@@ -1,27 +1,23 @@
 """Finding the arm and the cameras, and saying so when they are not there.
 
-Every legacy launcher takes `--robot-port`, `--perspective-camera` and
-`--wrist-camera` as required arguments, so getting a robot running starts with
-`ls /dev/v4l/by-id` and reading USB ids. This does that lookup instead.
-
 ## Why by-id paths, never /dev/video0
 
 `/dev/videoN` is assigned in enumeration order, so unplugging a camera or
 rebooting can swap the two. Both cameras then still open, the policy still runs,
 and the arm reaches for the wrong place -- there is no error anywhere. The
-`/dev/v4l/by-id/` names are stable per physical device, which is why both legacy
-launchers pass those and why this refuses to guess a bare index.
+`/dev/v4l/by-id/` names are stable per physical device, which is why this
+refuses to guess a bare index.
 
-Depends on stdlib only: it runs on the board, in the `lerobot` venv, and on a
+Depends on stdlib only: it runs on the DevKit, in the `lerobot` venv, and on a
 host with no hardware at all.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
 
 V4L_BY_ID = Path("/dev/v4l/by-id")
 SERIAL_GLOBS = ("ttyACM*", "ttyUSB*")

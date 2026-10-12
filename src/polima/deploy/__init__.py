@@ -1,12 +1,7 @@
-"""Deploy a bundle to a Modalix board.
-
-Generalizes ACT/scripts/compile_deploy_act_som.sh (104 lines) and
-SmolVLA/scripts/compile_deploy_smolvla_som.sh (168), which perform the same
-ordered sequence written twice.
+"""Deploy a bundle to a Modalix DevKit.
 
 Every stage is individually skippable and individually recorded, so a failed
-deploy says which step failed rather than leaving the board half-updated with a
-shell script's exit code as the only evidence.
+deploy says which step failed rather than leaving the DevKit half-updated.
 """
 
 from __future__ import annotations
@@ -123,10 +118,10 @@ def deploy(
 
         # --- sync: content-addressed on the ELFs, so an identical bundle is
         # a no-op. But the id covers ELFs ONLY: plan.json, the wire description
-        # and the fixtures can all change without moving it, and skipping on
-        # "the directory exists" meant an edited plan silently never reached the
-        # board. rsync is cheap when the ELFs match, so compare the small files
-        # and let rsync decide about the big ones.
+        # and the fixtures can all change without moving it, so skipping on
+        # "the directory exists" would leave an edited plan behind. rsync is
+        # cheap when the ELFs match, so compare the small files and let rsync
+        # decide about the big ones.
         already = session.exists(f"{remote_bundle}/bundle.json") and _metadata_matches(
             session, bundle, remote_bundle
         )
@@ -143,7 +138,7 @@ def deploy(
             report.record("sync-bundle", "ok", bytes=bundle.total_elf_bytes)
 
         launcher = bundle.root / "robot_client/start.sh"
-        if launcher.is_file() and any(name in launcher.read_text() for name in ("polima.robot.mycobot", "polima.robot.so101")):
+        if launcher.is_file() and "polima.robot.so101" in launcher.read_text():
             log.info("syncing robot Python runtime to %s", board_config.python_src_dir)
             session.mkdirs(board_config.python_src_dir)
             session.rsync(
@@ -154,7 +149,7 @@ def deploy(
         else:
             report.record("python-runtime", "skipped", reason="bundle uses standalone client")
 
-        # --- build: skipped when native/ is unchanged ----------------------
+        # --- build: skipped when runtime/ is unchanged ----------------------
         if build:
             result = build_native(session, board_config, force=force)
             report.build = result

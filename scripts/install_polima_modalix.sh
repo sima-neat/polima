@@ -3,18 +3,29 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE="${POLIMA_NATIVE_SOURCE:-$(cd -- "$SCRIPT_DIR/../native" && pwd)}"
+SOURCE="${POLIMA_NATIVE_SOURCE:-$(cd -- "$SCRIPT_DIR/../runtime" && pwd)}"
 POLIMA_SOURCE="${POLIMA_SOURCE:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
 ROOT="${POLIMA_ROOT:-/media/nvme/polima}"
 LEROBOT_VENV="${LEROBOT_VENV:-/media/nvme/lerobot}"
-LEROBOT_INSTALLER="${LEROBOT_INSTALLER:-$POLIMA_SOURCE/lerobot_sima/install_lerobot_modalix.sh}"
+LEROBOT_INSTALLER="${LEROBOT_INSTALLER:-$POLIMA_SOURCE/examples/so101/setup/install_lerobot_modalix.sh}"
 JOBS="${JOBS:-$(nproc)}"
+STUDIO_USER="${POLIMA_STUDIO_USER:-$(id -un)}"
+STUDIO_GROUP="$(id -gn "$STUDIO_USER")"
 
 fail() { echo "[fail] $*" >&2; exit 1; }
 log() { echo "==> $*"; }
 
 [[ "$(uname -m)" == aarch64 ]] || fail "this installer must run on the Modalix devkit"
 [[ -f "$SOURCE/CMakeLists.txt" ]] || fail "native source not found at $SOURCE"
+for tool in cmake c++ python3 install; do
+    command -v "$tool" >/dev/null 2>&1 || fail "$tool is required; install the DevKit SDK build prerequisites"
+done
+for path in "$ROOT" "$LEROBOT_VENV"; do
+    [[ "$path" =~ ^/[a-zA-Z0-9_./-]+$ ]] || fail "installation paths must be absolute and contain only letters, digits, /, ., _ or -"
+done
+if command -v systemctl >/dev/null 2>&1 && [[ ! -w /etc/systemd/system ]]; then
+    sudo -n true 2>/dev/null || fail "service installation requires passwordless sudo; configure installation privileges before continuing"
+fi
 mkdir -p "$ROOT/bin" "$ROOT/build" "$ROOT/var/log" "$ROOT/var/run"
 
 if [[ ! -x "$LEROBOT_VENV/bin/python" ]]; then
@@ -38,7 +49,7 @@ assert metadata.version("grpcio") == "1.80.0"
         flask waitress "wandb==0.24.2" "protobuf==6.31.1" "grpcio==1.80.0"
 fi
 
-log "Installing the PoLiMa board package and Studio assets"
+log "Installing the PoLiMa DevKit package and Studio assets"
 "$LEROBOT_VENV/bin/python" -m pip install --no-deps --upgrade "$POLIMA_SOURCE"
 
 # Build in a staging tree, then atomically replace the one active binary pair.
@@ -86,8 +97,24 @@ if command -v systemctl >/dev/null 2>&1; then
         install_cmd=(sudo -n install)
     fi
     log "Installing polima-studio.service"
-    "${install_cmd[@]}" -m 0644 "$POLIMA_SOURCE/scripts/systemd/polima-studio.service" \
-        "$systemd_dir/polima-studio.service"
+    rendered_service="$(mktemp)"
+    trap 'rm -f "$rendered_service"' EXIT
+    python3 - "$POLIMA_SOURCE/scripts/systemd/polima-studio.service" "$rendered_service" \
+        "$ROOT" "$LEROBOT_VENV" "$STUDIO_USER" "$STUDIO_GROUP" <<'PY_SERVICE'
+from pathlib import Path
+import sys
+source, destination, root, venv, user, group = sys.argv[1:]
+text = Path(source).read_text()
+replacements = {
+    "ExecStart=": f'ExecStart=/usr/bin/env POLIMA_ROOT={root} LEROBOT_VENV={venv} {venv}/bin/python -m polima.studio.main',
+    "User=": f"User={user}", "Group=": f"Group={group}",
+    "ReadWritePaths=": f"ReadWritePaths={root}",
+}
+Path(destination).write_text("\n".join(
+    next((value for key, value in replacements.items() if line.startswith(key)), line)
+    for line in text.splitlines()) + "\n")
+PY_SERVICE
+    "${install_cmd[@]}" -m 0644 "$rendered_service" "$systemd_dir/polima-studio.service"
     if [[ ! -e "$default_dir/polima-studio" ]]; then
         "${install_cmd[@]}" -m 0644 "$POLIMA_SOURCE/scripts/systemd/polima-studio.default" \
             "$default_dir/polima-studio"
@@ -112,6 +139,9 @@ Installed:
   $ROOT/bin/polima_cli
   $ROOT/bin/polima_server
   $LEROBOT_VENV
+
+For custom paths, export POLIMA_ROOT=$ROOT and LEROBOT_VENV=$LEROBOT_VENV
+in your terminal before using the native command.
 
 Next:
   polima activate        # select and optionally start an installed bundle

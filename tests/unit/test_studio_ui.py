@@ -15,7 +15,7 @@ NODE = shutil.which("node")
 
 @pytest.mark.skipif(NODE is None, reason="needs Node.js")
 def test_review_form_logic():
-    result = subprocess.run([NODE, "--test", str(ROOT / "studio-ui/src")],
+    result = subprocess.run([NODE, "--test", str(ROOT / "src/polima/studio/ui/src")],
                             capture_output=True, text=True, timeout=120, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
 

@@ -35,7 +35,7 @@ test:
 
 .PHONY: doctor
 doctor:
-	./bin/polima doctor
+	.venv/bin/polima doctor
 
 .PHONY: lint
 lint:

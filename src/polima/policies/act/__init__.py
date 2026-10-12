@@ -1,13 +1,4 @@
-"""ACT (Action Chunking Transformer) -- the first policy ported to PoLiMa.
-
-Every constant below is transcribed from the working legacy stack, not invented:
-
-  ACT/scripts/export_act_modalix.py       graph decomposition, shapes, calibration
-  ACT/scripts/compile_deploy_act_som.sh   per-graph layout and precision
-  ACT/devkit/act_llima/act_llima.cpp      element counts, packing offsets, magic
-  ACT/scripts/act_som_client.py           wire protocol, client-side normalization
-  ACT/scripts/validate_act_datasets.py    the SO-101 dataset contract
-  ACT/train_act_local.sh                  training defaults and augmentations
+"""ACT (Action Chunking Transformer).
 
 ACT has no language conditioning, which is why the dataset contract is
 single-task by default (relaxed per-invocation with --allow-mixed-tasks).
@@ -41,7 +32,6 @@ from polima.policies.base import (
     PolicySpec,
     RobotSpec,
     TensorSpec,
-    TrainSpec,
     WireSpec,
     camera_capture_for_profile,
     camera_hints_for_profile,
@@ -61,26 +51,11 @@ JOINT_NAMES = (
     "gripper.pos",
 )
 
-MYCOBOT_JOINT_NAMES = (
-    "joint_1.pos",
-    "joint_2.pos",
-    "joint_3.pos",
-    "joint_4.pos",
-    "joint_5.pos",
-    "joint_6.pos",
-    "gripper.pos",
-)
-
 _ACT_PROFILES = {
     "so-arm101": {
         "state_names": JOINT_NAMES,
         "camera_keys": ("observation.images.overhead", "observation.images.wrist"),
         "fps": 30,
-    },
-    "mycobot280": {
-        "state_names": MYCOBOT_JOINT_NAMES,
-        "camera_keys": ("observation.images.front", "observation.images.wrist"),
-        "fps": 20,
     },
 }
 
@@ -118,13 +93,13 @@ def _checkpoint_profile(checkpoint: str | Path, dataset_root: str | Path | None)
 
     state_width = state_dim[0] if len(state_dim) == 1 else None
     action_width = action_dim[0] if len(action_dim) == 1 else None
-    if state_width != action_width or state_width not in (6, 7):
+    if state_width != action_width or state_width != 6:
         raise ValueError(
-            "ACT supports matching 6-DoF SO-101 or 7-DoF MyCobot state/action "
-            f"features; checkpoint has {state_dim}/{action_dim}"
+            "ACT supports the SO-101 (6 matching state/action values); "
+            f"checkpoint has {state_dim}/{action_dim}"
         )
 
-    calibration_id = "so-arm101" if state_width == 6 else "mycobot280"
+    calibration_id = "so-arm101"
     expected = _ACT_PROFILES[calibration_id]
     names = state_names or expected["state_names"]
     cameras = camera_keys or tuple(key for key in features if key.startswith("observation.images."))
@@ -159,7 +134,7 @@ def specialize_spec(
     dataset_root: str | Path | None = None,
     profile: Mapping[str, Any] | None = None,
 ) -> PolicySpec:
-    """Specialize the shared ACT graph architecture for SO-101 or MyCobot."""
+    """Specialize the shared ACT graph architecture for the SO-101."""
 
     selected = dict(profile or {})
     if not selected:
@@ -225,7 +200,7 @@ def specialize_spec(
     return replace(spec, dataset=dataset, wire=wire, robot=robot)
 
 
-#: Verbatim from ACT/train_act_local.sh. Applied only with --augmentations.
+#: Applied only with --augmentations.
 AUGMENTATION_TFS = (
     '{"brightness":{"weight":1.0,"type":"ColorJitter","kwargs":{"brightness":[0.9,1.1]}},'
     '"contrast":{"weight":1.0,"type":"ColorJitter","kwargs":{"contrast":[0.9,1.1]}},'
@@ -266,24 +241,6 @@ ACT_SPEC = PolicySpec(
         single_task=True,
         task_canonicalizer="polima.data.contract:canonical_task",
     ),
-    # -------------------------------------------------------------- training --
-    train=TrainSpec(
-        backend="lerobot-train",
-        conda_env="act",
-        repo_dir_hint="ACT/lerobot",
-        entrypoint=("lerobot-train",),
-        build_args="polima.policies.act.train:build_args",
-        defaults={
-            "steps": 100_000,
-            "batch_size": 8,
-            "num_workers": 4,
-            "device": "cuda",
-            "keep_last_checkpoints": 1,
-            "chunk_size": CHUNK,
-            "n_action_steps": CHUNK,
-        },
-        augmentation_tfs=AUGMENTATION_TFS,
-    ),
     # --------------------------------------------------------------- compile --
     compile=CompilePlan(
         export_entry="polima.policies.act.graphs:export_all",
@@ -298,7 +255,7 @@ ACT_SPEC = PolicySpec(
             # backbone's weights and produces non-finite values on Modalix.
             # A BF16 failure must stop rather than publish an unsafe fallback.
             # The only NCHW graph -- it takes a raw image. Everything downstream
-            # is NHWC token data. compile_deploy_act_som.sh encodes the same rule.
+            # is NHWC token data.
             GraphSpec(
                 name="vision_backbone",
                 builder="polima.policies.act.graphs:VisionBackbone",
@@ -339,14 +296,11 @@ ACT_SPEC = PolicySpec(
     wire=WireSpec(
         magic=0x4D544341,  # "ACTM" little-endian
         version=1,
-        # act_llima occupies 8082 on the live board; PoLiMa lands on 8092 so both
-        # can serve during the Phase-1 parity proof.
         default_port=8092,
         request_header="<IIII",
         response_header="<IIIIfI",
         request_tensors=(
-            # HWC, already normalized by the client. export_act_modalix.py writes
-            # direct_inputs/vision_input_{i}.f32 with transpose(0, 2, 3, 1).
+            # HWC, already normalized by the client.
             TensorSpec("image0", (HEIGHT, WIDTH, 3)),
             TensorSpec("image1", (HEIGHT, WIDTH, 3)),
             TensorSpec("state", (STATE_DIM,)),
@@ -358,8 +312,7 @@ ACT_SPEC = PolicySpec(
     # ----------------------------------------------------------------- robot --
     robot=RobotSpec(
         camera_roles=(("overhead", "Overhead"), ("wrist", "Wrist")),
-        # From the legacy launcher's --perspective-camera / --wrist-camera
-        # defaults: a Logitech C920 overhead and a Sonix wrist camera.
+        # Default cameras: a Logitech C920 overhead and a Sonix wrist camera.
         camera_hints={"overhead": "C920", "wrist": "Sonix"},
         joint_names=JOINT_NAMES,
         actions_per_chunk=CHUNK,
@@ -374,4 +327,4 @@ ACT_SPEC = PolicySpec(
 
 register_policy(ACT_SPEC)
 
-__all__ = ["ACT_SPEC", "JOINT_NAMES", "AUGMENTATION_TFS"]
+__all__ = ["ACT_SPEC", "AUGMENTATION_TFS", "CAMERA_ELEMENTS", "HIDDEN_ELEMENTS", "JOINT_NAMES", "STEM_ELEMENTS"]
