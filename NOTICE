@@ -1,0 +1,11 @@
+PoLiMa
+Copyright 2026 SiMa.ai
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+PoLiMa works with, but does not include, third-party software and model
+weights that carry their own licences, among them NVIDIA Isaac GR00T N1.6 and
+N1.7, Hugging Face LeRobot, and the SiMa.ai ModelSDK. Prebuilt robot bundles
+contain compiled model weights and are covered by the licences of the models
+they were built from. See THIRD_PARTY.md for the list and the terms that
+apply.

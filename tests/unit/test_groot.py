@@ -74,18 +74,35 @@ def test_chained_graphs_expose_a_flat_hwc_boundary():
         graph = GROOT_SPEC.graph(name)
         assert graph.external_dram_layout == "HWC", name
         assert not graph.mla_tessellation, name
-        assert graph.promote_rank3_hwc, name
         assert graph.layout == "NHWC", name
+        # Rank-3 [1, tokens, channels] stages need HWC promotion. The Qwen pairs
+        # take a rank-4 [1, 1, tokens, channels] hidden state plus the task's
+        # attention mask, so there is nothing to promote (and promotion is only
+        # defined for one input).
+        rank3 = len(graph.inputs[0].shape) == 3
+        assert graph.promote_rank3_hwc == rank3, name
 
 
-def test_unchained_outputs_are_hwc16_for_the_host_to_unpack():
-    # Everything the host reads back corresponds to a detessellate_hwc16 call
-    # in groot_action_llima.cpp.
+def test_qwen_pairs_take_the_task_attention_mask():
+    for name in rt.QWEN_CHAIN:
+        if not name.startswith("eagle_qwen_"):
+            continue
+        hidden, mask = GROOT_SPEC.graph(name).inputs
+        assert hidden.shape == (1, 1, rt.SEQUENCE, rt.LANGUAGE_CHANNELS), name
+        assert mask.name == "attention_mask"
+        assert mask.shape == (1, rt.SEQUENCE, rt.SEQUENCE, 1), name
+
+
+def test_unchained_outputs_download_as_plain_bf16():
+    # Measured on Modalix (MyCobot and SO-101 fixtures): these ELFs return
+    # ordinary contiguous BF16. Decoding them as HWC16 byte planes produced
+    # non-finite values; plain decoding matched ONNX. Every SO-101 bundle that
+    # ran on the arm on 2026-10-05 declares them plain.
     for name in ("eagle_vision_connector", "state_project", "action_project",
                  "action_tail", *rt.block_names()):
         output = GROOT_SPEC.graph(name).outputs[0]
-        assert output.dram_layout == "hwc16", name
-        assert output.logical_width and output.logical_channels, name
+        assert output.dram_layout == "plain", name
+        assert output.logical_width is None and output.logical_channels is None, name
 
 
 def test_wire_magic_is_grut():
@@ -293,6 +310,8 @@ def test_plan_replays_end_to_end_with_the_mla_stubbed(tmp_path):
         "prompt_embedding": np.zeros(rt.BACKBONE_ELEMENTS, dtype=np.float32),
         "image_additive_mask": np.zeros(rt.MASK_ELEMENTS, dtype=np.float32),
         "text_additive_mask": np.zeros(rt.MASK_ELEMENTS, dtype=np.float32),
+        # The Qwen pairs' causal/key-padding mask.
+        "qwen_attention_mask": np.zeros(rt.SEQUENCE * rt.SEQUENCE, dtype=np.float32),
         "state_mean": np.zeros(rt.STATE_DIM, dtype=np.float32),
         "state_std": np.ones(rt.STATE_DIM, dtype=np.float32),
         "action_mean": np.zeros(rt.ACTION_DIM, dtype=np.float32),
@@ -414,36 +433,96 @@ def test_additive_masks_are_complementary_over_the_image_window():
     assert bool(((image_additive == 0) ^ (text_additive == 0)).all())
 
 
-def test_normalization_trims_to_real_joints_and_survives_a_still_joint(tmp_path):
-    """GR00T stores statistics over the padded 128 lane, per embodiment.
+#: SO-101 joint widths, as a GR00T checkpoint groups them.
+ARM, GRIPPER = 5, 1
 
-    A joint that never moved has std 0. Dividing by it on the board produces
-    inf with no traceback to read, so it is clamped at export.
+
+def _so101_checkpoint(root: Path, horizon: int = 4) -> Path:
+    """The metadata files of a GR00T SO-101 checkpoint, in the layout GR00T saves.
+
+    Shapes follow a real SO-101 checkpoint: absolute state/action statistics per
+    group, and per-step `relative_action` statistics for the relative arm group.
+    The weights are not needed for normalization or validation.
     """
-    checkpoint = tmp_path / "ckpt"
-    (checkpoint / "experiment_cfg").mkdir(parents=True)
-    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
-    statistics = {"new_embodiment": {"statistics": {
-        "state": {"mean": [1.0] * 6 + [0.0] * 122,
-                  "std": [2.0] * 5 + [0.0] + [1.0] * 122},
-        "action": {"mean": [3.0] * 128, "std": [4.0] * 128},
-    }}}
-    (checkpoint / "experiment_cfg" / "metadata.json").write_text(
-        json.dumps({"embodiments": statistics}), encoding="utf-8")
+    checkpoint = root / "ckpt"
+    checkpoint.mkdir(parents=True)
+
+    def write(name, value):
+        (checkpoint / name).write_text(json.dumps(value), encoding="utf-8")
+
+    def block(low, high):
+        low, high = np.asarray(low, float), np.asarray(high, float)
+        return {"min": low.tolist(), "max": high.tolist(),
+                "mean": ((low + high) / 2).tolist(), "std": (high - low).tolist()}
+
+    write("config.json", {"action_horizon": 50, "model_name": "nvidia/Eagle-Block2A-2B-v2"})
+    write("embodiment_id.json", {"new_embodiment": 10, "gr1": 20})
+    write("eagle_preprocessor_config.json", {
+        "do_convert_rgb": True, "do_resize": False, "do_rescale": True, "do_normalize": True,
+        "rescale_factor": 1 / 255, "image_mean": [0.5] * 3, "image_std": [0.5] * 3,
+    })
+    group = {"modality_keys": ["single_arm", "gripper"], "delta_indices": [0]}
+    write("processor_config.json", {"processor_kwargs": {
+        "model_name": "nvidia/Eagle-Block2A-2B-v2",
+        "use_percentiles": False,
+        "use_relative_action": True,
+        "modality_configs": {"new_embodiment": {
+            "video": {"modality_keys": ["front", "wrist"], "delta_indices": [0]},
+            "state": group,
+            "action": {**group, "delta_indices": list(range(horizon)),
+                       "action_configs": [{"rep": "RELATIVE"}, {"rep": "ABSOLUTE"}]},
+        }},
+    }})
+    # Arm joint 4 never moved: min == max, so its half-range is zero.
+    arm_low, arm_high = [-10.0, -20.0, -30.0, 5.0, -50.0], [10.0, 20.0, 30.0, 5.0, 50.0]
+    steps = np.arange(1, horizon + 1, dtype=float)[:, None] * np.ones(ARM)
+    write("statistics.json", {"new_embodiment": {
+        "state": {"single_arm": block(arm_low, arm_high), "gripper": block([0.0], [40.0])},
+        "action": {"single_arm": block(arm_low, arm_high), "gripper": block([2.0], [42.0])},
+        "relative_action": {"single_arm": block(-steps, steps)},
+    }})
+    return checkpoint
+
+
+def test_normalization_trims_to_real_joints_and_survives_a_still_joint(tmp_path):
+    """GR00T maps each group's [min, max] to [-1, 1]; PoLiMa stores that as
+    mean = centre and std = half-range, for the real joints only.
+
+    A joint that never moved has a zero range. Dividing by it on the board
+    produces inf with no traceback to read, so it is clamped to 1 at export.
+    """
+    horizon = 4
+    checkpoint = _so101_checkpoint(tmp_path, horizon)
 
     loaded = np.load(graphs.write_normalization(checkpoint, [], tmp_path / "stats.npz"))
-    assert all(loaded[key].shape == (rt.STATE_DIM,) for key in loaded)
-    assert loaded["state_std"].tolist() == [2.0] * 5 + [1.0]
+    assert loaded["state_mean"].tolist() == [0.0, 0.0, 0.0, 5.0, 0.0, 20.0]
+    assert loaded["state_std"].tolist() == [10.0, 20.0, 30.0, 1.0, 50.0, 20.0]
+    # Relative arm actions use the per-step relative statistics; the absolute
+    # gripper uses the ordinary action block, repeated for every step.
+    action_mean = loaded["action_mean"].reshape(horizon, ARM + GRIPPER)
+    action_std = loaded["action_std"].reshape(horizon, ARM + GRIPPER)
+    assert np.allclose(action_mean[:, :ARM], 0.0)
+    assert np.allclose(action_std[:, :ARM], np.arange(1, horizon + 1)[:, None])
+    assert np.allclose(action_mean[:, ARM], 22.0)
+    assert np.allclose(action_std[:, ARM], 20.0)
     # Written under the names runtime.SIDECARS lists, so packing needs no rename.
     written = {path.name for path in (tmp_path / "constants").iterdir()}
     assert written == {"state_mean", "state_std", "action_mean", "action_std"}
-    assert np.fromfile(tmp_path / "constants" / "action_std", dtype="<f4").tolist() == [4.0] * 6
+    assert np.fromfile(tmp_path / "constants" / "state_std", dtype="<f4").tolist() == [
+        10.0, 20.0, 30.0, 1.0, 50.0, 20.0]
 
 
 def test_validator_flags_a_checkpoint_with_no_statistics(tmp_path):
-    checkpoint = tmp_path / "ckpt"
-    (checkpoint / "experiment_cfg").mkdir(parents=True)
-    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
-    assert len(graphs.validate_checkpoint(checkpoint)) == 1
-    (checkpoint / "experiment_cfg" / "metadata.json").write_text("{}", encoding="utf-8")
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "config.json").write_text("{}", encoding="utf-8")
+    problems = graphs.validate_checkpoint(bare)
+    assert len(problems) == 3
+    for name in ("processor_config.json", "statistics.json", "embodiment_id.json"):
+        assert any(name in problem for problem in problems), name
+
+    checkpoint = _so101_checkpoint(tmp_path)
     assert graphs.validate_checkpoint(checkpoint) == []
+    (checkpoint / "statistics.json").unlink()
+    problems = graphs.validate_checkpoint(checkpoint)
+    assert len(problems) == 1 and "statistics.json" in problems[0]

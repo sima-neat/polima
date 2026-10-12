@@ -7,22 +7,23 @@ ACT/devkit/act_llima/act_llima.cpp::ActModel::predict() does in hand-written C++
     camera0 = vision.run(image0)          -> run_elf
     camera1 = vision.run(image1)          -> run_elf
     packed  = zeros(601 * 512)            -> pack
-      packed[0:6]              = state
+      packed[0:state_dim]      = state
       packed[512:512+153600]   = camera0
       packed[301*512 : ...]    = camera1
     hidden  = stem.run(packed)            -> run_elf
     hidden  = encoder{1,2,3}.run(hidden)  -> run_elf x3
     padded  = decoder.run(hidden)         -> run_elf
     for step in 0..99:                    -> gather_strided
-        actions[step*6 : +6] = padded[step*16 : +6]
+        actions[step*D : +D] = padded[step*16 : +D]
 
 The offsets are not arbitrary: the stem graph reshapes its input to (1, 601, 512)
-and slices `[:, 0, :6]` for state, `[:, 1:301]` for camera 0 and `[:, 301:601]`
+and slices the profile-selected 6 or 7 state lanes, `[:, 1:301]` for camera 0,
+and `[:, 301:601]`
 for camera 1 (see EncoderStemPacked in ACT/scripts/export_act_modalix.py:125-129),
 so token 0 holds the state and each camera occupies 300 tokens of 512.
 
-The 16-wide action head is also deliberate: DecoderActionRank4 widens the 6-DoF
-head to 16 output channels for MLA channel alignment and zero-fills the rest
+The 16-wide action head is also deliberate: DecoderActionRank4 widens the
+profile's 6- or 7-DoF head for MLA channel alignment and zero-fills the rest
 (export_act_modalix.py:145-149), so the host strides past 10 pad values per step.
 """
 
@@ -45,7 +46,7 @@ CAMERA_ELEMENTS = CAMERA_TOKENS * HIDDEN     # 153600
 STEM_ELEMENTS = STEM_TOKENS * HIDDEN         # 307712
 HIDDEN_ELEMENTS = ENCODER_TOKENS * HIDDEN    # 308224
 PADDED_ELEMENTS = CHUNK * PADDED_ACTION_DIM  # 1600
-ACTION_ELEMENTS = CHUNK * ACTION_DIM         # 600
+ACTION_ELEMENTS = CHUNK * ACTION_DIM         # 600 for the default SO-101 profile
 
 CAMERA0_OFFSET = HIDDEN              # token 1
 CAMERA1_OFFSET = 301 * HIDDEN        # token 301
@@ -54,6 +55,8 @@ ENCODER_LAYERS = ("encoder_layer_01", "encoder_layer_02", "encoder_layer_03")
 
 
 def build_plan(spec: PolicySpec, context: Any = None) -> RuntimePlan:
+    state_dim = spec.dataset.state_dim
+    action_dim = spec.dataset.action_dim
     steps = [
         Step("run_elf", "cam0", {"graph": "vision_backbone", "in": ["image0"]}),
         Step("run_elf", "cam1", {"graph": "vision_backbone", "in": ["image1"]}),
@@ -63,7 +66,7 @@ def build_plan(spec: PolicySpec, context: Any = None) -> RuntimePlan:
             {
                 "size": STEM_ELEMENTS,
                 "parts": [
-                    {"src": "state", "dst_offset": 0, "count": ACTION_DIM},
+                    {"src": "state", "dst_offset": 0, "count": state_dim},
                     {"src": "cam0", "dst_offset": CAMERA0_OFFSET, "count": CAMERA_ELEMENTS},
                     {"src": "cam1", "dst_offset": CAMERA1_OFFSET, "count": CAMERA_ELEMENTS},
                 ],
@@ -82,7 +85,7 @@ def build_plan(spec: PolicySpec, context: Any = None) -> RuntimePlan:
             {
                 "src": "padded",
                 "stride": PADDED_ACTION_DIM,
-                "take": ACTION_DIM,
+                "take": action_dim,
                 "count": CHUNK,
             },
         ),
@@ -92,13 +95,13 @@ def build_plan(spec: PolicySpec, context: Any = None) -> RuntimePlan:
         buffers={
             "image0": IMAGE_ELEMENTS,
             "image1": IMAGE_ELEMENTS,
-            "state": ACTION_DIM,
+            "state": state_dim,
             "cam0": CAMERA_ELEMENTS,
             "cam1": CAMERA_ELEMENTS,
             "packed": STEM_ELEMENTS,
             "hidden": HIDDEN_ELEMENTS,
             "padded": PADDED_ELEMENTS,
-            "actions": ACTION_ELEMENTS,
+            "actions": CHUNK * action_dim,
         },
         steps=tuple(steps),
         result="actions",

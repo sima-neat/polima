@@ -309,3 +309,58 @@ def test_unknown_input_is_rejected(tmp_path):
     plan = plan_from_spec(tmp_path)
     with pytest.raises(PlanError, match="not a declared buffer"):
         plan.run({"nope": np.zeros(1, np.float32)})
+
+
+# -- GR00T SO-101 opcodes; native/src/plan.cpp implements the same ------------
+
+
+def _single_step(op: str, args: dict, sizes: dict[str, int], out: str = "y") -> StubPlan:
+    return StubPlan(buffers=sizes, steps=[{"op": op, "out": out, "args": args}], result=out)
+
+
+def test_pack_selects_the_requested_tasks_prompt():
+    """A multi-task bundle stores one prompt per task; the request's task picks one."""
+    prompts = np.arange(12, dtype=np.float32)  # three tasks of four values
+    plan = _single_step("pack", {"parts": [{"src": "prompts", "dst_offset": 1, "count": 4,
+                                            "source_stride": 4, "selector_count": 3}]},
+                        {"prompts": 12, "y": 5})
+    assert plan.run({"prompts": prompts}, task=2).tolist() == [0, 8, 9, 10, 11]
+    with pytest.raises(PlanError, match="catalog"):
+        plan.run({"prompts": prompts}, task=3)
+
+
+def test_clip_unit_clamps_to_plus_minus_one():
+    plan = _single_step("clip_unit", {"src": "x"}, {"x": 3, "y": 3})
+    assert plan.run({"x": np.array([-3.0, 0.25, 2.0], np.float32)}).tolist() == [-1, 0.25, 1]
+
+
+def test_pixel_unshuffle_handles_a_non_square_grid():
+    """SO-101 images give an 18 x 24 token grid; the fold must not assume a square."""
+    height, width, channels, factor = 4, 6, 3, 2
+    source = np.arange(height * width * channels, dtype=np.float32)
+    plan = _single_step("pixel_unshuffle", {"src": "x", "height": height, "width": width,
+                                            "channels": channels, "factor": factor},
+                        {"x": source.size, "y": source.size})
+    # The index arithmetic of native/src/plan.cpp, transliterated.
+    expected = np.zeros_like(source)
+    out_channels, columns = channels * factor * factor, width // factor
+    for row in range(height // factor):
+        for column in range(columns):
+            for dy in range(factor):
+                for dx in range(factor):
+                    read_at = ((row * factor + dy) * width + column * factor + dx) * channels
+                    write_at = (row * columns + column) * out_channels + dy * factor + dx
+                    for channel in range(channels):
+                        expected[write_at + channel * factor * factor] = source[read_at + channel]
+    np.testing.assert_array_equal(plan.run({"x": source}), expected)
+
+
+def test_persistent_dit_bindings_survive_a_manifest_rewrite(tmp_path):
+    """Deploy rewrites bundle.json; dropping these would stop run_dit_chain loading."""
+    from polima.bundle.layout import Bundle, GraphArtifact
+
+    graph = GraphArtifact("dit_blocks_00_01", "models/a.elf", "0" * 64, 1,
+                          persistent_input_elements=[64, 8, 32, 16])
+    bundle = Bundle(root=tmp_path, policy="groot", bundle_id="groot-x", graphs=[graph])
+    again = Bundle.from_dict(bundle.to_dict(), tmp_path)
+    assert again.graphs[0].persistent_input_elements == [64, 8, 32, 16]

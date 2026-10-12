@@ -2,6 +2,9 @@ import { render } from "preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
 import "./styles.css";
 import "./tools.css";
+import { createApi } from "./api.js";
+import { BundleInstaller, BundleLibrary, DeviceFiles, duration, when } from "./files.jsx";
+import { RobotRunReviews } from "./reviews.jsx";
 
 const blank = { bundle: "", task: "", robot_port: "", overhead_camera: "", wrist_camera: "", preview: true, repeat: true, autocomplete: true };
 const idleStates = ["idle", "fault"];
@@ -22,6 +25,7 @@ function Icon({ name }) {
     performance: <><path d="M4 18a8 8 0 1 1 16 0"/><path d="m12 18 4-6M7 18h10"/></>,
     manage: <><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></>,
     activity: <><path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/></>,
+    files: <><path d="M12 15V3M7 10l5 5 5-5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></>,
     camera: <><rect x="3" y="6" width="18" height="13" rx="2"/><circle cx="12" cy="12.5" r="3.5"/><path d="m8 6 1-2h6l1 2"/></>,
     sun: <><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></>,
     moon: <path d="M20 15.2A8 8 0 0 1 8.8 4 8.1 8.1 0 1 0 20 15.2Z"/>,
@@ -50,15 +54,7 @@ function Studio() {
     setTheme(next);
   };
 
-  const api = async (path, options = {}) => {
-    const response = await fetch(`/api/v1${path}`, {
-      ...options,
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf, "X-Controller-Lease": lease, "X-Browser-ID": browserId, ...(options.headers || {}) },
-    });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
-    return body;
-  };
+  const api = createApi(fetch, () => ({ "X-CSRF-Token": csrf, "X-Controller-Lease": lease, "X-Browser-ID": browserId }));
 
   const refresh = () => fetch("/api/v1/snapshot").then(r => r.json()).then(data => {
     setSnapshot(data);
@@ -95,7 +91,11 @@ function Studio() {
       if (event.type === "preview") {
         setSnapshot(old => old ? { ...old, preview_url: event.url } : old);
       }
-      if (["state", "halt", "bundle", "server"].includes(event.type)) { refresh(); refreshLists(); }
+      if (event.type === "job") {
+        setSnapshot(old => old ? { ...old, job: event.job } : old);
+        if (event.job.status !== "running") refresh();
+      }
+      if (["state", "halt", "bundle", "server", "calibration"].includes(event.type)) { refresh(); refreshLists(); }
       if (event.type === "benchmark") refreshLists();
     };
     return () => events.close();
@@ -118,7 +118,26 @@ function Studio() {
   // Needs no controller lease: it is the way out of a wedged studio, and one
   // of the things it clears IS a stale lease held by some other tab.
   const resetSystem = () => mutate(() => api("/system/reset", { method: "POST" }));
-  const activate = () => mutate(() => api(`/bundles/${encodeURIComponent(config.bundle)}/activate`, { method: "POST", body: "{}" }));
+  const activate = () => activateBundle(config.bundle);
+  const activateBundle = id => mutate(() => api(`/bundles/${encodeURIComponent(id)}/activate`, { method: "POST", body: "{}" }));
+  const uploadHeaders = () => ({ "X-CSRF-Token": csrf, "X-Controller-Lease": lease, "X-Browser-ID": browserId });
+  const activeBundle = snapshot?.bundles.find(item => item.active)?.id;
+  const copyCalibration = id => api(`/bundles/${encodeURIComponent(id)}/calibration`, { method: "POST", body: JSON.stringify({ from_bundle: activeBundle }) });
+  const selectForRun = id => { changeBundle(id); document.getElementById("operate")?.scrollIntoView(); };
+  const saveFrame = role => {
+    const image = document.querySelector(`img[data-role="${role}"]`);
+    if (!image?.naturalWidth) return setError("No camera frame to save yet");
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+    canvas.getContext("2d").drawImage(image, 0, 0);
+    canvas.toBlob(blob => {
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `${role}-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    }, "image/jpeg", 0.95);
+  };
   const policyServer = action => mutate(() => api(`/server/${action}`, { method: "POST", body: JSON.stringify({ bundle: config.bundle }) }));
   const calibrate = () => mutate(() => api("/calibration/start", { method: "POST", body: JSON.stringify(config) }));
   const calibrationInput = value => mutate(() => api("/calibration/input", { method: "POST", body: JSON.stringify({ value }) }));
@@ -126,7 +145,7 @@ function Studio() {
   const stopBenchmark = () => mutate(() => api("/benchmarks/stop", { method: "POST", body: "{}" }));
   const changeConfig = values => { setArming(null); setConfig(old => ({ ...old, ...values })); };
   const changeBundle = id => {
-    const bundle = snapshot.bundles.find(item => item.id === id);
+    const bundle = snapshot?.bundles.find(item => item.id === id);
     changeConfig({ bundle: id, task: bundle?.default_task || "" });
   };
 
@@ -148,6 +167,7 @@ function Studio() {
         <p class="nav-label">Workspace</p>
         <nav>
           <a href="#operate"><Icon name="operate"/>Operate</a>
+          <a href="#files"><Icon name="files"/>Bundles & files</a>
           <a href="#performance"><Icon name="performance"/>Performance</a>
           <a href="#manage"><Icon name="manage"/>Device & policy</a>
           <a href="#activity"><Icon name="activity"/>Activity</a>
@@ -164,7 +184,7 @@ function Studio() {
       </section>
 
       <section class="readiness" aria-label="Run readiness">
-        <div class={snapshot.bundles.length ? "ready" : "missing"}><b>1</b><span><strong>Select policy</strong><small>{selected ? `${selected.policy.toUpperCase()} · ${selected.active ? "active" : "installed"}` : "No policy installed"}</small></span></div>
+        <div class={snapshot.bundles.length ? "ready" : "missing"}><b>1</b><span><strong>Select policy</strong><small>{selected ? `${selected.policy.toUpperCase()} · ${selected.active ? "active" : "installed"}` : <a href="#files">No policy installed — install one</a>}</small></span></div>
         <div class={config.task ? "ready" : "missing"}><b>2</b><span><strong>Confirm task</strong><small>{config.task || "Instruction required"}</small></span></div>
         <div class={readyCount === 3 ? "ready" : "missing"}><b>3</b><span><strong>Check hardware</strong><small>{snapshot.hardware.arms.length ? `${snapshot.hardware.cameras.length} cameras · arm connected` : "Follower arm missing"}</small></span></div>
         <div class={arming ? "ready" : "pending"}><b>4</b><span><strong>Arm & run</strong><small>{arming ? "Preflight passed" : "Motion requires confirmation"}</small></span></div>
@@ -193,7 +213,7 @@ function Studio() {
 
         <section class="card cameras">
           <div class="cardhead"><div><span class="step-label">OPTIONAL</span><h3>Inspect camera views</h3><p>Camera-only preview never connects to the arm or policy server.</p></div><button disabled={!canPrepare || !config.overhead_camera || !config.wrist_camera} onClick={preview}><Icon name="camera"/> Start Preview</button></div>
-          {snapshot.preview_url ? <div class="feeds"><figure><img src="/api/v1/cameras/overhead.mjpg"/><figcaption><i></i>Overhead</figcaption></figure><figure><img src="/api/v1/cameras/wrist.mjpg"/><figcaption><i></i>Wrist</figcaption></figure></div> : <div class="cameraempty"><Icon name="camera"/><b>Camera preview is off</b><p>Use preview to frame the scene before enabling robot motion.</p></div>}
+          {snapshot.preview_url ? <div class="feeds">{["overhead", "wrist"].map(role => <figure key={role}><img data-role={role} src={`/api/v1/cameras/${role}.mjpg`}/><figcaption><i></i>{role}<button class="snap" onClick={() => saveFrame(role)}>Save Photo</button></figcaption></figure>)}</div> : <div class="cameraempty"><Icon name="camera"/><b>Camera preview is off</b><p>Use preview to frame the scene before enabling robot motion.</p></div>}
         </section>
 
         <section class="card launch-card">
@@ -204,6 +224,13 @@ function Studio() {
         </section>
       </div>
 
+      <section class="section-heading" id="files"><div><p class="eyebrow">BUNDLES & FILES</p><h2>Install bundles, download files</h2><p>Send compiled bundles to the devkit and bring logs and calibrations back, with no manual file copying.</p></div></section>
+      <div class="transfer-grid">
+        <BundleInstaller api={api} headers={uploadHeaders} controller={controller} onClaim={claim} job={snapshot.job} idle={idleStates.includes(active)} onSelect={selectForRun} onCopyCalibration={copyCalibration}/>
+        <BundleLibrary snapshot={snapshot} api={api} controller={controller} idle={idleStates.includes(active)} selected={config.bundle} onSelect={selectForRun} onActivate={activateBundle} onCopyCalibration={copyCalibration}/>
+        <DeviceFiles/>
+      </div>
+
       <section class="section-heading" id="performance"><div><p class="eyebrow">PERFORMANCE</p><h2>Benchmark policy inference</h2><p>Run stored fixture inputs on the MLA without cameras or a follower arm.</p></div></section>
       <section class="card benchmark">
         <div class="cardhead"><div><h3>Hardware-free MLA benchmark</h3><p class="data-value">{selected?.policy?.toUpperCase()} · {config.bundle}</p></div>{active === "benchmarking" ? <button onClick={stopBenchmark}>Stop Benchmark</button> : <button class="primary" disabled={!canPrepare || snapshot.server.running || !config.bundle} onClick={runBenchmark}>Run Benchmark</button>}</div>
@@ -212,6 +239,7 @@ function Studio() {
         {latestBenchmark?.result && <div class="benchresult"><div class="benchmetrics"><div><small>MEAN</small><strong>{latestBenchmark.result.mean.toFixed(1)}<i>ms</i></strong></div><div><small>P95</small><strong>{latestBenchmark.result.p95.toFixed(1)}<i>ms</i></strong></div><div><small>P99</small><strong>{latestBenchmark.result.p99.toFixed(1)}<i>ms</i></strong></div><div><small>THROUGHPUT</small><strong>{latestBenchmark.result.throughput_hz.toFixed(1)}<i>Hz</i></strong></div></div><div class="benchmeta"><span>{latestBenchmark.bundle}</span><span>{latestBenchmark.iterations} runs</span>{previousBenchmark && <span class={latestBenchmark.result.mean <= previousBenchmark.result.mean ? "ok" : "bad"}>{latestBenchmark.result.mean <= previousBenchmark.result.mean ? "↓" : "↑"} {Math.abs((latestBenchmark.result.mean / previousBenchmark.result.mean - 1) * 100).toFixed(1)}% vs previous</span>}<span class={latestBenchmark.result.validation.status === "pass" ? "ok" : "bad"}>{latestBenchmark.result.validation.status === "pass" ? "✓ output verified" : latestBenchmark.result.validation.status}</span></div>{latestBenchmark.result.stages.length > 0 && <div class="stages">{latestBenchmark.result.stages.map((stage, index) => <div key={`${stage.name}-${index}`}><code>{stage.name}</code><span style={{width:`${Math.max(2, Math.min(100, stage.ms / latestBenchmark.result.mean * 100))}%`}}></span><b>{stage.ms.toFixed(2)} ms</b></div>)}</div>}</div>}
         {latestBenchmark?.status === "failed" && <div class="inline-error">{latestBenchmark.error || "Benchmark failed. Check runtime events."}</div>}
         {!latestBenchmark?.result && active !== "benchmarking" && <div class="empty-small"><b>No benchmark results yet</b><p>Select a bundle and run an isolated fixture benchmark.</p></div>}
+        {benchmarks.length > 1 && <div class="table-list"><div class="table-head"><span>When</span><span>Bundle</span><span>Mean</span><span>P95</span><span>Result</span><span></span></div>{benchmarks.slice(0, 8).map(item => <div key={item.id}><span>{when(item.started_at)}</span><span class="mono">{item.bundle}</span><span>{item.result ? `${item.result.mean.toFixed(1)} ms` : "—"}</span><span>{item.result ? `${item.result.p95.toFixed(1)} ms` : "—"}</span><span class={item.status === "completed" ? "ok" : item.status === "failed" ? "bad" : ""}>{item.status}</span><a href={`/api/v1/logs/benchmarks/${item.id}`} target="_blank" rel="noopener">Log</a></div>)}</div>}
       </section>
 
       <section class="section-heading" id="manage"><div><p class="eyebrow">DEVICE & POLICY</p><h2>Manage the runtime</h2><p>Activate bundles, control the policy server, and calibrate the follower arm.</p></div></section>
@@ -222,9 +250,10 @@ function Studio() {
       </div>
 
       <section class="section-heading" id="activity"><div><p class="eyebrow">ACTIVITY</p><h2>Runs and diagnostics</h2><p>Review recent sessions and live process output.</p></div></section>
+      <RobotRunReviews api={api} refreshKey={`${history[0]?.id}:${history[0]?.status}`}/>
       <div class="activity-grid">
-        <section class="card history"><div class="cardhead"><div><h3>Recent robot runs</h3><p>Latest persisted sessions</p></div></div>{history.length ? <div class="history-list">{history.slice(0, 8).map(run => <div key={run.id}><span class={`run-status ${run.status}`}></span><div><b>{run.task}</b><small>{run.bundle}</small></div><time>{run.status}</time></div>)}</div> : <div class="empty-small"><b>No robot runs recorded</b><p>Completed runs will appear here.</p></div>}</section>
-        <section class="card console"><div class="cardhead"><div><h3>Runtime events</h3><p>Live output from the active process</p></div><button onClick={() => setLog([])}>Clear</button></div><pre>{log.length ? log.join("\n") : "Waiting for runtime events…"}</pre></section>
+        <section class="card history"><div class="cardhead"><div><h3>Recent robot runs</h3><p>Latest persisted sessions</p></div></div>{history.length ? <div class="history-list">{history.slice(0, 12).map(run => <div key={run.id}><span class={`run-status ${run.status}`}></span><div><b>{run.task}</b><small>{run.bundle}</small><small>{when(run.started_at)} · {run.ended_at ? duration(run.ended_at - run.started_at) : "in progress"}{run.error ? ` · ${run.error}` : ""}</small></div><span class="run-meta"><time>{run.status}</time><a href={`/api/v1/logs/runs/${run.id}`} target="_blank" rel="noopener">Log</a></span></div>)}</div> : <div class="empty-small"><b>No robot runs recorded</b><p>Completed runs will appear here.</p></div>}</section>
+        <section class="card console"><div class="cardhead"><div><h3>Runtime events</h3><p>Live output from the active process</p></div><div class="toolrow-buttons"><a class="button" href="/api/v1/logs/server" target="_blank" rel="noopener">Server Log</a><button onClick={() => setLog([])}>Clear</button></div></div><pre>{log.length ? log.join("\n") : "Waiting for runtime events…"}</pre></section>
       </div>
       <footer><strong>SiMa.ai</strong><span>PoLiMa Studio · Physical AI control for Modalix</span></footer>
     </main>

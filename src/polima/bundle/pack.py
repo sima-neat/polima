@@ -18,6 +18,7 @@ from pathlib import Path
 
 from polima.bundle.layout import Bundle, GraphArtifact, compute_bundle_id
 from polima.bundle.retained import ElfCandidate
+from polima.compile.precision import effective_precision_label
 from polima.policies.base import PolicySpec, RuntimePlan
 from polima.util.hashing import sha256_file
 from polima.util.jsonio import write_json
@@ -46,6 +47,32 @@ class BundleInputs:
     legacy_source_dir: str | None = None
     tool_versions: dict = field(default_factory=dict)
     precisions: dict[str, str] = field(default_factory=dict)
+    model_version: str | None = None
+    task_label: str | None = None
+
+
+def bundle_precision_label(labels: set[str]) -> str:
+    """Bundle-level label from per-ELF labels.
+
+    Any INT8-activation ELF makes the bundle "w8a8" (its BF16 helper graphs do not make
+    it "mixed"); otherwise INT8 weights make it "mixed"; a uniform build keeps its label.
+    """
+    def int8_activations(label: str) -> bool:
+        return label in ("a8w8", "int8") or label.upper().startswith("A_INT8")
+
+    if len(labels) == 1:  # uniform builds keep their established labels
+        label = next(iter(labels))
+        return {"a8w8": "w8a8", "w8a16": "mixed"}.get(label, label)
+    return "w8a8" if any(int8_activations(label) for label in labels) else "mixed"
+
+
+def _artifact_precision(graph, recorded: dict[str, str]) -> str:
+    """Return the most specific truthful precision label for one ELF."""
+    if graph.activation_precision or graph.weight_precision:
+        return effective_precision_label(
+            graph.precision, graph.activation_precision, graph.weight_precision
+        )
+    return recorded.get(graph.name, graph.precision)
 
 
 def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
@@ -62,13 +89,21 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
 
     plan = spec.build_runtime_plan()
     _check_plan_against_elfs(spec, plan, inputs.elfs)
+    task_catalog = list(dict(spec.runtime_context).get("task_catalog") or ())
+    tasks = [str(task["instruction"]) for task in task_catalog]
 
+    robot_label = {"so-arm101": "so101", "mycobot280": "mycobot", "gr1": "gr1"}.get(spec.robot.calibration_id)
+    labels = {_artifact_precision(g, inputs.precisions) for g in spec.compile.graphs}
+    precision_label = bundle_precision_label(labels)
     bundle_id = compute_bundle_id(
         policy=spec.name,
-        dataset=inputs.dataset,
+        dataset=inputs.task_label or inputs.dataset,
+        robot=robot_label,
+        version=inputs.model_version,
+        precision=precision_label,
         steps=inputs.steps,
         graph_digests={name: candidate.sha256 for name, candidate in inputs.elfs.items()},
-        plan=_plan_dict(plan),
+        plan=_plan_dict(plan, wire=spec),
     )
 
     root = Path(output_root).resolve() / bundle_id
@@ -99,15 +134,11 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
                 elf=str(destination.relative_to(root)),
                 sha256=candidate.sha256,
                 elf_bytes=destination.stat().st_size,
-                precision=inputs.precisions.get(
-                    graph.name,
-                    (
-                        f"activation={graph.activation_precision or graph.precision},"
-                        f"weight={graph.weight_precision or graph.precision}"
-                        if graph.activation_precision or graph.weight_precision
-                        else graph.precision
-                    ),
-                ),
+                # Explicit split precision is part of the graph contract and
+                # is more specific than an old build manifests outer output
+                # directory label (for example SmolVLA denoise was recorded as
+                # bf16 even though its compile command used A=BF16/W=INT8).
+                precision=_artifact_precision(graph, inputs.precisions),
                 input_elements=sum(t.elements for t in graph.inputs),
                 output_elements=sum(t.elements for t in graph.outputs),
                 dram_layout=graph.outputs[0].dram_layout,
@@ -124,13 +155,6 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
     for relative, source in sorted(inputs.robot_files.items()):
         _copy(source, root / "robot_client" / relative)
 
-    # ACT's proven board client reads this before opening the socket. Keep the
-    # canonical fixture copy and expose a root-level compatibility path so the
-    # bundled launcher remains byte-for-byte the hardware-tested one.
-    client_stats = inputs.fixtures.get("normalization_stats.npz")
-    if spec.name == "act" and client_stats:
-        _copy(client_stats, root / "normalization_stats.npz")
-
     # Sidecars are recorded relative to the bundle so the C++ side can resolve
     # them without knowing anything about the host layout.
     sidecars = sorted([
@@ -138,7 +162,6 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
           for relative in inputs.constants),
         *(str((root / "robot_client" / relative).relative_to(root))
           for relative in inputs.robot_files),
-        *(["normalization_stats.npz"] if spec.name == "act" and client_stats else []),
     ])
 
     bundle = Bundle(
@@ -152,6 +175,7 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
         legacy_source_dir=inputs.legacy_source_dir,
         tool_versions=inputs.tool_versions,
         smoke=spec.smoke.to_dict(),
+        tasks=tasks,
     )
 
     write_json(bundle.plan_path, _plan_dict(plan, wire=spec))
@@ -160,7 +184,10 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
 
     log.info(
         "bundle %s: %d graphs, %.1f MiB of ELF, %d fixture(s)",
-        bundle_id, len(artifacts), bundle.total_elf_bytes / 1048576, len(inputs.fixtures),
+        bundle_id,
+        len(artifacts),
+        bundle.total_elf_bytes / 1048576,
+        len(inputs.fixtures),
     )
     return bundle
 
@@ -179,6 +206,29 @@ def _plan_dict(plan: RuntimePlan, wire: PolicySpec | None = None) -> dict:
         "loops": dict(plan.loops),
     }
     if wire is not None:
+        # Host-visible graph output layout is executable behavior, not merely
+        # descriptive metadata. Include it in plan.json and therefore in the
+        # content-addressed bundle id so a layout correction cannot masquerade
+        # as the same bundle.
+        data["graph_outputs"] = {
+            graph.name: [
+                {
+                    "name": output.name,
+                    "shape": list(output.shape),
+                    "dtype": output.dtype,
+                    "dram_layout": output.dram_layout,
+                    "logical_width": output.logical_width,
+                    "logical_channels": output.logical_channels,
+                }
+                for output in graph.outputs
+            ]
+            for graph in wire.compile.graphs
+        }
+        task_catalog = list(dict(wire.runtime_context).get("task_catalog") or ())
+        if task_catalog:
+            data["task_catalog"] = task_catalog
+            data["tasks"] = [str(task["instruction"]) for task in task_catalog]
+            data["default_task"] = 0
         data["wire"] = {
             "magic": wire.wire.magic,
             "version": wire.wire.version,
@@ -198,6 +248,7 @@ def _plan_dict(plan: RuntimePlan, wire: PolicySpec | None = None) -> dict:
             "camera_roles": [list(pair) for pair in robot.camera_roles],
             "camera_hints": dict(robot.camera_hints),
             "camera_fourcc": robot.camera_fourcc,
+            "camera_capture_fps": dict(robot.camera_capture_fps),
             "joint_names": list(robot.joint_names),
             "actions_per_chunk": robot.actions_per_chunk,
             "fps": robot.default_fps,
@@ -205,6 +256,21 @@ def _plan_dict(plan: RuntimePlan, wire: PolicySpec | None = None) -> dict:
             "aggregate_fn": robot.aggregate_fn,
             "calibration_id": robot.calibration_id,
         }
+        data["profile"] = {
+            "state_names": list(wire.dataset.state_names),
+            "state_dim": wire.dataset.state_dim,
+            "action_dim": wire.dataset.action_dim,
+            "camera_keys": list(wire.dataset.camera_keys),
+            "fps": wire.dataset.fps,
+            "calibration_id": robot.calibration_id,
+            "actions_per_chunk": robot.actions_per_chunk,
+            "runtime_context": dict(wire.runtime_context),
+        }
+        if wire.runtime_context:
+            # Lightweight clients can consume graph geometry without knowing
+            # anything about Python-side profile selection.
+            data["runtime_context"] = dict(wire.runtime_context)
+
     return data
 
 
@@ -217,13 +283,12 @@ def _check_plan_against_elfs(
             continue
         graphs = (
             (step.args.get("graph"),)
-            if step.op == "run_elf" else tuple(step.args.get("graphs", ()))
+            if step.op == "run_elf"
+            else tuple(step.args.get("graphs", ()))
         )
         for graph in graphs:
             if graph not in elfs:
-                raise ValueError(
-                    f"plan step {index} runs graph {graph!r} but no ELF was supplied"
-                )
+                raise ValueError(f"plan step {index} runs graph {graph!r} but no ELF was supplied")
             _ = spec.compile.graph(graph)
 
 

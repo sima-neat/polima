@@ -58,14 +58,15 @@ RECOVERY_SCRIPTS = (
 DISPATCHER_SERVICE = "simaai-appcomplex.service"
 INIT_MLA_MEMORY = "/usr/bin/init_mla_memory.sh"
 
-#: The DevKit image's stock password. run.sh carries the same default in
-#: MLA_SUDO_PASSWORD; override with POLIMA_MLA_SUDO_PASSWORD on a board that
-#: differs. Passwordless sudo is tried first, so a hardened board never needs it.
-DEFAULT_SUDO_PASSWORD = "edgeai"
-
 #: Escape hatch: run this instead of the ladder. Mirrors run.sh's MLA_RESET_CMD.
 RESET_COMMAND_ENV = "POLIMA_MLA_RESET_CMD"
+#: The board's sudo password, if passwordless sudo is not set up. No default
+#: is shipped: without it only `sudo -n` is tried.
 SUDO_PASSWORD_ENV = "POLIMA_MLA_SUDO_PASSWORD"
+SUDO_HINT = (
+    f"MLA reset failed; if sudo needed a password, set {SUDO_PASSWORD_ENV} or allow "
+    f"passwordless sudo for {RECOVERY_SCRIPTS[0]} and {INIT_MLA_MEMORY} on the board."
+)
 
 
 def looks_wedged(text: str) -> bool:
@@ -111,13 +112,16 @@ def cma_free_kb(session: BoardSession) -> int | None:
     return None
 
 
-def _sudo(command: str, password: str) -> str:
+def _sudo(command: str, password: str | None) -> str:
     """`command` under sudo, without ever blocking on a prompt.
 
     Tries passwordless sudo first so a board with NOPASSWD never sees the
-    password at all; falls back to feeding it on stdin the way run.sh's
-    mla_sudo does. `-p ''` suppresses the prompt so it cannot end up in a log.
+    password at all; with a password, falls back to feeding it on stdin the way
+    run.sh's mla_sudo does. `-p ''` suppresses the prompt so it cannot end up
+    in a log.
     """
+    if not password:
+        return f"sudo -n {command}"
     quoted = shlex.quote(password)
     return (
         f"sudo -n {command} 2>/dev/null || "
@@ -137,7 +141,7 @@ def reset(
     Best-effort by design: a failed reset must not mask the load error that
     prompted it, so every rung reports rather than raises.
     """
-    password = password or os.environ.get(SUDO_PASSWORD_ENV) or DEFAULT_SUDO_PASSWORD
+    password = password or os.environ.get(SUDO_PASSWORD_ENV) or None
     before = cma_free_kb(session)
     steps: list[str] = []
 
@@ -155,7 +159,8 @@ def reset(
         result = session.run(_sudo(shlex.quote(script), password),
                              check=False, timeout=timeout)
         steps.append(f"{script}: rc={result.returncode}")
-        return _finish(session, result.returncode == 0, "recovery-script", steps, before)
+        return _finish(session, result.returncode == 0, "recovery-script", steps, before,
+                       password)
 
     # No recovery script: restart the dispatcher and re-init MLA memory. This is
     # strictly weaker -- init_mla_memory.sh alone does not do what the recovery
@@ -174,11 +179,12 @@ def reset(
         steps.append(f"{INIT_MLA_MEMORY}: rc={init.returncode}")
         ok = ok and init.returncode == 0
 
-    return _finish(session, ok, "services", steps, before)
+    return _finish(session, ok, "services", steps, before, password)
 
 
 def _finish(session: BoardSession, ok: bool, method: str,
-            steps: list[str], before: int | None) -> ResetReport:
+            steps: list[str], before: int | None,
+            password: str | None = "") -> ResetReport:
     after = cma_free_kb(session)
     report = ResetReport(
         ok=ok, method=method, steps=steps,
@@ -191,4 +197,6 @@ def _finish(session: BoardSession, ok: bool, method: str,
                  method, before, after, reclaimed)
     else:
         log.info("MLA reset via %s: %s", method, "ok" if ok else "FAILED")
+    if not ok and password is None:
+        log.warning(SUDO_HINT)
     return report

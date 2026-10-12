@@ -25,6 +25,7 @@ guesswork.
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import time
 from dataclasses import asdict, dataclass, field
@@ -86,7 +87,11 @@ def export(spec, checkpoint: str | Path, build_dir: str | Path, *,
     started = time.monotonic()
 
     graphs_module = importlib.import_module(spec.compile.export_entry.split(":")[0])
-    policy, image_keys = graphs_module.load_policy(checkpoint, lerobot_src=lerobot_src)
+    profile = dict(spec.runtime_context)
+    load_policy_kwargs = {"lerobot_src": lerobot_src}
+    if "profile" in inspect.signature(graphs_module.load_policy).parameters:
+        load_policy_kwargs["profile"] = profile
+    policy, image_keys = graphs_module.load_policy(checkpoint, **load_policy_kwargs)
     modules = graphs_module.build_modules(policy)
 
     observation_keys = [
@@ -98,12 +103,22 @@ def export(spec, checkpoint: str | Path, build_dir: str | Path, *,
     # GR00T's is a transformers AutoModel over a LeRobot v2.1 dataset, so the
     # shared path's `make_pre_post_processors` has nothing to build from.
     draw = getattr(graphs_module, "load_samples", sampling.load)
+    draw_kwargs = {"count": calibration_samples, "lerobot_src": lerobot_src}
+    if "profile" in inspect.signature(draw).parameters:
+        draw_kwargs["profile"] = profile
     drawn, postprocessor, resolved_root = draw(
-        policy, checkpoint, observation_keys, dataset_root,
-        count=calibration_samples, lerobot_src=lerobot_src,
+        policy, checkpoint, observation_keys, dataset_root, **draw_kwargs
     )
     trace_samples = drawn[:1] if getattr(graphs_module, "TRACE_FIRST_ONLY", False) else drawn
     traces = [graphs_module.trace(modules, sample, image_keys) for sample in trace_samples]
+
+    # Some prompt geometry is only knowable after the checkpoint processor has
+    # built a real sample. GR00T uses this hook for the sequence length and one
+    # image-token window per camera; the specialized contract is then restored
+    # before compilation/packing.
+    specialize_trace = getattr(graphs_module, "specialize_spec_from_trace", None)
+    if specialize_trace is not None:
+        spec = specialize_trace(spec, traces[0], image_keys)
 
     written = resolve(spec.compile.export_entry)(
         build_dir, modules, drawn, traces, image_keys
@@ -113,8 +128,21 @@ def export(spec, checkpoint: str | Path, build_dir: str | Path, *,
             build_dir, drawn[0], traces[0], image_keys, postprocessor
         )
     if spec.compile.normalization_entry:
-        resolve(spec.compile.normalization_entry)(
-            checkpoint, image_keys, build_dir / "normalization_stats.npz"
+        normalization = resolve(spec.compile.normalization_entry)
+        normalization_kwargs = {}
+        if "profile" in inspect.signature(normalization).parameters:
+            normalization_kwargs["profile"] = profile
+        normalization(
+            checkpoint, image_keys, build_dir / "normalization_stats.npz",
+            **normalization_kwargs,
+        )
+
+    if spec.name in ("groot", "smolvla") and spec.robot.calibration_id == "so-arm101":
+        from polima.export.robot import write_so101_rest_pose
+
+        write_so101_rest_pose(
+            resolved_root, build_dir / "robot_client/robot_rest_position.json",
+            spec.robot.joint_names,
         )
 
     _write_contract(spec, build_dir, checkpoint, resolved_root, image_keys, written)
@@ -157,7 +185,17 @@ def _write_contract(spec, build_dir: Path, checkpoint: Path, dataset_root: Path,
         "checkpoint": str(checkpoint),
         "dataset_root": str(dataset_root),
         "camera_order": list(image_keys),
-        "normalization": "host-owned mean/std",
+        "profile": {
+            "state_names": list(spec.dataset.state_names),
+            "state_dim": spec.dataset.state_dim,
+            "action_dim": spec.dataset.action_dim,
+            "camera_keys": list(spec.dataset.camera_keys),
+            "fps": spec.dataset.fps,
+            "calibration_id": spec.robot.calibration_id,
+            "actions_per_chunk": spec.robot.actions_per_chunk,
+            "runtime_context": dict(spec.runtime_context),
+        },
+        "normalization": "checkpoint-owned affine center/scale",
         "batch": 1,
         "fixed_shapes": {
             tensor.name: list(tensor.shape)
@@ -184,5 +222,9 @@ def _record(build_dir: Path, result: ExportResult) -> None:
         onnx.stem: sha256_file(onnx)
         for onnx in sorted((build_dir / "onnx").glob("*.onnx"))
         if not onnx.stem.endswith("_tensor_prepared")
+    }
+    manifest["calibration_sha256"] = {
+        calibration.stem: sha256_file(calibration)
+        for calibration in sorted((build_dir / "calibration").glob("*.npz"))
     }
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

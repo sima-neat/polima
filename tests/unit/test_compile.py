@@ -568,7 +568,7 @@ def test_no_arguments_lists_the_choices(capsys):
 
     assert compile_cli.run([]) == 2
     error = capsys.readouterr().err
-    assert "--build-dir" in error and "--import-legacy" in error
+    assert "--checkpoint" in error and "--build-dir" in error
 
 
 def test_import_legacy_still_needs_no_compiler():

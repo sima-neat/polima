@@ -1,6 +1,6 @@
 """`polima doctor` checks the platform it is on.
 
-Every landmine doctor was written for is a host landmine -- the MLSandbox
+Every landmine doctor was written for is a host landmine -- the workspace
 checkout, the legacy lerobot clones, the SiMa compiler venv, /ml_datasets. A SoM
 has none of them, so before the platform gate a board install reported
 `fail=1 warn=8` that no board action could clear, and `polima-doctor` exited 1
@@ -16,7 +16,7 @@ from polima.cli import doctor
 from polima.util import table
 
 #: The sections that only make sense where the build happens.
-HOST_SECTIONS = ("check_repo", "check_lerobot_patches", "check_compiler", "check_datasets")
+HOST_SECTIONS = ("check_compiler", "check_datasets")
 #: Sections that run everywhere, so the board still gets a useful report.
 SHARED_SECTIONS = ("check_role", "check_host", "check_import_matrix", "check_policies")
 
@@ -103,8 +103,18 @@ def test_board_probes_itself_rather_than_ssh(monkeypatch):
     doctor.check_board(doc, load(), local=True)
     assert argv_seen[0][0] == "sh"
 
-    doctor.check_board(doc, load(), local=False)
+    doctor.check_board(doc, load(overrides={"board.host": "sima@192.0.2.10"}), local=False)
     assert argv_seen[1][0] == "ssh"
+
+
+def test_an_unconfigured_board_is_a_warning_not_an_ssh(monkeypatch):
+    monkeypatch.setattr(doctor.subprocess, "run",
+                        lambda *a, **k: pytest.fail("no board address: nothing to probe"))
+    from polima.config.loader import load
+
+    doc = doctor.Doctor(json_output=True)
+    doctor.check_board(doc, load(overrides={"board.host": ""}, use_env=False), local=False)
+    assert doc.results[-1]["status"] == table.WARN
 
 
 def test_a_healthy_board_exits_zero(ran, monkeypatch):

@@ -172,37 +172,114 @@ QWEN_CHAIN = (*qwen_stage_names(), "eagle_output_norm")
 # -------------------------------------------------------------- buffers
 
 
-def buffers() -> dict[str, int]:
+def _profile(spec: PolicySpec | None):
+    """Return real robot/output dimensions and traced Eagle geometry."""
+    if spec is None:
+        return STATE_DIM, ACTION_DIM, CHUNK, SEQUENCE, (IMAGE_TOKEN_START,), 0, ("patches",)
+    state_dim = spec.dataset.state_dim
+    action_dim = spec.dataset.action_dim
+    horizon = spec.robot.actions_per_chunk
+    context = dict(spec.runtime_context)
+    sequence = int(context.get("sequence", SEQUENCE))
+    starts = tuple(int(value) for value in context.get("image_token_starts", (IMAGE_TOKEN_START,)))
+    relative_dim = int(context.get("relative_action_dim", 0))
+    patch_names = tuple(
+        tensor.name for tensor in spec.wire.request_tensors
+        if tensor.name.startswith("patches")
+    )
+    if len(starts) != len(patch_names):
+        raise ValueError(
+            f"GR00T runtime has {len(patch_names)} camera tensors but token windows {starts}"
+        )
+    return state_dim, action_dim, horizon, sequence, starts, relative_dim, patch_names
+
+
+def _task_count(spec: PolicySpec | None) -> int:
+    if spec is None:
+        return 0
+    catalog = list(dict(spec.runtime_context).get("task_catalog") or ())
+    if catalog and [int(task.get("id", -1)) for task in catalog] != list(range(len(catalog))):
+        raise ValueError(f"invalid GR00T runtime task catalog: {catalog}")
+    return len(catalog)
+
+
+def _vision_geometry(spec: PolicySpec | None) -> tuple[int, int, int, int]:
+    """Processed patch rows/columns and their pre/post-unshuffle widths."""
+    context = {} if spec is None else dict(spec.runtime_context)
+    patch_grid = tuple(
+        int(value) for value in context.get("patch_grid", (PATCH_SIDE, PATCH_SIDE))
+    )
+    if len(patch_grid) != 2:
+        raise ValueError(f"invalid GR00T patch grid {patch_grid}")
+    rows, columns = patch_grid
+    if (
+        rows <= 0
+        or columns <= 0
+        or rows % UNSHUFFLE
+        or columns % UNSHUFFLE
+    ):
+        raise ValueError(
+            f"GR00T patch grid {patch_grid} must be positive and divisible by "
+            f"{UNSHUFFLE}"
+        )
+    vision_width = rows * columns
+    connector_width = (rows // UNSHUFFLE) * (columns // UNSHUFFLE)
+    recorded = int(context.get("connector_width", connector_width))
+    if recorded != connector_width:
+        raise ValueError(
+            f"GR00T connector width {recorded} disagrees with patch grid {patch_grid}"
+        )
+    return rows, columns, vision_width, connector_width
+
+
+def _vision_slots(patch_names: tuple[str, ...]):
+    if patch_names == ("patches",):
+        return (("patches", "vision_hidden", "connector_input", "image_tokens"),)
+    return tuple(
+        (name, f"vision_hidden_{index}", f"connector_input_{index}", f"image_tokens_{index}")
+        for index, name in enumerate(patch_names)
+    )
+
+
+def buffers(spec: PolicySpec | None = None) -> dict[str, int]:
     """Every buffer the plan touches, allocated once at load."""
+    state_dim, action_dim, horizon, sequence, _, relative_dim, patch_names = _profile(spec)
+    backbone_elements = sequence * LANGUAGE_CHANNELS
+    response_elements = horizon * action_dim
+    _, _, vision_width, connector_width = _vision_geometry(spec)
+    patch_elements = vision_width * PATCH_CHANNELS
+    vision_elements = vision_width * VISION_CHANNELS
+    connector_elements = connector_width * CONNECTOR_CHANNELS
+    image_token_elements = connector_width * LANGUAGE_CHANNELS
     sizes = {
-        # wire inputs
-        "patches": PATCH_ELEMENTS,
-        "state": STATE_DIM,
+        "state": state_dim,
         "noise": ACTION_ELEMENTS,
-        # Eagle
-        "vision_hidden": VISION_ELEMENTS,
-        "connector_input": CONNECTOR_ELEMENTS,
-        "image_tokens": IMAGE_TOKEN_ELEMENTS,
-        "language_embeddings": BACKBONE_ELEMENTS,
-        "backbone_features": BACKBONE_ELEMENTS,
-        # masks and time embeddings, materialised once from constants/
-        "text_mask": MASK_ELEMENTS,
-        "image_mask": MASK_ELEMENTS,
-        # state path
-        "state_normalized": STATE_DIM,
+        "language_embeddings": backbone_elements,
+        "backbone_features": backbone_elements,
+        "text_mask": sequence,
+        "image_mask": sequence,
+        "qwen_mask": sequence * sequence,
+        "state_normalized": state_dim,
+        "state_clipped": state_dim,
         "state_lane": STATE_LANE,
         "state_features": HIDDEN_CHANNELS,
-        # denoise loop
         "actions": ACTION_ELEMENTS,
         "action_input": ACTION_INPUT_ELEMENTS,
         "action_features": TAU_ELEMENTS,
         "hidden_a": HIDDEN_ELEMENTS,
         "hidden_b": HIDDEN_ELEMENTS,
         "velocity": ACTION_ELEMENTS,
-        # output
-        "actions_lane": RESPONSE_ELEMENTS,
-        "action_chunk": RESPONSE_ELEMENTS,
+        "actions_lane": response_elements,
+        "actions_clipped": response_elements,
+        "action_chunk": response_elements,
     }
+    for patches, vision, connector, tokens in _vision_slots(patch_names):
+        sizes[patches] = patch_elements
+        sizes[vision] = vision_elements
+        sizes[connector] = connector_elements
+        sizes[tokens] = image_token_elements
+    if relative_dim:
+        sizes["reference_chunk"] = response_elements
     for step in range(DENOISE_STEPS):
         sizes[f"temb_{step:02d}"] = TEMB_ELEMENTS
     return sizes
@@ -226,48 +303,100 @@ def _from_sidecar(name: str, sidecar: str, count: int) -> Step:
                  parts=[{"src": sidecar, "dst_offset": 0, "count": count, "sidecar": True}])
 
 
-def build_steps() -> list[Step]:
+def build_steps(spec: PolicySpec | None = None) -> list[Step]:
+    state_dim, action_dim, horizon, sequence, starts, relative_dim, patch_names = _profile(spec)
+    backbone_elements = sequence * LANGUAGE_CHANNELS
+    patch_rows, patch_columns, _, connector_width = _vision_geometry(spec)
+    image_token_elements = connector_width * LANGUAGE_CHANNELS
     steps: list[Step] = []
 
     # --- constants into buffers -------------------------------------------
-    steps.append(_from_sidecar("text_mask", "text_additive_mask", MASK_ELEMENTS))
-    steps.append(_from_sidecar("image_mask", "image_additive_mask", MASK_ELEMENTS))
+    task_count = _task_count(spec)
+    if task_count:
+        steps.append(_step("pack", "text_mask", parts=[{
+            "src": "text_additive_masks",
+            "dst_offset": 0,
+            "count": sequence,
+            "sidecar": True,
+            "source_stride": sequence,
+            "selector_count": task_count,
+        }]))
+        steps.append(_step("pack", "qwen_mask", parts=[{
+            "src": "qwen_attention_masks",
+            "dst_offset": 0,
+            "count": sequence * sequence,
+            "sidecar": True,
+            "source_stride": sequence * sequence,
+            "selector_count": task_count,
+        }]))
+    else:
+        steps.append(_from_sidecar("text_mask", "text_additive_mask", sequence))
+        steps.append(_from_sidecar(
+            "qwen_mask", "qwen_attention_mask", sequence * sequence
+        ))
+    steps.append(_from_sidecar("image_mask", "image_additive_mask", sequence))
     for index in range(DENOISE_STEPS):
         steps.append(_from_sidecar(
             f"temb_{index:02d}", f"timestep_embedding_{index}", TEMB_ELEMENTS))
 
-    # --- Eagle vision: one chain, then the host's channel fold -------------
-    # The client patchifies: the 3x252x252 frame becomes 324 rows of 588 before
-    # the wire, so the board never reshapes an image.
-    steps.append(_step("run_elf_chain", "vision_hidden",
-                       graphs=list(VISION_CHAIN), **{"in": ["patches"]}))
-    steps.append(_step("pixel_unshuffle", "connector_input", src="vision_hidden",
-                       grid=PATCH_SIDE, channels=VISION_CHANNELS, factor=UNSHUFFLE))
-    steps.append(_step("run_elf", "image_tokens", graph="eagle_vision_connector",
-                       **{"in": ["connector_input"]}))
+    # Eagle's weights are shared: run the same compiled vision chain once per
+    # camera, preserving processor camera order.
+    slots = _vision_slots(patch_names)
+    for patches, vision, connector, tokens in slots:
+        steps.append(_step("run_elf_chain", vision,
+                           graphs=list(VISION_CHAIN), **{"in": [patches]}))
+        steps.append(_step("pixel_unshuffle", connector, src=vision,
+                           height=patch_rows, width=patch_columns,
+                           channels=VISION_CHANNELS, factor=UNSHUFFLE))
+        steps.append(_step("run_elf", tokens, graph="eagle_vision_connector",
+                           **{"in": [connector]}))
 
-    # --- the 116-token language sequence ----------------------------------
-    # Every non-image token is fixed for a deployed checkpoint, so the prompt's
-    # embeddings ship as one constant with the image slots zeroed; the vision
-    # tokens are written over that contiguous window.
-    steps.append(_step("pack", "language_embeddings", parts=[
-        {"src": "prompt_embedding", "dst_offset": 0,
-         "count": BACKBONE_ELEMENTS, "sidecar": True},
-        {"src": "image_tokens", "dst_offset": IMAGE_TOKEN_START * LANGUAGE_CHANNELS,
-         "count": IMAGE_TOKEN_ELEMENTS},
-    ]))
-    steps.append(_step("run_elf_chain", "backbone_features",
-                       graphs=list(QWEN_CHAIN), **{"in": ["language_embeddings"]}))
+    prompt_part = {
+        "src": "prompt_embeddings" if task_count else "prompt_embedding",
+        "dst_offset": 0,
+        "count": backbone_elements,
+        "sidecar": True,
+    }
+    if task_count:
+        # The server assigns request-header flags to the catalog id. Selection
+        # happens while packing, without another tensor or host-side copy.
+        prompt_part.update({
+            "source_stride": backbone_elements,
+            "selector_count": task_count,
+        })
+    parts = [prompt_part]
+    for start, (_, _, _, tokens) in zip(starts, slots, strict=True):
+        parts.append({"src": tokens, "dst_offset": start * LANGUAGE_CHANNELS,
+                      "count": image_token_elements})
+    steps.append(_step("pack", "language_embeddings", parts=parts))
+    qwen_input = "language_embeddings"
+    qwen_output = "backbone_features"
+    for graph in qwen_stage_names():
+        steps.append(_step(
+            "run_elf", qwen_output, graph=graph,
+            **{"in": [qwen_input, "qwen_mask"]},
+        ))
+        qwen_input, qwen_output = qwen_output, qwen_input
+    steps.append(_step(
+        "run_elf", "backbone_features", graph="eagle_output_norm",
+        **{"in": [qwen_input]},
+    ))
 
-    # --- state: normalize 6, widen to the 128 lane, project to 1536 --------
-    # Normalizing into a 6-wide buffer and packing separately is deliberate.
-    # Normalizing the 128-wide lane directly would apply the statistics to the
-    # 122 padding slots too, turning structural zeros into -mean/std.
-    steps.append(_step("normalize", "state_normalized", src="state",
-                       mean="state_mean", std="state_std"))
-    steps.append(_step("pack", "state_lane",
-                       parts=[{"src": "state_normalized", "dst_offset": 0,
-                               "count": STATE_DIM}]))
+    state_encoding = spec.runtime_context.get("state_encoding") if spec else None
+    if state_encoding:
+        widths = state_encoding["group_widths"]
+        if (state_encoding["kind"] != "grouped_sincos" or not widths
+                or any(w <= 0 for w in widths) or sum(widths) != state_dim
+                or 2 * state_dim > 128):
+            raise ValueError("unsupported GR00T state encoding geometry")
+        steps.append(_step("sincos_state", "state_lane", src="state", group_widths=widths))
+    else:
+        steps.append(_step("normalize", "state_normalized", src="state",
+                           mean="state_mean", std="state_std"))
+        steps.append(_step("clip_unit", "state_clipped", src="state_normalized"))
+        steps.append(_step("pack", "state_lane",
+                           parts=[{"src": "state_clipped", "dst_offset": 0,
+                                   "count": state_dim}]))
     steps.append(_step("run_elf", "state_features", graph="state_project",
                        **{"in": ["state_lane"]}))
 
@@ -299,11 +428,19 @@ def build_steps() -> list[Step]:
                            **{"in": ["hidden_a", temb]}))
         steps.append(_step("euler", "actions", src="velocity", scalar=EULER_SCALAR))
 
-    # --- 128-wide lane -> 6 real joints, then denormalize ------------------
+    # The model lane remains 50x128, but the saved processor decodes only its
+    # first horizon x real-action-width block (16x7 for MyCobot).
     steps.append(_step("gather_strided", "actions_lane", src="actions",
-                       stride=ACTION_LANE, take=ACTION_DIM, count=CHUNK))
-    steps.append(_step("denormalize", "action_chunk", src="actions_lane",
+                       stride=ACTION_LANE, take=action_dim, count=horizon))
+    steps.append(_step("clip_unit", "actions_clipped", src="actions_lane"))
+    steps.append(_step("denormalize", "action_chunk", src="actions_clipped",
                        mean="action_mean", std="action_std"))
+    if relative_dim:
+        steps.append(_step("gather_strided", "reference_chunk", src="state",
+                           stride=0, take=relative_dim, count=horizon,
+                           dst_stride=action_dim, clear=True))
+        # euler computes out - scalar*src; -1 adds the raw state reference.
+        steps.append(_step("euler", "action_chunk", src="reference_chunk", scalar=-1.0))
     return steps
 
 
@@ -312,6 +449,7 @@ SIDECARS = (
     "prompt_embedding",
     "image_additive_mask",
     "text_additive_mask",
+    "qwen_attention_mask",
     *(f"tau_embedding_{index}" for index in range(DENOISE_STEPS)),
     *(f"timestep_embedding_{index}" for index in range(DENOISE_STEPS)),
     "state_mean",
@@ -322,9 +460,18 @@ SIDECARS = (
 
 
 def build_plan(spec: PolicySpec, context: Any = None) -> RuntimePlan:
+    sidecars = SIDECARS
+    if _task_count(spec):
+        sidecars = (
+            "prompt_embeddings",
+            "image_additive_mask",
+            "text_additive_masks",
+            "qwen_attention_masks",
+            *SIDECARS[4:],
+        )
     return RuntimePlan(
-        buffers=buffers(),
-        steps=tuple(build_steps()),
+        buffers=buffers(spec),
+        steps=tuple(build_steps(spec)),
         result="action_chunk",
-        sidecars=SIDECARS,
+        sidecars=sidecars,
     )

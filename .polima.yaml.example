@@ -1,0 +1,12 @@
+# PoLiMa site configuration. Copy to .polima.yaml (git-ignored) next to
+# pyproject.toml and edit. Every key is optional; precedence, lowest first:
+# these defaults, this file, $POLIMA_* environment variables, --config FILE,
+# then command-line flags. Without PyYAML, write the same keys as .polima.json.
+board:
+  host: sima@<board-address>   # or: export POLIMA_BOARD=sima@<board-address>
+  root: /media/nvme/polima     # $POLIMA_BOARD_ROOT
+  # port: 8093                 # $POLIMA_BOARD_PORT; default is the policy's own port
+paths:
+  dataset_parent: /path/to/datasets # $POLIMA_DATASET_PARENT
+  # outputs: /path/to/outputs  # $POLIMA_OUTPUTS; default <repo>/outputs
+  # model_compiler_bin: /path/to/model-compiler/bin   # $MODEL_COMPILER_BIN

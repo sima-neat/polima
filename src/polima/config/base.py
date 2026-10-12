@@ -8,8 +8,10 @@ Replaces two things at once:
     run_robot_client_with_live_view.py has no argparse of its own; and
   * the board address / port / path constants hardcoded across ~8 legacy files.
 
-Defaults below are the *verified* values from the live board, not guesses:
-  sima@192.168.91.211, aarch64, 16 cores, /media/nvme with 407G free.
+The board address has no default: every network is different, so it comes from
+`--board`, `$POLIMA_BOARD` or `board.host` in `.polima.yaml` (see
+`.polima.yaml.example`). The other defaults match a stock Modalix SoM: aarch64,
+16 cores, the NVMe drive mounted at /media/nvme.
 """
 
 from __future__ import annotations
@@ -17,8 +19,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Verified on the live unit, 2026-08-06.
-DEFAULT_BOARD_HOST = "sima@192.168.91.211"
+# No default board: set it with --board, $POLIMA_BOARD or .polima.yaml.
+DEFAULT_BOARD_HOST = ""
+NO_BOARD_MESSAGE = (
+    "no board address: pass --board user@host, set POLIMA_BOARD, "
+    "or set board.host in .polima.yaml (see .polima.yaml.example)"
+)
 DEFAULT_BOARD_ROOT = "/media/nvme/polima"
 
 # Legacy servers currently occupy 8081 (smolvla_som_server) and 8082 (act_llima).
@@ -49,7 +55,7 @@ class BoardConfig:
     connect_timeout_s: float = 10.0
     #: Directory under `root` holding deployed model trees. `models` rather than
     #: `bundles` so PoLiMa bundles sit alongside the hand-built deploy roots
-    #: already there (ACT_gewb_100000, SmolVLA_gewb_045000_v2, ...) instead of
+    #: already there (e.g. ACT_<task>_100000) instead of
     #: creating a second place to look. Bundle names stay content-addressed, so
     #: they cannot collide with the hand-named trees.
     bundles_subdir: str = "models"
@@ -76,6 +82,10 @@ class BoardConfig:
     @property
     def native_src_dir(self) -> str:
         return self.path("src", "native")
+
+    @property
+    def python_src_dir(self) -> str:
+        return self.path("python", "polima")
 
     @property
     def bin_dir(self) -> str:

@@ -1,10 +1,8 @@
-"""`polima robot` -- drive an SO-101 arm from a deployed policy.
+"""`polima robot` -- drive a supported arm from a deployed policy.
 
-This runs on the SoM, next to the policy server. The host compiles and deploys;
-the board serves and drives the arm. That split is not incidental -- the client
-sends two 640x480 frames per control step, so at 30 Hz it is ~110 MB/s of raw
-observation, and keeping client and server on one machine makes that a loopback
-copy rather than a network.
+SO-101 and MyCobot both run on the Modalix board, next to the policy server.
+The arm and cameras are attached to that board; the host only compiles and
+deploys bundles.
 
 It runs in the board's `/media/nvme/lerobot` venv, not the polima install:
 lerobot pulls torch and opencv, which the board's polima deliberately does not.
@@ -19,9 +17,8 @@ Subcommands, cheapest first:
     calibrate   back up the existing calibration, then lerobot-calibrate
     run         the control loop
 
-`ports` and `doctor` come first deliberately. Every legacy launcher takes
---robot-port, --perspective-camera and --wrist-camera as required arguments, so
-the first step of running a robot was reading USB ids out of `ls /dev/v4l/by-id`.
+`ports` and `doctor` find the arm and cameras for you, so you rarely need to
+pass device paths by hand.
 """
 
 from __future__ import annotations
@@ -35,21 +32,28 @@ import sys
 import time
 from pathlib import Path
 
+from polima.bundle.contract import spec_from_bundle
+from polima.bundle.layout import Bundle
 from polima.config.loader import load
 from polima.policies.registry import get_policy
 from polima.robot import devices
 from polima.util import table
-
+from polima.util.jsonio import read_json
+from polima.util.paths import outputs_root
 
 
 def needs_capability(argv: list[str]) -> str | None:
-    """`ports` and `doctor` only read /dev and /proc, so they run anywhere.
+    """Gate only commands that unconditionally need a robot stack.
 
-    Everything else needs lerobot and opencv, which live in a separate
-    interpreter -- reporting that gap is most of what `doctor` is for, so gating
-    `doctor` on it would be backwards.
+    Bundle runs may be the board-side MyCobot client, which performs its own
+    precise, lazy dependency checks. Help, ports, doctor and
+    export-improvement-manifest only read files.
     """
-    if argv and argv[0] in ("ports", "doctor"):
+    if "--help" in argv or "-h" in argv:
+        return None
+    if argv and argv[0] in ("ports", "doctor", "export-improvement-manifest"):
+        return None
+    if "run" in argv and "--bundle" in argv:
         return None
     return "robot"
 
@@ -74,7 +78,7 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     ):
         child = sub.add_parser(name, help=help_text)
         child.add_argument("--robot-port", default=None, help="/dev/ttyACM0")
-        for role in ("overhead", "wrist"):
+        for role in ("front", "overhead", "wrist"):
             child.add_argument(f"--{role}-camera", default=None,
                                help=f"/dev/v4l/by-id/... for the {role} camera")
         child.add_argument("--json", action="store_true")
@@ -83,18 +87,84 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
         if name == "run":
             child.add_argument("--fps", type=int, default=None)
             child.add_argument("--no-live-view", action="store_true")
+            child.add_argument("--bundle", help="bundle id or local bundle path")
+            child.add_argument("--bundles-root", default=None)
+            child.add_argument("--calibration-path", type=Path)
+            child.add_argument("--camera-width", type=int, default=640)
+            child.add_argument("--camera-height", type=int, default=480)
+            child.add_argument("--front-camera-fps", type=int, default=None)
+            child.add_argument("--wrist-camera-fps", type=int, default=None)
+            child.add_argument("--camera-fourcc", default=None)
+            child.add_argument("--actions-per-chunk", type=int, default=None)
+            child.add_argument("--command-speed", type=int, default=30)
+            child.add_argument("--gripper-speed", type=int, default=25)
+            child.add_argument("--max-initial-target-error-deg", type=float, default=10.0)
+            child.add_argument("--max-trajectory-step-deg", type=float, default=5.0)
+            child.add_argument("--max-chunk-error-deg", type=float, default=15.0)
+            child.add_argument("--task", default=None)
+            child.add_argument("--timeout", type=float, default=30.0)
+            child.add_argument("--seed", type=int, default=None)
+            child.add_argument("--execute", action="store_true")
+            child.add_argument("--once", action="store_true")
+            child.add_argument("--max-cycles", type=int, default=None)
+            child.add_argument("--no-auto-complete", action="store_true")
+            child.add_argument("--completion-close-threshold", type=float, default=10.0)
+            child.add_argument("--completion-open-threshold", type=float, default=20.0)
+            child.add_argument("--completion-close-frames", type=int, default=5)
+            child.add_argument("--completion-open-frames", type=int, default=8)
+            child.add_argument("--completion-min-runtime", type=float, default=2.0)
+            child.add_argument("--rest-timeout", type=float, default=30.0)
+            child.add_argument("--rest-tolerance-deg", type=float, default=3.0)
+            child.add_argument("--rest-stable-samples", type=int, default=3)
+            child.add_argument("--log-actions", action="store_true")
+            child.add_argument("--diagnostic-dir", type=Path, default=None)
         if name == "calibrate":
             child.add_argument("--calibration-dir", default=None,
                                help="directory containing this arm's calibration file")
             child.add_argument("--yes", action="store_true",
                                help="skip the outer recalibration confirmation")
 
+    manifest = sub.add_parser(
+        "export-improvement-manifest",
+        help="reviewed failed and partial robot runs as one JSON manifest")
+    manifest.add_argument("--output", default="-", help="file to write; - for stdout (default)")
+    manifest.add_argument("--all", action="store_true", help="include reviewed successes")
+    manifest.add_argument("--root", default=None, help="PoLiMa root (default $POLIMA_ROOT)")
+
     args = parser.parse_args(argv)
     if args.command == "install":
         return _install(args)
+    if args.command == "export-improvement-manifest":
+        return _export_manifest(args)
 
     spec = get_policy(args.policy)
     config = load(config_file=getattr(parent, "config", None))
+    if args.command == "run" and args.bundle:
+        bundle = _resolve_bundle(args.bundle, args.bundles_root)
+        spec = spec_from_bundle(get_policy(bundle.policy), bundle)
+        if spec.robot.calibration_id == "mycobot280":
+            if not args.front_camera or not args.wrist_camera:
+                raise SystemExit(
+                    "polima robot run: --front-camera and --wrist-camera are required"
+                )
+            args.robot_port = args.robot_port or "/dev/ttyACM0"
+            args.fps = args.fps or spec.robot.default_fps
+            args.camera_fourcc = args.camera_fourcc or spec.robot.camera_fourcc
+            for role in ("front", "wrist"):
+                attribute = f"{role}_camera_fps"
+                if getattr(args, attribute) is None:
+                    setattr(args, attribute, spec.robot.camera_capture_fps.get(role))
+            bundled_calibration = bundle.root / "robot_client/calibration/mycobot280.json"
+            if args.calibration_path is None and bundled_calibration.is_file():
+                args.calibration_path = bundled_calibration
+            args.server = _server_address(
+                args.server or "127.0.0.1",
+                config.board.port or spec.wire.default_port,
+            )
+            task_id = _task_id(args.task, bundle)
+            from polima.robot.mycobot import run_client
+
+            return run_client(spec, bundle, args, task_id=task_id)
 
     if args.command == "ports":
         return _ports(spec, args)
@@ -110,6 +180,49 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
               f"models/<tree>/robot_client/.", file=sys.stderr)
         return 2
     return 2
+
+
+def _export_manifest(args) -> int:
+    import json
+    import socket
+
+    from polima.robot.evidence import improvement_manifest
+
+    manifest = improvement_manifest(args.root, args.all, socket.gethostname())
+    text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    if args.output == "-":
+        sys.stdout.write(text)
+    else:
+        Path(args.output).write_text(text)
+        counts = manifest["counts"]
+        print(f"{counts['exported_runs']} of {counts['total_runs_considered']} runs -> {args.output}")
+    return 0
+
+
+def _resolve_bundle(reference: str, bundles_root: str | None) -> Bundle:
+    candidate = Path(reference)
+    if not candidate.is_dir():
+        candidate = Path(bundles_root or (outputs_root() / "bundles")) / reference
+    manifest = candidate / "bundle.json"
+    if not manifest.is_file():
+        raise SystemExit(f"polima robot run: no bundle at {candidate}")
+    return Bundle.from_dict(read_json(manifest), candidate)
+
+
+def _server_address(address: str, default_port: int) -> str:
+    host = address.split("@")[-1]
+    if ":" in host:
+        return host
+    return f"{host}:{default_port}"
+
+
+def _task_id(value: str | None, bundle: Bundle) -> int:
+    from polima.robot.mycobot import resolve_task_id
+
+    try:
+        return resolve_task_id(value, bundle)
+    except ValueError as error:
+        raise SystemExit(f"polima robot run: {error}") from None
 
 
 # ------------------------------------------------------------------- install
@@ -224,8 +337,8 @@ def _ports(spec, args) -> int:
         for problem in problems:
             print(f"  ! {problem}", file=sys.stderr)
         return 1
-    print(f"\n  cameras resolve by-id, never /dev/videoN -- enumeration order is "
-          f"not stable across reboots.")
+    print("\n  cameras resolve by-id, never /dev/videoN -- enumeration order is "
+          "not stable across reboots.")
     return 0
 
 
@@ -235,7 +348,7 @@ def _ports(spec, args) -> int:
 def _doctor(spec, args, config) -> int:
     from polima.util import table as ui
 
-    cameras, ports, assigned, arm, problems = _discover(spec, args)
+    _cameras, _ports, assigned, arm, problems = _discover(spec, args)
     failures = 0
 
     print(ui.section(f"robot ({spec.name})"))
@@ -271,7 +384,7 @@ def _doctor(spec, args, config) -> int:
     calibration = _calibration_file(spec)
     print(ui.status(ui.OK if calibration.is_file() else ui.WARN, "calibration",
                     str(calibration) if calibration.is_file()
-                    else f"absent -- run `polima robot calibrate`"))
+                    else "absent -- run `polima robot calibrate`"))
 
     print(ui.section("policy server"))
     from polima.wire.client import wait_for_port
@@ -352,4 +465,4 @@ def _calibrate(spec, args) -> int:
         f"--robot.port={arm}",
         f"--robot.id={spec.robot.calibration_id}",
         f"--robot.calibration_dir={calibration.parent if args.calibration_dir else calibration.parent.parent.parent}",
-    ]).returncode
+    ], check=False).returncode

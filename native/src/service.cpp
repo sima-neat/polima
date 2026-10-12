@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <fstream>
 #include <thread>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -45,6 +46,27 @@ ServerState server_state(const fs::path& root) {
   if (!state.running) state.pid = 0;
 
   std::error_code code;
+  if (state.running) {
+    std::ifstream command("/proc/" + std::to_string(state.pid) + "/cmdline",
+                          std::ios::binary);
+    std::vector<std::string> arguments;
+    std::string argument;
+    while (std::getline(command, argument, char{0})) arguments.push_back(argument);
+    for (size_t index = 0; index + 1 < arguments.size(); ++index) {
+      if (arguments[index] == "--bundle") {
+        const fs::path served = fs::weakly_canonical(arguments[++index], code);
+        if (!code) state.served_bundle = served.filename().string();
+      } else if (arguments[index] == "--port") {
+        try {
+          state.port = std::stoi(arguments[++index]);
+        } catch (...) {
+          state.port = 0;
+        }
+      }
+    }
+    state.accepting = state.port > 0 && listening(state.port);
+  }
+
   const fs::path current = root / "current";
   if (fs::exists(current, code)) {
     const fs::path resolved = fs::canonical(current, code);

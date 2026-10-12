@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
           polima::read_all(client, destination, elements * sizeof(float));
 
         const auto started = Clock::now();
-        const auto& result = plan.execute();
+        const auto& result = plan.execute(header.flags);
         const auto total_ms = static_cast<float>(elapsed_ms(started));
 
         std::cout << "request=" << header.request_id << " total_ms=" << total_ms

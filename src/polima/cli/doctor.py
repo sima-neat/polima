@@ -1,29 +1,9 @@
-"""`polima doctor` -- diagnose the three interpreters and the board.
+"""`polima doctor` -- check this computer, its Python environments and the DevKit.
 
-This exists because the legacy stack has several environment landmines that fail
-late and confusingly. Each check below corresponds to one of them:
-
-  * `llima-compile` carries the shebang `#!/sdk-extensions/model-compiler/bin/python`,
-    an in-container path that does not exist on this host, so exec'ing it dies
-    with "required file not found". SmolVLA's ENV_CHECK does exactly that and can
-    therefore never pass. Doctor probes it BY IMPORT instead.
-  * `~/.codex/skills/sima-model-surgery` and `sima-model-quantize-compile` are
-    referenced by all three compile controllers but are not installed. That is a
-    warning here, never a hard failure.
-  * polima.util / config / policies / bundle / wire must import with stdlib+numpy
-    alone, or polima.compile.afe_compile breaks inside the compiler venv. The
-    import matrix enforces it.
-  * `SmolVLA/lerobot` shows ~974 dirty paths that are pure 100644->100755 mode
-    churn, burying 3 real source edits. Doctor suppresses that noise.
-  * `$HOME/MLSandbox` is a load-bearing symlink: ACT/lerobot's git remote points
-    at its own sibling through it.
-
-Which checks run is decided by the platform, not by flags. Every landmine above
-is a *host* landmine, and a board has none of them -- no MLSandbox checkout, no
-lerobot clones, no compiler venv, no /ml_datasets -- so running them on a SoM
-reported one FAIL and five warnings that no board action could clear, and the
-exit code stopped meaning anything there. `role.detect()` decides; `--all`
-overrides it.
+Run it after any install. On the build computer it checks the Python
+environment, the SiMa model compiler, the policies, your datasets and the
+DevKit (over ssh). On a DevKit it checks the DevKit itself. `--all` runs every
+check on either machine.
 """
 
 from __future__ import annotations
@@ -31,16 +11,15 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from polima.compile import toolchain
+from polima.config.base import NO_BOARD_MESSAGE
 from polima.config.loader import load
 from polima.util import table
-from polima.util.paths import repo_root, symlink_report
 
 #: Modules that must import with stdlib + numpy only, in every interpreter.
 CORE_MODULES = (
@@ -72,20 +51,9 @@ CORE_MODULES = (
 
 COMPILER_BIN_CANDIDATES = toolchain.SEARCH_PATH
 
-OPTIONAL_SKILLS = (
-    "~/.codex/skills/sima-model-surgery/scripts/model_surgery_guard.py",
-    "~/.codex/skills/sima-model-quantize-compile/scripts/quantize_compile.py",
-)
 
-LEROBOT_CLONES = ("ACT/lerobot", "SmolVLA/lerobot")
-PINNED_LEROBOT_SHA = "36b8face988669509272b00f4abe6592d0b17aa0"
-
-#: Sections that inspect the build host's own workspace. None of them can pass on
-#: a SoM: the board gets a source sync and a venv, not the MLSandbox checkout,
-#: the legacy lerobot clones, the SiMa compiler venv or /ml_datasets. Running
-#: them there produced one FAIL and five warnings that no board action can fix,
-#: which made the exit code useless on exactly the machine that needs it.
-HOST_ONLY_SECTIONS = ("repository", "lerobot clones", "model compiler", "datasets")
+#: Sections about the build computer; a DevKit has no compiler or datasets.
+HOST_ONLY_SECTIONS = ("model compiler", "datasets")
 
 
 class Doctor:
@@ -134,13 +102,10 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     if everything:
         check_role(doc)
         check_host(doc, host_side)
-        if host_side:
-            check_repo(doc)
     if everything or only_imports:
         check_import_matrix(doc, config)
     if everything:
         if host_side:
-            check_lerobot_patches(doc)
             check_compiler(doc, config)
         check_policies(doc)
         if host_side:
@@ -236,121 +201,7 @@ def check_host(doc: Doctor, host_side: bool = True) -> None:
             )
 
 
-def check_repo(doc: Doctor) -> None:
-    doc.heading("repository")
-    report = symlink_report()
-    doc.record(
-        table.OK if report["consistent"] else table.WARN,
-        "$HOME/MLSandbox symlink",
-        f"{report['target']} (repo root {report['resolved_repo_root']})"
-        if report["exists"]
-        else "absent -- ACT/lerobot's git remote resolves through it",
-    )
-
-    root = repo_root()
-    if (root / ".git").exists():
-        head = _capture(["git", "-C", str(root), "log", "-1", "--format=%h %s"]).strip()
-        dirty = len([
-            line for line in
-            _capture(["git", "-C", str(root), "status", "--porcelain"]).splitlines()
-            if line.strip()
-        ])
-        doc.record(
-            table.OK, "version control",
-            f"{head[:60]}" + (f"  ({dirty} uncommitted)" if dirty else "  (clean)"),
-        )
-    else:
-        doc.record(
-            table.WARN, "version control",
-            "MLSandbox is not a git repo; `make check-legacy-intact` is the only guard",
-        )
-
-    manifest = root / "polima" / "tests" / "fixtures" / "legacy_manifest.txt"
-    if manifest.is_file():
-        count = len(manifest.read_text().splitlines())
-        result = subprocess.run(
-            ["sha256sum", "-c", "--quiet", str(manifest)],
-            cwd=root, capture_output=True, text=True,
-        )
-        doc.record(
-            table.OK if result.returncode == 0 else table.FAIL,
-            "legacy intact",
-            f"{count} files unchanged" if result.returncode == 0
-            else result.stdout.strip().splitlines()[:3],
-        )
-    else:
-        doc.record(table.WARN, "legacy intact", "no manifest; run `make snapshot-legacy`")
-
-    backups = root / ".legacy-backups"
-    stamps = sorted(
-        p.name for p in backups.iterdir()
-        if p.is_dir() and not p.is_symlink()   # skip the `latest` convenience link
-    ) if backups.is_dir() else []
-    if stamps:
-        files = len(list((backups / stamps[-1] / "tree").rglob("*")))
-        doc.record(
-            table.OK, "legacy backups",
-            f"{len(stamps)} snapshot(s), newest {stamps[-1]} ({files} paths)",
-        )
-    else:
-        doc.record(table.WARN, "legacy backups", "none; run `make backup-legacy`")
-
-    for clone in LEROBOT_CLONES:
-        path = root / clone
-        if not (path / ".git").exists():
-            doc.record(table.WARN, f"{clone}", "not a git clone")
-            continue
-        sha = _capture(["git", "-C", str(path), "rev-parse", "HEAD"]).strip()
-        # -c core.fileMode=false suppresses the 974-path chmod noise in
-        # SmolVLA/lerobot that otherwise hides the 3 real source edits.
-        dirty = _capture(
-            ["git", "-c", "core.fileMode=false", "-C", str(path), "status", "--porcelain"]
-        ).strip()
-        changed = len([line for line in dirty.splitlines() if line.strip()])
-        pinned = sha == PINNED_LEROBOT_SHA
-        doc.record(
-            table.OK if pinned else table.WARN,
-            f"{clone}",
-            f"{sha[:8]}{'' if pinned else ' (NOT the pinned revision)'}, "
-            f"{changed} real change(s) [mode churn suppressed]",
-        )
-
-
 # -------------------------------------------------------------- import matrix
-
-
-#: The three local lerobot edits, checked by the symbol each introduces rather
-#: than by applying a patch. ACT/lerobot and SmolVLA/lerobot implement the same
-#: features with different formatting, so a textual patch match false-alarms on
-#: SmolVLA. See polima/patches/README.md.
-LEROBOT_FEATURES = (
-    ("server-selected checkpoint",
-     "src/lerobot/async_inference/configs.py", "pretrained_name_or_path"),
-    ("server honours it",
-     "src/lerobot/async_inference/policy_server.py", "pretrained_name_or_path"),
-    ("non-interactive calibration",
-     "src/lerobot/robots/so_follower/so_follower.py",
-     "LEROBOT_FORCE_PROVIDED_CALIBRATION"),
-)
-
-
-def check_lerobot_patches(doc: Doctor) -> None:
-    doc.heading("lerobot local modifications")
-    root = repo_root()
-    for clone in LEROBOT_CLONES:
-        base = root / clone
-        if not base.is_dir():
-            doc.record(table.SKIP, clone, "absent")
-            continue
-        missing = [
-            label for label, relative, symbol in LEROBOT_FEATURES
-            if symbol not in (base / relative).read_text(errors="replace")
-        ] if all((base / rel).is_file() for _, rel, _ in LEROBOT_FEATURES) else ["file missing"]
-        doc.record(
-            table.OK if not missing else table.FAIL, clone,
-            f"all {len(LEROBOT_FEATURES)} local features present"
-            if not missing else "MISSING: " + ", ".join(missing),
-        )
 
 
 def check_import_matrix(doc: Doctor, config) -> None:
@@ -452,14 +303,6 @@ def check_compiler(doc: Doctor, config) -> None:
                  "`$COMPILER_BIN/python -m sima_lmm.host.compile_lmm` instead",
         )
 
-    for skill in OPTIONAL_SKILLS:
-        path = Path(os.path.expanduser(skill))
-        doc.record(
-            table.OK if path.is_file() else table.WARN,
-            f"optional {path.name}",
-            str(path) if path.is_file() else "absent -- AUDIT stage will be skipped",
-        )
-
 
 # ------------------------------------------------------------ policies / data
 
@@ -491,6 +334,9 @@ def check_datasets(doc: Doctor, config) -> None:
     from polima.data.discover import discover
     from polima.policies.registry import iter_specs
 
+    if not Path(config.paths.dataset_parent).is_dir():
+        doc.record(table.SKIP, "datasets", "set POLIMA_DATASET_PARENT to the folder holding your datasets")
+        return
     entries = discover(config.paths.dataset_parent)
     if not entries:
         doc.record(table.WARN, "datasets", f"none found under {config.paths.dataset_parent}")
@@ -515,6 +361,10 @@ def check_datasets(doc: Doctor, config) -> None:
 def check_board(doc: Doctor, config, *, local: bool = False) -> None:
     """Probe the board -- over ssh from a host, directly when this IS the board."""
     board = config.board
+    if not local and not board.host:
+        doc.heading("board")
+        doc.record(table.WARN, "board address", NO_BOARD_MESSAGE)
+        return
     doc.heading("board (this machine)" if local else f"board {board.host}")
     probe = (
         "echo VER=$(uname -m); "

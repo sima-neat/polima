@@ -18,6 +18,7 @@ from typing import Any
 from polima.config.base import BoardConfig
 from polima.deploy import mla
 
+from . import transfer
 from .models import RunConfig, StudioState
 from .store import StudioStore
 
@@ -86,6 +87,9 @@ class StudioRuntime:
         self._lease_expires = 0.0
         self._arm_tokens: dict[str, tuple[float, str]] = {}
         self.started_at = time.time()
+        self.uploads = transfer.Uploads(root / "var/uploads")
+        self.uploads.prune()
+        self._job: dict[str, Any] | None = None
 
     def close(self) -> None:
         with self._lock:
@@ -233,14 +237,7 @@ class StudioRuntime:
             raise ValueError("follower arm is not connected")
         calibration_dir = self._calibration_path(bundle).parent
         calibration_dir.mkdir(parents=True, exist_ok=True)
-        current = self._calibration_path(bundle)
-        backup = self.root / "var/lib/calibration-backups" / (
-            f"{bundle}-{int(time.time())}-so-arm101.json"
-        )
-        if current.exists():
-            backup.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(current, backup)
-            self.store.set("last_calibration_backup", {"source": str(current), "backup": str(backup)})
+        backup = self._backup_calibration(bundle)
         args = [
             str(self.command), "robot", "--policy", self._policy_of(bundle), "calibrate", "--yes",
             "--robot-port", robot_port, "--calibration-dir", str(calibration_dir),
@@ -249,7 +246,7 @@ class StudioRuntime:
             "calibration", args, StudioState.CALIBRATING,
             self.logs / f"calibration-{int(time.time())}.log", {},
         )
-        return {"state": self.state.value, "backup": str(backup) if backup.exists() else None}
+        return {"state": self.state.value, "backup": backup}
 
     def start_benchmark(self, bundle: str, iterations: int = 50, warmup: int = 3) -> dict[str, Any]:
         self._require_idle()
@@ -428,6 +425,9 @@ class StudioRuntime:
         data["hardware"] = self.hardware()
         data["server"] = self.server_status()
         data["last_run_config"] = self.store.get("last_run_config", {})
+        data["storage"] = self.storage()
+        with self._lock:
+            data["job"] = dict(self._job) if self._job else None
         benchmarks = self.store.list_benchmarks(limit=1)
         data["latest_benchmark"] = benchmarks[0] if benchmarks else None
         return data
@@ -471,11 +471,18 @@ class StudioRuntime:
         both formats keeps Studio correct across in-place upgrades.
         """
         candidates: list[Any] = []
-        for key in ("default_task", "task"):
-            if metadata.get(key):
-                candidates.append(metadata[key])
         declared = metadata.get("tasks", [])
-        candidates.extend(declared if isinstance(declared, list) else [declared])
+        declared = declared if isinstance(declared, list) else [declared]
+        default = metadata.get("default_task")
+        # bundle.json records default_task as an index into tasks; robot.json
+        # and older manifests spell the instruction itself.
+        if type(default) is int:
+            candidates += declared[default:default + 1]
+        elif default:
+            candidates.append(default)
+        if metadata.get("task"):
+            candidates.append(metadata["task"])
+        candidates.extend(declared)
 
         if not candidates:
             try:
@@ -710,6 +717,197 @@ class StudioRuntime:
                   "mla": report.to_dict()}
         return result
 
+    # ------------------------------------------------------------ transfers
+
+    def storage(self) -> dict[str, Any]:
+        usage = shutil.disk_usage(self.root)
+        return {"free_bytes": usage.free, "total_bytes": usage.total}
+
+    def create_upload(self, files: list[dict[str, Any]]) -> dict[str, Any]:
+        return self.uploads.create(files, self.storage()["free_bytes"])
+
+    def _run_job(self, kind: str, work) -> dict[str, Any]:
+        """Run one file job at a time in the background, reporting `job` events.
+
+        Hashing or extracting gigabytes outlasts an HTTP request.
+        """
+        with self._lock:
+            if self._job and self._job["status"] == "running":
+                raise Conflict(f"a bundle {self._job['kind']} is still running")
+            job = self._job = {"id": secrets.token_hex(6), "kind": kind, "status": "running",
+                               "stage": "starting", "done": 0, "total": 0, "result": None,
+                               "error": None}
+        sent = [0.0]
+
+        def progress(stage: str, done: int, total: int) -> None:
+            changed = stage != job["stage"]
+            job.update(stage=stage, done=done, total=total)
+            if changed or done >= total or time.time() - sent[0] > 0.5:
+                sent[0] = time.time()
+                self.emit("job", job=dict(job))
+
+        def run() -> None:
+            try:
+                job.update(status="completed", stage="done", result=work(progress))
+            except Exception as error:  # noqa: BLE001 - reported to the operator
+                job.update(status="failed", error=str(error))
+            self.emit("job", job=dict(job))
+
+        self.emit("job", job=dict(job))
+        threading.Thread(target=run, daemon=True, name=f"polima-studio-{kind}").start()
+        return dict(job)
+
+    def install_upload(self, upload_id: str, activate: bool = False) -> dict[str, Any]:
+        if not self.uploads.status(upload_id)["complete"]:
+            raise ValueError("the upload is incomplete")
+
+        def work(progress) -> dict[str, Any]:
+            try:
+                result = transfer.install_bundle(
+                    self.uploads.tree(upload_id, progress), self.root / "models",
+                    self.uploads.path(upload_id), progress, self._require_replaceable,
+                )
+            finally:
+                self.uploads.discard(upload_id)
+            self.emit("bundle", action="installed", bundle=result["bundle"])
+            result["calibration"] = self.calibration_status(result["bundle"])["compared_to_active"]
+            if activate:
+                result.update(self._activate_when_idle(result["bundle"]))
+            return result
+
+        return self._run_job("install", work)
+
+    def _activate_when_idle(self, bundle: str) -> dict[str, Any]:
+        if self.state not in {StudioState.IDLE, StudioState.FAULT} or (
+            self.server_status()["running"]
+        ):
+            return {"activation_skipped": "Studio is busy or the policy server is running"}
+        try:
+            self.activate(bundle)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            return {"activation_error": str(error)}
+        return {"activated": True}
+
+    def verify_bundle(self, bundle_id: str) -> dict[str, Any]:
+        path = self._model_dir(bundle_id)
+        manifest = transfer.read_manifest(path)
+
+        def work(progress) -> dict[str, Any]:
+            problems = transfer.verify_elfs(path, manifest, progress) + transfer.archives_in(path)
+            return {"bundle": bundle_id, "ok": not problems, "problems": problems,
+                    "graphs": len(manifest["graphs"])}
+
+        return self._run_job("verify", work)
+
+    def delete_bundle(self, bundle_id: str) -> dict[str, Any]:
+        """Delete an inactive PoLiMa bundle. Hand-built deploy roots are never deleted."""
+        path = self._model_dir(bundle_id)
+        if self._active_bundle() == bundle_id:
+            raise Conflict("activate another bundle before deleting the active one")
+        if _manifest(path).get("format") != "polima-bundle-v1":
+            raise ValueError("only PoLiMa bundles can be deleted from Studio")
+        self._require_replaceable(bundle_id)
+        backup = self._backup_calibration(bundle_id)
+        shutil.rmtree(path)
+        self.emit("bundle", action="deleted", bundle=bundle_id)
+        return {"deleted": bundle_id, "calibration_backup": backup}
+
+    def bundle_details(self, bundle_id: str) -> dict[str, Any]:
+        path = self._model_dir(bundle_id)
+        manifest = _manifest(path)
+        size, files = transfer.tree_size(path)
+        return {
+            "id": bundle_id, "size_bytes": size, "files": files, "modified": path.stat().st_mtime,
+            "managed": manifest.get("format") == "polima-bundle-v1",
+            "checkpoint": manifest.get("checkpoint"),
+            "graphs": [{key: graph.get(key) for key in ("name", "precision", "elf_bytes")}
+                       for graph in manifest.get("graphs", [])],
+            "robot_client": (path / "robot_client/start.sh").is_file(),
+            "calibration": self.calibration_status(bundle_id),
+        }
+
+    def calibration_status(self, bundle_id: str) -> dict[str, Any]:
+        """This bundle's SO-ARM101 calibration, compared by value with the active bundle's."""
+        active, robot = self._active_bundle(), self._calibration_id(bundle_id)
+        if robot not in ("", "so-arm101"):
+            return {"applicable": False, "present": False, "robot": robot,
+                    "active_bundle": active, "compared_to_active": "not-applicable"}
+        own = self._load_calibration(bundle_id)
+        theirs = self._load_calibration(active) if active and active != bundle_id else None
+        compared = (
+            "is-active" if active == bundle_id else "no-active" if not active
+            else "missing" if own is None else "no-active-calibration" if theirs is None
+            else "same" if own == theirs else "different"
+        )
+        return {"applicable": True, "present": own is not None, "robot": "so-arm101",
+                "active_bundle": active, "compared_to_active": compared}
+
+    def read_calibration(self, bundle_id: str) -> Path:
+        path = self._calibration_path(bundle_id)
+        if not path.is_file():
+            raise FileNotFoundError(f"{bundle_id} has no follower-arm calibration")
+        return path
+
+    def set_calibration(
+        self, bundle_id: str, calibration: Any = None, from_bundle: str | None = None
+    ) -> dict[str, Any]:
+        """Replace a bundle's SO-ARM101 calibration, keeping a restorable backup."""
+        self._require_idle()
+        if self._calibration_id(bundle_id) not in ("", "so-arm101"):
+            raise ValueError("Studio manages SO-ARM101 calibration only")
+        if from_bundle:
+            calibration = json.loads(self.read_calibration(from_bundle).read_text())
+        transfer.validate_calibration(calibration, self._load_calibration(bundle_id))
+        backup = self._backup_calibration(bundle_id)
+        target = self._calibration_path(bundle_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(calibration, indent=2) + "\n")
+        self.emit("calibration", action="updated", bundle=bundle_id, backup=backup)
+        return {"bundle": bundle_id, "backup": backup}
+
+    def _load_calibration(self, bundle: str) -> Any:
+        try:
+            return json.loads(self._calibration_path(bundle).read_text())
+        except (OSError, ValueError):
+            return None
+
+    def _backup_calibration(self, bundle: str) -> str | None:
+        current = self._calibration_path(bundle)
+        if not current.is_file():
+            return None
+        backup = self.root / "var/lib/calibration-backups" / (
+            f"{bundle}-{int(time.time())}-so-arm101.json"
+        )
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(current, backup)
+        self.store.set("last_calibration_backup", {"source": str(current), "backup": str(backup)})
+        return str(backup)
+
+    def _calibration_id(self, bundle: str) -> str:
+        """The robot plan.json says a bundle drives ('' when it does not say)."""
+        plan = _manifest(self.root / "models" / bundle, "plan.json")
+        blocks = (plan.get(key) for key in ("robot", "profile"))
+        return next((str(block["calibration_id"]) for block in blocks
+                     if isinstance(block, dict) and block.get("calibration_id")), "")
+
+    def _model_dir(self, bundle_id: str) -> Path:
+        path = self.root / "models" / str(bundle_id)
+        if not transfer.SAFE_ID.match(str(bundle_id)) or path.is_symlink() or not path.is_dir():
+            raise FileNotFoundError(f"bundle {bundle_id} is not installed")
+        return path
+
+    def _active_bundle(self) -> str | None:
+        current = self.root / "current"
+        return current.resolve().name if current.exists() else None
+
+    def _require_replaceable(self, bundle_id: str) -> None:
+        with self._lock:
+            kind = self._kind if self._process and self._process.poll() is None else None
+        if kind:
+            raise Conflict(f"stop the {kind} before replacing or deleting a bundle")
+        if self._active_bundle() == bundle_id and self.server_status()["running"]:
+            raise Conflict(f"{bundle_id} is being served; stop the policy server first")
+
     def _signal_process(self, sig: signal.Signals) -> None:
         with self._lock:
             process = self._process
@@ -753,6 +951,14 @@ class StudioRuntime:
 
     def _env(self) -> dict[str, str]:
         return {**os.environ, "POLIMA_ROOT": str(self.root)}
+
+
+def _manifest(bundle: Path, name: str = "bundle.json") -> dict[str, Any]:
+    try:
+        value = json.loads((bundle / name).read_text())
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def parse_benchmark_output(output: str) -> dict[str, Any] | None:

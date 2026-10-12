@@ -27,17 +27,18 @@ Two details are load bearing:
   constant for a fixed camera count and resolution, so computing them on the
   board would be pure cost, and passing them as inputs would add two large
   tensors to every MLA call.
-* The **action head is padded from 6 to 16 outputs**. The MLA's last dimension is
-  tiled; 6 is not a good tile width and 16 is. The board slices the first 6 back
-  out. This is why `decoder_action_tail` emits (1, 1, 100, 16) and the wire
-  protocol carries 600 floats.
+* The **action head is padded from its real width to 16 outputs**. The MLA's last
+  dimension is tiled; both the SO-101's 6 lanes and MyCobot's 7 lanes are sliced
+  back out by the profile-aware runtime. `decoder_action_tail` therefore keeps
+  the same (1, 1, 100, 16) hardware boundary for both robots.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 import torch
@@ -53,7 +54,7 @@ from polima.policies.act.runtime import (
 )
 
 HEIGHT, WIDTH = 480, 640
-STATE_DIM = ACTION_DIM = 6
+SUPPORTED_DIMS = (6, 7)
 #: Encoder tokens *including* the latent token that the stem prepends. The stem
 #: takes 601 (state + 2x300) and emits 602.
 TOTAL_TOKENS = ENCODER_TOKENS
@@ -74,8 +75,8 @@ def load_policy(checkpoint: str | Path, lerobot_src: str | Path | None = None):
 
     if lerobot_src and str(lerobot_src) not in sys.path:
         sys.path.insert(0, str(lerobot_src))
-    from lerobot.policies.act.configuration_act import ACTConfig
     from lerobot.policies.act import ACTPolicy
+    from lerobot.policies.act.configuration_act import ACTConfig
 
     config = ACTConfig.from_pretrained(str(checkpoint), local_files_only=True)
     config.device = "cpu"
@@ -93,10 +94,14 @@ def load_policy(checkpoint: str | Path, lerobot_src: str | Path | None = None):
             f"chunk_size/n_action_steps are {config.chunk_size}/{config.n_action_steps}, "
             f"but the runtime's wire response is fixed at {CHUNK}"
         )
-    if config.robot_state_feature is None or config.robot_state_feature.shape != (STATE_DIM,):
-        problems.append(f"state shape must be ({STATE_DIM},)")
-    if config.action_feature.shape != (ACTION_DIM,):
-        problems.append(f"action shape must be ({ACTION_DIM},)")
+    state_shape = config.robot_state_feature.shape if config.robot_state_feature else None
+    action_shape = config.action_feature.shape
+    if state_shape not in {(dim,) for dim in SUPPORTED_DIMS}:
+        problems.append(f"state shape must have one of {SUPPORTED_DIMS} dimensions")
+    if action_shape not in {(dim,) for dim in SUPPORTED_DIMS}:
+        problems.append(f"action shape must have one of {SUPPORTED_DIMS} dimensions")
+    if state_shape != action_shape:
+        problems.append(f"state/action shapes must match, got {state_shape}/{action_shape}")
     if len(image_keys) != 2:
         problems.append(f"expected exactly 2 cameras, got {image_keys}")
     if any(config.input_features[key].shape != (3, HEIGHT, WIDTH) for key in image_keys):
@@ -235,7 +240,7 @@ class DecoderActionTail(nn.Module):
 class EncoderStemPacked(nn.Module):
     """Takes the host-packed (1, 1, 601, 512) buffer.
 
-    Token 0 carries the 6 state values in its first 6 channels; tokens 1..300 and
+    Token 0 carries the profile's 6 or 7 state values; tokens 1..300 and
     301..600 are the two cameras. The board packs exactly this layout, so the
     slicing here and `RuntimePlan`'s pack offsets must agree.
     """
@@ -243,11 +248,12 @@ class EncoderStemPacked(nn.Module):
     def __init__(self, module):
         super().__init__()
         self.module = module
+        self.state_dim = module.state.in_features
 
     def forward(self, stem_input):
         packed = stem_input.reshape(1, STEM_TOKENS, HIDDEN)
         return self.module(
-            packed[:, 0, :STATE_DIM],
+            packed[:, 0, :self.state_dim],
             packed[:, 1:1 + CAMERA_TOKENS],
             packed[:, 1 + CAMERA_TOKENS:1 + 2 * CAMERA_TOKENS],
         ).unsqueeze(1)
@@ -263,11 +269,11 @@ class EncoderLayerRank4(nn.Module):
 
 
 class DecoderActionRank4(nn.Module):
-    """Decoder tail with the action head padded from 6 to 16 outputs.
+    """Decoder tail with the 6- or 7-wide action head padded to 16 outputs.
 
     The padding is a hardware fit, not a model change: rows beyond the real
     action dimension are zeroed weights and zeroed bias, so they contribute
-    nothing, and the board slices the first 6 columns back out. Copying the
+    nothing, and the board slices the real columns back out. Copying the
     trained weights into the top rows leaves the actual outputs bit-identical.
     """
 
@@ -278,12 +284,13 @@ class DecoderActionRank4(nn.Module):
         self.chunk = module.chunk
         self.hidden = module.hidden
         self.register_buffer("encoder_position", module.encoder_position)
+        self.action_dim = module.action_head.out_features
         self.action_head = nn.Linear(module.action_head.in_features, PADDED_ACTION_DIM)
         with torch.no_grad():
             self.action_head.weight.zero_()
             self.action_head.bias.zero_()
-            self.action_head.weight[:ACTION_DIM].copy_(module.action_head.weight)
-            self.action_head.bias[:ACTION_DIM].copy_(module.action_head.bias)
+            self.action_head.weight[:self.action_dim].copy_(module.action_head.weight)
+            self.action_head.bias[:self.action_dim].copy_(module.action_head.bias)
 
     def forward(self, hidden):
         encoder_hidden = hidden.reshape(1, ENCODER_TOKENS, HIDDEN)
@@ -319,7 +326,10 @@ def build_modules(policy) -> dict[str, nn.Module]:
 def pack_stem_input(state: torch.Tensor, camera_tokens: Sequence[torch.Tensor]) -> torch.Tensor:
     """Build the (1, 1, 601, 512) stem buffer exactly as the board does."""
     packed = torch.zeros(1, 1, STEM_TOKENS, HIDDEN, dtype=torch.float32)
-    packed[:, :, 0, :STATE_DIM] = state
+    state_dim = state.shape[-1]
+    if state_dim not in SUPPORTED_DIMS:
+        raise ValueError(f"ACT state has {state_dim} values; supported dimensions are {SUPPORTED_DIMS}")
+    packed[:, :, 0, :state_dim] = state
     packed[:, :, 1:1 + CAMERA_TOKENS] = camera_tokens[0].unsqueeze(1)
     packed[:, :, 1 + CAMERA_TOKENS:1 + 2 * CAMERA_TOKENS] = camera_tokens[1].unsqueeze(1)
     return packed
@@ -349,6 +359,11 @@ def trace(modules: dict[str, nn.Module], sample: dict, image_keys: Sequence[str]
 
 # ---------------------------------------------------------------- onnx export
 
+# The pinned Torch 2.3 exporter is already legacy-only and has no ``dynamo``
+# keyword. Newer Torch versions default to the dynamo exporter, so explicitly
+# disable it when the installed signature supports that request.
+_EXPORT_TAKES_DYNAMO = "dynamo" in inspect.signature(torch.onnx.export).parameters
+
 
 def export_graph(module: nn.Module, inputs: tuple, path: Path,
                  input_names: Sequence[str], output_name: str) -> Path:
@@ -356,14 +371,15 @@ def export_graph(module: nn.Module, inputs: tuple, path: Path,
 
     module.cpu().eval()
     path.parent.mkdir(parents=True, exist_ok=True)
+    extra = {"dynamo": False} if _EXPORT_TAKES_DYNAMO else {}
     with torch.inference_mode():
         torch.onnx.export(
             module, inputs, str(path),
             input_names=list(input_names), output_names=[output_name],
-            # opset 17 and the legacy tracer, not dynamo: afe's importer is
-            # validated against this combination, and the dynamo exporter emits
-            # a different (valid, unsupported) graph.
-            opset_version=17, do_constant_folding=True, dynamo=False,
+            # Opset 17 and the legacy tracer: AFE's importer is validated
+            # against this combination, while dynamo emits a different valid
+            # graph that AFE does not support.
+            opset_version=17, do_constant_folding=True, **extra,
         )
     onnx.checker.check_model(str(path))
     return path
@@ -489,7 +505,14 @@ def verify_chain(onnx_dir: Path, fixture_path: Path, report_path: Path,
         dump(f"vision_output_{index}", tokens)
 
     packed = np.zeros((1, 1, STEM_TOKENS, HIDDEN), np.float32)
-    packed[:, :, 0, :STATE_DIM] = fixture["state"]
+    state_dim = fixture["state"].shape[-1]
+    action_dim = fixture["normalized_action"].shape[-1]
+    if state_dim not in SUPPORTED_DIMS or action_dim not in SUPPORTED_DIMS:
+        raise ValueError(
+            f"ACT fixture state/action dimensions are {state_dim}/{action_dim}; "
+            f"supported dimensions are {SUPPORTED_DIMS}"
+        )
+    packed[:, :, 0, :state_dim] = fixture["state"]
     packed[:, :, 1:1 + CAMERA_TOKENS] = cameras[0]
     packed[:, :, 1 + CAMERA_TOKENS:1 + 2 * CAMERA_TOKENS] = cameras[1]
 
@@ -506,7 +529,7 @@ def verify_chain(onnx_dir: Path, fixture_path: Path, report_path: Path,
     dump("decoder_action_tail_input", hidden)
     padded = session(onnx_dir / "decoder_action_tail.onnx").run(None, {"hidden": hidden})[0]
     dump("decoder_action_tail_output", padded)
-    action = padded[:, 0, :, :ACTION_DIM]
+    action = padded[:, 0, :, :action_dim]
 
     reference = fixture["normalized_action"].astype(np.float32)
     difference = np.abs(action - reference)

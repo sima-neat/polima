@@ -63,3 +63,13 @@ add_executable(polima_cli src/cli_main.cpp)
 target_link_libraries(polima_cli PRIVATE polima_core)
 
 install(TARGETS polima_server polima_cli RUNTIME DESTINATION bin)
+
+# Bit-exactness tests for the boundary-conversion kernels (no MLA needed).
+# On the board: build/polima_kernel_tests [--exhaustive]. Not installed.
+find_package(Threads REQUIRED)
+add_executable(polima_kernel_tests tests/test_kernels.cpp)
+target_include_directories(polima_kernel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_options(polima_kernel_tests PRIVATE -Wall -Wextra -O3)
+target_link_libraries(polima_kernel_tests PRIVATE Threads::Threads)
+# The worker pool in kernels.hpp starts threads from the runtime itself.
+target_link_libraries(polima_core PUBLIC Threads::Threads)

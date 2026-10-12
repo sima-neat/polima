@@ -40,7 +40,7 @@ class Normalization:
     camera_std: list[np.ndarray]
 
     @classmethod
-    def load(cls, path: str | Path, cameras: int = 2) -> "Normalization":
+    def load(cls, path: str | Path, cameras: int = 2) -> Normalization:
         values = np.load(path)
         return cls(
             state_mean=values["state_mean"].astype(np.float32),
@@ -92,34 +92,58 @@ class PolimaSOMClient:
     # ------------------------------------------------------------- transport
 
     def _send(self, payload: bytes) -> tuple[np.ndarray, float]:
+        trace = getattr(self, "trace_event", None)
+        if trace is not None:
+            trace("request_started", request_id=self.request_id)
         with socket.create_connection((self.host, self.port), timeout=self.timeout) as stream:
             stream.sendall(payload)
+            if trace is not None:
+                trace("request_sent", request_id=self.request_id)
             header = self.protocol.parse_response_header(
                 _recv_exact(stream, self.protocol.response_size)
             )
             self.protocol.check_response(header, self.request_id)
             raw = _recv_exact(stream, header.count * 4)
+            if trace is not None:
+                trace("reply_received", request_id=self.request_id, server_compute_ms=float(header.latency_ms))
         return self.protocol.parse_result(raw), header.latency_ms
 
     # ---------------------------------------------------------------- public
 
-    def predict_raw(self, tensors: dict[str, np.ndarray]) -> tuple[np.ndarray, float]:
+    def predict_raw(
+        self, tensors: dict[str, np.ndarray], *, task_id: int = 0
+    ) -> tuple[np.ndarray, float]:
         """Send already-prepared tensors. No normalization, no image coercion.
 
         This is what `polima run --fixture` uses: the golden .f32 files are
         already normalized, so touching them would invalidate the comparison.
         """
         self.request_id = (self.request_id + 1) & 0xFFFFFFFF
-        return self._send(self.protocol.pack_request(self.request_id, tensors))
+        return self._send(
+            self.protocol.pack_request(self.request_id, tensors, flags=int(task_id))
+        )
 
     def predict(
-        self, images: list[np.ndarray], state: np.ndarray
+        self, images: list[np.ndarray], state: np.ndarray, *, task_id: int = 0
     ) -> tuple[np.ndarray, float]:
         """Full path from raw camera frames and joint positions to actions.
 
         Images may be HWC or CHW, uint8 or float; state is the raw joint vector.
         Returns de-normalized actions in joint units.
         """
+        tensors = self.prepare_inputs(images, state)
+        actions, latency_ms = self.predict_raw(tensors, task_id=task_id)
+        return self.decode_actions(actions), latency_ms
+
+    def prepare_inputs(
+        self, images: list[np.ndarray], state: np.ndarray
+    ) -> dict[str, np.ndarray]:
+        """Prepare exactly the tensors that :meth:`predict` sends.
+
+        This boundary lets diagnostics persist a replayable request without
+        duplicating normalization or image coercion.
+        """
+
         tensors: dict[str, np.ndarray] = {}
         image_specs = [t for t in self.spec.wire.request_tensors if t.name.startswith("image")]
         if len(images) != len(image_specs):
@@ -145,11 +169,14 @@ class PolimaSOMClient:
                 flat_state - self.normalization.state_mean
             ) / self.normalization.state_std
         tensors["state"] = np.ascontiguousarray(flat_state, dtype=DTYPE)
+        return tensors
 
-        actions, latency_ms = self.predict_raw(tensors)
+    def decode_actions(self, actions: np.ndarray) -> np.ndarray:
+        """Convert a raw server response to robot-unit actions."""
+
         if self.normalization is not None:
             actions = actions * self.normalization.action_std + self.normalization.action_mean
-        return actions.astype(np.float32), latency_ms
+        return actions.astype(np.float32)
 
     def ping(self, timeout: float = 2.0) -> bool:
         try:

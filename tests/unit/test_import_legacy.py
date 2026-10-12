@@ -309,33 +309,50 @@ def test_smolvla_legacy_constants_become_named_runtime_sidecars(tmp_path):
     assert np.fromfile(sidecars["action_std"], dtype="<f4").tolist() == list(range(18, 24))
 
 
-@pytest.mark.parametrize(
-    ("policy", "transport"),
-    [("act", "scripts/act_som_client.py"), ("smolvla", "scripts/smolvla_som_client.py")],
-)
-def test_robot_client_assets_are_complete(policy, transport):
-    from polima.policies.registry import get_policy
-
-    files = collect_robot_files(get_policy(policy))
-    assert {
-        "start.sh", "preview_robot_cameras.py",
-        "run_robot_client_with_live_view.py", transport,
-    } <= set(files)
+def test_act_robot_client_ships_with_polima(tmp_path):
+    """No legacy stack, no arm calibration: the launchers are PoLiMa's own."""
+    files = collect_robot_files(ACT_SPEC, LegacyBuild(tmp_path, "polima-export-v1"))
+    assert set(files) == {"start.sh", "preview_robot_cameras.py"}
     assert all(path.is_file() for path in files.values())
+    assert "polima.robot.so101" in files["start.sh"].read_text()
 
 
-def test_old_bundle_is_hydrated_for_device_robot_control(tmp_path):
-    bundle = Bundle(root=tmp_path, policy="act", bundle_id="act-test")
-    (tmp_path / "fixtures").mkdir()
-    (tmp_path / "fixtures/normalization_stats.npz").write_bytes(b"stats")
+def test_act_rest_pose_comes_from_the_training_dataset(tmp_path):
+    pd = pytest.importorskip("pandas")
+    dataset = tmp_path / "pick_block"
+    (dataset / "meta").mkdir(parents=True)
+    (dataset / "meta/info.json").write_text(json.dumps(
+        {"features": {"observation.state": {"names": list(ACT_SPEC.robot.joint_names)}}}))
+    (dataset / "data/chunk-000").mkdir(parents=True)
+    pd.DataFrame({"frame_index": [0, 1, 0, 0],
+                  "observation.state": [[float(i)] * 6 for i in (1, 50, 3, 2)]},
+                 ).to_parquet(dataset / "data/chunk-000/episode.parquet")
+
+    files = collect_robot_files(ACT_SPEC, LegacyBuild(tmp_path, "x", dataset_root=str(dataset)))
+    rest = json.loads(files["robot_rest_position.json"].read_text())
+    assert rest["positions"]["gripper.pos"] == 2.0  # median of episode starts 1, 3, 2
+    assert rest["source_dataset"] == "pick_block"  # a name, never a host path
+
+
+def test_old_bundle_is_upgraded_to_the_built_in_client(tmp_path):
+    bundle = Bundle(root=tmp_path, policy="act", bundle_id="act-test",
+                    sidecars=["normalization_stats.npz",
+                              "robot_client/run_robot_client_with_live_view.py"])
+    client = tmp_path / "robot_client"
+    (client / "calibration").mkdir(parents=True)
+    for name in ("run_robot_client_with_live_view.py", "robot_rest_position.json",
+                 "calibration/so-arm101.json"):
+        (client / name).write_text("kept" if "run_" not in name else "old")
+    (tmp_path / "normalization_stats.npz").write_bytes(b"stats")
 
     assert hydrate_robot_client(bundle, ACT_SPEC)
-    assert (tmp_path / "robot_client/start.sh").is_file()
-    assert (tmp_path / "robot_client/preview_robot_cameras.py").is_file()
-    assert (tmp_path / "robot_client/scripts/act_som_client.py").is_file()
-    assert (tmp_path / "normalization_stats.npz").read_bytes() == b"stats"
+    assert (client / "start.sh").is_file() and (client / "preview_robot_cameras.py").is_file()
+    assert not (client / "run_robot_client_with_live_view.py").exists()
+    assert not (tmp_path / "normalization_stats.npz").exists()
+    assert (client / "robot_rest_position.json").read_text() == "kept"
+    assert (client / "calibration/so-arm101.json").read_text() == "kept"
     manifest = json.loads((tmp_path / "bundle.json").read_text())
-    assert "robot_client/start.sh" in manifest["sidecars"]
+    assert manifest["sidecars"] == ["robot_client/preview_robot_cameras.py", "robot_client/start.sh"]
     assert not hydrate_robot_client(bundle, ACT_SPEC)
 
 
@@ -351,15 +368,21 @@ def test_old_smolvla_bundle_is_hydrated_with_declared_output_layouts(tmp_path):
             for name in ("vision", "prefix", "suffix", "denoise")
         ],
     )
+    # Bundles packed before 2026-09-10 declared denoise as HWC16.
+    stale = bundle.graph("denoise")
+    stale.dram_layout, stale.logical_width, stale.logical_channels = "hwc16", 50, 32
 
     assert hydrate_runtime_metadata(bundle, get_policy("smolvla"))
     assert bundle.graph("prefix").dram_layout == "plain"
     assert bundle.graph("prefix").external_dram_layout == "HWC"
-    assert bundle.graph("denoise").dram_layout == "hwc16"
-    assert bundle.graph("denoise").logical_width == 50
-    assert bundle.graph("denoise").logical_channels == 32
+    # The denoise ELF downloads plain BF16 (see test_smolvla), so hydration
+    # declares it plain with no HWC16 geometry.
+    assert bundle.graph("denoise").dram_layout == "plain"
+    assert bundle.graph("denoise").logical_width is None
+    assert bundle.graph("denoise").logical_channels is None
     assert bundle.graph("vision").dram_layout == "plain"
     assert not hydrate_runtime_metadata(bundle, get_policy("smolvla"))
 
     restored = Bundle.from_dict(json.loads((tmp_path / "bundle.json").read_text()), tmp_path)
-    assert restored.graph("denoise").logical_channels == 32
+    assert restored.graph("denoise").dram_layout == "plain"
+    assert restored.graph("denoise").logical_channels is None

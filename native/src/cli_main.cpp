@@ -55,6 +55,17 @@ int run_python_command(const std::string& command, int argc, char** argv) {
     throw std::runtime_error("PoLiMa's Python commands need the LeRobot environment at " +
                              python.string());
 
+  // Deploy synchronizes the current PoLiMa package here. Put its parent at
+  // the front of sys.path so robot/studio commands cannot silently import a
+  // stale copy installed in the LeRobot virtual environment.
+  const char* root = std::getenv("POLIMA_ROOT");
+  const fs::path python_root =
+      (root ? fs::path(root) : fs::path("/media/nvme/polima")) / "python";
+  const char* inherited = std::getenv("PYTHONPATH");
+  std::string python_path = python_root.string();
+  if (inherited && *inherited) python_path += ":" + std::string(inherited);
+  ::setenv("PYTHONPATH", python_path.c_str(), 1);
+
   std::vector<std::string> values = {
       python.string(), "-m", "polima.cli.main", command};
   for (int index = 2; index < argc; ++index) values.emplace_back(argv[index]);
@@ -111,19 +122,28 @@ std::string prompt_device(const std::string& label,
   if (candidates.empty())
     throw std::runtime_error("no " + label + " devices detected");
 
+  // A detected camera may have been removed after selection for another role.
+  // Enter must not silently return that already-taken device.
+  const bool detected_available =
+      std::find(candidates.begin(), candidates.end(), detected) != candidates.end();
+  const std::string usable_default = detected_available ? detected : "";
+
   std::cout << "\n" << label << ":\n";
   for (size_t index = 0; index < candidates.size(); ++index) {
     std::cout << "  " << index + 1 << ") " << candidates[index];
-    if (candidates[index] == detected) std::cout << " <- detected default";
+    if (candidates[index] == usable_default) std::cout << " <- detected default";
     std::cout << "\n";
   }
   std::cout << "Select " << label;
-  if (!detected.empty()) std::cout << " (Enter uses detected default)";
+  if (!usable_default.empty()) std::cout << " (Enter uses detected default)";
   std::cout << ": " << std::flush;
 
   std::string selection;
   if (!std::getline(std::cin, selection)) return "";
-  if (selection.empty()) return detected;
+  if (selection.empty()) {
+    if (!usable_default.empty()) return usable_default;
+    throw std::runtime_error("select " + label + " by number; no detected default is available");
+  }
   char* end = nullptr;
   const long number = std::strtol(selection.c_str(), &end, 10);
   if (end != selection.c_str() && *end == '\0' && number >= 1 &&
@@ -152,7 +172,10 @@ std::string prompt_bundle(const fs::path& store) {
   for (size_t index = 0; index < entries.size(); ++index) {
     const auto& entry = entries[index];
     std::cout << "  " << index + 1 << ") " << entry.name;
-    if (!entry.policy.empty()) std::cout << " (" << entry.policy << ")";
+    if (!entry.policy.empty()) std::cout << "  policy=" << entry.policy;
+    if (!entry.robot.empty()) std::cout << "  robot=" << entry.robot;
+    if (!entry.action_shape.empty())
+      std::cout << "  actions=" << entry.action_shape;
     if (!entry.managed) std::cout << " [legacy]";
     if (entry.current) std::cout << " <- current";
     std::cout << "\n";
@@ -312,7 +335,7 @@ int device_command(int argc, char** argv, const polima::Args& args) {
     std::cout << "Starting camera-only preview. No policy server or follower arm will be started.\n";
     const fs::path venv = args.get("--lerobot-venv", "/media/nvme/lerobot");
     return polima::run_camera_preview(
-        bundle, assignment, args.get_int("--preview-port", 5001), venv);
+        bundle, assignment, description.fourcc, args.get_int("--preview-port", 5001), venv);
   }
   if (action != "run" && action != "start")
     throw std::runtime_error("usage: polima robot [status|preview|run]");
@@ -380,15 +403,39 @@ int device_command(int argc, char** argv, const polima::Args& args) {
       return 0;
     }
   }
-  if (polima::server_state(root).running) polima::stop_server(root);
-  const int server_pid = polima::start_server(root, bundle, port);
+  const auto existing_server = polima::server_state(root);
+  std::error_code bundle_code;
+  const std::string requested_bundle =
+      fs::weakly_canonical(bundle, bundle_code).filename().string();
+  const bool reuse_server = existing_server.running && existing_server.accepting &&
+      existing_server.port == port && !bundle_code &&
+      existing_server.served_bundle == requested_bundle;
+  if (existing_server.running && !reuse_server) polima::stop_server(root);
+  const int server_pid = reuse_server
+      ? existing_server.pid
+      : polima::start_server(root, bundle, port);
   if (!server_pid) throw std::runtime_error("server failed to start; see var/log/server.log");
 
-  std::cout << "server pid=" << server_pid << " port=" << port << "\n";
+  std::cout << (reuse_server ? "reusing" : "started") << " server pid=" << server_pid
+            << " port=" << port << "\n";
   print_robot(description, assignment, {robot_port});
   std::cout << "Starting the robot client in the foreground. Ctrl-C stops robot control; "
                "the policy server remains running.\n";
   const fs::path venv = args.get("--lerobot-venv", "/media/nvme/lerobot");
+  const std::string task_id = args.get("--task", "0");
+  ::setenv("POLIMA_TASK_ID", task_id.c_str(), 1);
+  if (args.has("--front-camera-fps"))
+    ::setenv("POLIMA_FRONT_CAMERA_FPS", args.get("--front-camera-fps", "").c_str(), 1);
+  if (args.has("--wrist-camera-fps"))
+    ::setenv("POLIMA_WRIST_CAMERA_FPS", args.get("--wrist-camera-fps", "").c_str(), 1);
+  if (args.has("--max-cycles"))
+    ::setenv("POLIMA_MAX_CYCLES", args.get("--max-cycles", "").c_str(), 1);
+  if (args.has("--no-auto-complete"))
+    ::setenv("POLIMA_NO_AUTO_COMPLETE", "1", 1);
+  if (args.has("--diagnostic-dir"))
+    ::setenv("POLIMA_DIAGNOSTIC_DIR", args.get("--diagnostic-dir", "").c_str(), 1);
+  else if (args.has("--diagnostic"))
+    ::setenv("POLIMA_DIAGNOSTIC_DIR", "auto", 1);
   return polima::run_robot_client(bundle, description, robot_port, assignment,
                                   "127.0.0.1:" + std::to_string(port), venv);
 }
@@ -399,11 +446,13 @@ int main(int argc, char** argv) {
   try {
     if (argc >= 2) {
       const std::string command = argv[1];
-      const bool robot_calibrate = command == "robot" &&
+      // These robot actions are Python; the rest drive the arm natively.
+      const bool robot_python = command == "robot" &&
           std::any_of(argv + 2, argv + argc, [](const char* value) {
-            return std::string(value) == "calibrate";
+            const std::string action = value;
+            return action == "calibrate" || action == "export-improvement-manifest";
           });
-      if (command == "studio" || command == "help" || robot_calibrate)
+      if (command == "studio" || command == "help" || robot_python)
         return run_python_command(command, argc, argv);
     }
 
@@ -428,6 +477,8 @@ int main(int argc, char** argv) {
         "                         [--overhead-camera PATH --wrist-camera PATH]\n"
         "                         [--preview-port N]\n"
         "                         [--fps N --actions-per-chunk N --max-relative-target DEG]\n"
+        "                         [--max-cycles N] [--no-auto-complete]\n"
+        "                         [--diagnostic | --diagnostic-dir DIR]\n"
         "                         (run interactively picks detected serial and cameras)\n"
         "\nWith no --bundle it opens an interactive session over the model\n"
         "store: the model loads once and every command after that is fast.\n";
@@ -456,6 +507,8 @@ int main(int argc, char** argv) {
     const bool verbose = args.has("--verbose");
 
     polima::Plan plan(bundle, verbose);
+    if (args.has("--dump-stages"))
+      plan.set_dump_stages(args.get("--dump-stages"));
     const auto& wire = plan.wire();
 
     const fs::path input_dir = args.get("--input-dir", (bundle / "fixtures/inputs").string());

@@ -6,12 +6,14 @@ import argparse
 import sys
 from pathlib import Path
 
+from polima.bundle.contract import spec_from_bundle
 from polima.bundle.layout import Bundle
 from polima.cli import wizard
+from polima.config.base import NO_BOARD_MESSAGE
 from polima.config.loader import load
 from polima.deploy import board as board_ops
-from polima.deploy import mla
 from polima.deploy import deploy as run_deploy
+from polima.deploy import mla
 from polima.deploy.service import logs as server_logs
 from polima.deploy.service import status as service_status
 from polima.deploy.service import stop as stop_server
@@ -46,8 +48,11 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     parser.add_argument("--stop", action="store_true", help="stop the server")
     parser.add_argument("--logs", type=int, nargs="?", const=40, help="tail the server log")
     parser.add_argument("--activate", metavar="BUNDLE_ID", help="switch `current` and restart")
-    parser.add_argument("--reset-mla", action="store_true",
-                        help="reset the accelerator (SDK recovery script) and exit")
+    parser.add_argument(
+        "--reset-mla",
+        action="store_true",
+        help="reset the accelerator (SDK recovery script) and exit",
+    )
 
     args = parser.parse_args(argv)
     config = load(
@@ -57,15 +62,27 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     board = config.board
     dry_run = bool(getattr(parent, "dry_run", False))
 
-    if (args.list or args.status or args.stop or args.logs is not None
-            or args.activate or args.reset_mla):
+    if (
+        args.list
+        or args.status
+        or args.stop
+        or args.logs is not None
+        or args.activate
+        or args.reset_mla
+    ):
+        if not board.host:
+            print(f"polima deploy: {NO_BOARD_MESSAGE}", file=sys.stderr)
+            return 2
         return _manage(args, board, dry_run)
 
     if not args.bundle:
         parser.error("--bundle is required (or use --list/--status/--stop/--logs)")
 
     bundle = _resolve_bundle(args.bundle, args.bundles_root)
-    spec = get_policy(bundle.policy)
+    if not board.host:
+        print(f"polima deploy: {NO_BOARD_MESSAGE}", file=sys.stderr)
+        return 2
+    spec = spec_from_bundle(get_policy(bundle.policy), bundle)
     # Bundles packed before device-side robot launch was completed can be
     # upgraded in place: the id covers model arithmetic, while bundle.json's
     # sidecars make the deploy notice and transfer the added client files.
@@ -76,7 +93,9 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     port = args.port or board.port or spec.wire.default_port
 
     report = run_deploy(
-        bundle, board, port=port,
+        bundle,
+        board,
+        port=port,
         build=not args.no_build,
         start_service=args.start,
         activate=not args.no_activate,
@@ -90,10 +109,12 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
         return 0 if report.ok else 1
 
     print(table.section(f"deploy {report.bundle_id} -> {report.host}"))
-    print(table.render(
-        [[name, info["status"], _detail(name, info)] for name, info in report.stages.items()],
-        headers=["stage", "status", "detail"],
-    ))
+    print(
+        table.render(
+            [[name, info["status"], _detail(name, info)] for name, info in report.stages.items()],
+            headers=["stage", "status", "detail"],
+        )
+    )
     print(f"\n  {report.duration_s:.1f}s total")
     if report.service and report.service.running:
         print(f"  serving on {board.address}:{report.port} (pid {report.service.pid})")
@@ -114,8 +135,10 @@ def _session(parent: argparse.Namespace | None) -> list[str] | None:
 
 def _detail(stage: str, info: dict) -> str:
     if stage == "preflight":
-        return f"{info.get('machine', '?')}, {info.get('cores', '?')} cores, " \
-               f"{info.get('free_bytes', 0) / 1e9:.0f} GB free"
+        return (
+            f"{info.get('machine', '?')}, {info.get('cores', '?')} cores, "
+            f"{info.get('free_bytes', 0) / 1e9:.0f} GB free"
+        )
     if stage == "build":
         return info.get("reason") or f"hash {info.get('source_hash', '?')}"
     if stage == "sync-bundle":
@@ -136,14 +159,38 @@ def _manage(args, board, dry_run: bool) -> int:
         if args.list:
             current = board_ops.current_bundle(session, board)
             managed = board_ops.managed_bundles(session, board)
-            rows = [
-                [name,
-                 "polima" if name in managed else "legacy tree",
-                 "<- current" if name == current else ""]
-                for name in board_ops.list_bundles(session, board)
-            ]
-            print(table.render(rows, headers=["name", "kind", ""])
-                  or "nothing in the board's model store")
+            rows = []
+            for name in board_ops.list_bundles(session, board):
+                is_managed = name in managed
+                if is_managed:
+                    policy, robot = board_ops.bundle_identity(session, board, name)
+                else:
+                    lowered = name.lower()
+                    policy = next(
+                        (
+                            candidate
+                            for candidate in ("act", "smolvla", "groot")
+                            if lowered.startswith(candidate)
+                        ),
+                        "-",
+                    )
+                    robot = "mycobot280" if "mycobot" in lowered else "-"
+                rows.append(
+                    [
+                        name,
+                        policy,
+                        robot,
+                        "polima" if is_managed else "legacy",
+                        "current" if name == current else "",
+                    ]
+                )
+            print(
+                table.render(
+                    rows,
+                    headers=["name", "policy", "robot", "format", "status"],
+                )
+                or "nothing in the board's model store"
+            )
             return 0
 
         if args.stop:
@@ -160,13 +207,14 @@ def _manage(args, board, dry_run: bool) -> int:
             if args.json:
                 print(dumps(report.to_dict()), end="")
                 return 0 if report.ok else 1
-            print(f"MLA reset via {report.method}: "
-                  f"{'ok' if report.ok else 'FAILED'}")
+            print(f"MLA reset via {report.method}: {'ok' if report.ok else 'FAILED'}")
             for step in report.steps:
                 print(f"  {step}")
             if report.reclaimed_kb is not None:
-                print(f"  CmaFree {report.cma_free_kb_before} -> "
-                      f"{report.cma_free_kb_after} kB ({report.reclaimed_kb:+d})")
+                print(
+                    f"  CmaFree {report.cma_free_kb_before} -> "
+                    f"{report.cma_free_kb_after} kB ({report.reclaimed_kb:+d})"
+                )
             return 0 if report.ok else 1
 
         if args.logs is not None:
@@ -184,11 +232,13 @@ def _manage(args, board, dry_run: bool) -> int:
         # The port comes from the active bundle's own policy.
         port = args.port or board.port or _default_port(current)
         status = service_status(session, board, port or None)
-        rows = [["current", current or "-"],
-                ["running", str(status.running)],
-                ["pid", status.pid or "-"],
-                ["port", port or "-"],
-                ["listening", str(status.listening)]]
+        rows = [
+            ["current", current or "-"],
+            ["running", str(status.running)],
+            ["pid", status.pid or "-"],
+            ["port", port or "-"],
+            ["listening", str(status.listening)],
+        ]
         if status.bound and status.pid not in status.bound:
             # The Phase-1a failure: a stale server answers while the recorded
             # process is dead, so redeploys appear to work and change nothing.
@@ -206,7 +256,7 @@ def _resolve_bundle(reference: str, bundles_root: str | None) -> Bundle:
     if not manifest.is_file():
         print(
             f"polima-deploy: no bundle at {candidate}\n"
-            f"  build one with: polima-compile --import-legacy <build_dir>",
+            f"  build one with: polima compile --checkpoint <path> --build-dir <dir>",
             file=sys.stderr,
         )
         raise SystemExit(2)

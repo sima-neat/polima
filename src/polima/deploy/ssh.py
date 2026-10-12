@@ -50,7 +50,10 @@ class BoardSession:
         self.close()
 
     def _open_master(self) -> None:
-        self._temp_dir = tempfile.TemporaryDirectory(prefix="polima-ssh-")
+        # OpenSSH appends a suffix to ControlPath; Unix socket paths are short.
+        # Compiler TMPDIR paths can be much longer than that limit. This tiny,
+        # private socket directory must not inherit the compiler scratch root.
+        self._temp_dir = tempfile.TemporaryDirectory(prefix="polima-ssh-", dir="/tmp")
         self._control_path = str(Path(self._temp_dir.name) / "cm")
         result = subprocess.run(
             [
