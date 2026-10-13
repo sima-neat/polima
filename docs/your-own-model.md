@@ -48,9 +48,10 @@ polima compile --policy act \
     --build-dir ~/polima-builds/my-task -j 3
 ```
 
-PoLiMa finds the training dataset from the checkpoint; add
-`--dataset-root /path/to/dataset` if it has moved. `-j 3` compiles three parts
-at once, each needing about 1.6 GB of memory. The bundle is written to
+PoLiMa reads the training dataset's path from the checkpoint. That is the path
+on the computer that trained it, so add `--dataset-root /path/to/dataset` if
+the checkpoint or the dataset has moved since. `-j 3` compiles three parts at
+once, each needing about 1.6 GB of memory. The bundle is written to
 `outputs/bundles/<bundle-id>/` and the command prints its id.
 
 ### GR00T

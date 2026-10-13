@@ -73,6 +73,18 @@ def test_missing_train_config_suggests_the_flag(tmp_path):
         sampling.resolve_dataset(tmp_path)
 
 
+def test_missing_dataset_fails_before_lerobot_asks_the_hub(tmp_path):
+    """A checkpoint moved off its training machine names a path that is gone."""
+    with pytest.raises(FileNotFoundError, match="--dataset-root"):
+        sampling.require_local_dataset(tmp_path / "gone", overridden=False)
+
+
+def test_present_dataset_is_accepted(tmp_path):
+    (tmp_path / "meta").mkdir()
+    (tmp_path / "meta" / "info.json").write_text("{}")
+    sampling.require_local_dataset(tmp_path, overridden=True)
+
+
 # --------------------------------------------------------- normalization io
 
 
