@@ -18,6 +18,9 @@ manual JSON configuration. For a server accessed from a laptop, follow
 1. **Import.** Upload a checkpoint folder and its representative dataset from
    your browser. Files are stored on the Workbench host. The upload limit is
    64 GiB per folder. Keep checkpoint configuration and weights together.
+   Checkpoints already on the Workbench host are listed without an upload
+   when they are under `models/` in the PoLiMa checkout; `--models DIR` or
+   `POLIMA_MODELS` names other folders.
 2. **Compile and validate.** Select a checkpoint, review prerequisite checks
    and choose its dataset. Compilation requires an x86_64 Linux host with the
    ModelSDK and the selected policy's export environment.

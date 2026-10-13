@@ -17,6 +17,9 @@ outputs/
 *.npz
 *_mpk.tar.gz
 
+# Trained checkpoints placed here are listed by Workbench by default.
+/models/
+
 # Local site config (board address etc.); .polima.yaml.example is tracked.
 .polima.yaml
 .polima.json

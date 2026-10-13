@@ -325,3 +325,13 @@ def test_groot_rejects_unrelated_source_directory(storage, tmp_path, monkeypatch
     monkeypatch.setenv('POLIMA_GROOT17_SOURCE', str(tmp_path))
     checks = inputs.prerequisites('GR00T N1.7')
     assert next(row for row in checks if row['label'].endswith('Isaac-GR00T source'))['ok'] is False
+
+
+def test_checkout_models_folder_is_the_default_on_the_build_host():
+    from polima.cli import workbench
+    from polima.util.paths import package_root
+
+    assert workbench.default_models(on_board=False) == [package_root() / "models"]
+    assert (package_root() / "pyproject.toml").is_file()
+    # The DevKit runs bundles; it has no checkpoints to list.
+    assert workbench.default_models(on_board=True) == []
