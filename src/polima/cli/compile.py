@@ -231,6 +231,9 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
             for attempt in result.attempts:
                 print(f"    {attempt['precision']}: {attempt.get('reason', '')}"
                       f"  see {attempt['log']}", file=sys.stderr)
+        if built or reused:
+            print("\n  finished graphs are kept: add --reuse to the same command to "
+                  "compile only the failed ones", file=sys.stderr)
         return 1
 
     if args.stop_after == "compile" or dry_run:

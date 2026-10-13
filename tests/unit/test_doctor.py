@@ -153,3 +153,11 @@ def test_a_host_dependency_that_cannot_be_imported_is_a_failure(monkeypatch):
     assert by_check["host dependency pyarrow"]["status"] == table.FAIL
     assert "NumPy 2.0" in by_check["host dependency pyarrow"]["detail"]
     assert by_check["host dependency torch"]["status"] == table.OK
+
+
+def test_a_compiler_older_than_the_documented_one_is_noticed():
+    assert doctor._older_than("2.1.0", "2.1.3")
+    assert not doctor._older_than("2.1.3", "2.1.3")
+    assert not doctor._older_than("2.2.0", "2.1.3")
+    # A development build string is reported as found, not guessed at.
+    assert not doctor._older_than("main-abc123", "2.1.3")

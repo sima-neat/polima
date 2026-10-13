@@ -258,6 +258,19 @@ def check_import_matrix(doc: Doctor, config) -> None:
 
 # -------------------------------------------------------------- compiler venv
 
+#: The ModelSDK release docs/install.md names for this version of PoLiMa.
+DOCUMENTED_MODELSDK = "2.1.3"
+
+
+def _older_than(version: str, reference: str) -> bool:
+    """Compare dotted release numbers; an unreadable version is not called old."""
+    def numbers(text: str) -> tuple[int, ...] | None:
+        parts = text.strip().split(".")[:3]
+        return tuple(int(part) for part in parts) if all(p.isdigit() for p in parts) else None
+
+    found, wanted = numbers(version), numbers(reference)
+    return found is not None and wanted is not None and found < wanted
+
 
 def check_compiler(doc: Doctor, config) -> None:
     doc.heading("model compiler (SiMa ModelSDK)")
@@ -288,7 +301,16 @@ def check_compiler(doc: Doctor, config) -> None:
         [python, "-c",
          "from afe.apis.release_v1 import get_model_sdk_version as v;print(v())"]
     ).strip()
-    doc.record(table.OK if afe else table.FAIL, "afe / ModelSDK", afe or "import failed")
+    if afe and _older_than(afe, DOCUMENTED_MODELSDK):
+        # An install left behind by an earlier SDK is found before a newer one
+        # elsewhere on the search path, and nothing else would say so.
+        doc.record(
+            table.WARN, "afe / ModelSDK",
+            f"{afe} -- older than {DOCUMENTED_MODELSDK}, the version docs/install.md names; "
+            "set MODEL_COMPILER_BIN if a newer compiler is installed elsewhere",
+        )
+    else:
+        doc.record(table.OK if afe else table.FAIL, "afe / ModelSDK", afe or "import failed")
 
     # By IMPORT, never by exec: the llima-compile console script's shebang points
     # at /sdk-extensions/..., which exists only inside the SDK container.
