@@ -193,12 +193,22 @@ def check_host(doc: Doctor, host_side: bool = True) -> None:
 
     if host_side:
         for module in ("torch", "lerobot", "onnx", "onnxruntime", "pyarrow"):
-            present = importlib.util.find_spec(module) is not None
-            doc.record(
-                table.OK if present else table.WARN,
-                f"host dependency {module}",
-                "installed in current environment" if present else "missing; run `make venv`",
-            )
+            if importlib.util.find_spec(module) is None:
+                doc.record(table.WARN, f"host dependency {module}", "missing; run `make venv`")
+                continue
+            # Installed is not the same as usable: a binary wheel built against
+            # another numpy is found by find_spec and still fails on import.
+            try:
+                importlib.import_module(module)
+            except Exception as error:  # noqa: BLE001 - any import failure is the finding
+                doc.record(
+                    table.FAIL, f"host dependency {module}",
+                    f"installed but fails to import ({error}); run `make venv`",
+                )
+            else:
+                doc.record(
+                    table.OK, f"host dependency {module}", "installed in current environment"
+                )
 
 
 # -------------------------------------------------------------- import matrix

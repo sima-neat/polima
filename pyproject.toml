@@ -65,15 +65,15 @@ polima-doctor = "polima.cli.entry:doctor"
 where = ["src"]
 
 [tool.setuptools.package-data]
-polima = ["robot/templates/*.html", "robot/assets/mycobot/*", "robot/assets/so101/*", "patches/*.patch", "studio/static/*.html", "studio/static/assets/*", "workbench/static/*"]
+polima = ["robot/assets/mycobot/*", "robot/assets/so101/*", "studio/static/*.html", "studio/static/assets/*", "workbench/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]
 markers = ["hardware: requires a Modalix board or an SO-101 arm (opt-in)"]
 # So `pytest` works from a bare interpreter without `pip install -e .` first.
-# The unit tests are stdlib+numpy only by design (see tests/unit/test_imports.py),
-# which means there is no reason to require an install to run them -- and the
-# three environments this repo targets cannot all install the same package.
+# The unit tests are stdlib+numpy only by design, which means there is no
+# reason to require an install to run them -- and the three environments this
+# repo targets cannot all install the same package.
 pythonpath = ["src"]
 
 [tool.ruff]

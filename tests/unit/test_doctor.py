@@ -138,3 +138,20 @@ def test_skip_notice_is_not_a_failure(monkeypatch):
     doc = doctor.Doctor(json_output=True)
     doctor.skip_host_sections(doc, BOARD)
     assert doc.worst == table.OK
+
+
+def test_a_host_dependency_that_cannot_be_imported_is_a_failure(monkeypatch):
+    """pyarrow built for another numpy is installed, found, and unusable."""
+    def broken(name):
+        if name == "pyarrow":
+            raise ImportError("pyarrow requires NumPy 2.0 or newer")
+        return object()
+
+    monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(doctor.importlib, "import_module", broken)
+    doc = doctor.Doctor(json_output=True)
+    doctor.check_host(doc)
+    by_check = {result["check"]: result for result in doc.results}
+    assert by_check["host dependency pyarrow"]["status"] == table.FAIL
+    assert "NumPy 2.0" in by_check["host dependency pyarrow"]["detail"]
+    assert by_check["host dependency torch"]["status"] == table.OK
