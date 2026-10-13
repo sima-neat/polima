@@ -15,12 +15,14 @@ import os
 from pathlib import Path
 from shutil import which
 
-#: Searched in order. The `/sdk-extensions` entry is where the SiMa container
-#: mounts it, and is also the path baked into `llima-compile`'s shebang.
+#: Searched in order. `~/sdk-extensions` is where sima-cli installs the compiler
+#: today; `~/sima-sdk-extensions` is the older location and can hold a stale
+#: release, so it comes after. The `/sdk-extensions` entry is where the SiMa
+#: container mounts it, and is also the path baked into `llima-compile`'s shebang.
 SEARCH_PATH = (
     "$MODEL_COMPILER_BIN",
-    "~/sima-sdk-extensions/model-compiler/bin",
     "~/sdk-extensions/model-compiler/bin",
+    "~/sima-sdk-extensions/model-compiler/bin",
     "/sdk-extensions/model-compiler/bin",
 )
 
@@ -32,8 +34,8 @@ def find_compiler_bin(config=None) -> Path | None:
     if explicit:
         candidates.append(str(explicit))
     candidates.append(os.environ.get("MODEL_COMPILER_BIN", ""))
-    candidates.append(os.path.expanduser("~/sima-sdk-extensions/model-compiler/bin"))
     candidates.append(os.path.expanduser("~/sdk-extensions/model-compiler/bin"))  # sima-cli
+    candidates.append(os.path.expanduser("~/sima-sdk-extensions/model-compiler/bin"))
     candidates.append("/sdk-extensions/model-compiler/bin")
     for candidate in candidates:
         if candidate and (Path(candidate) / "python").exists():

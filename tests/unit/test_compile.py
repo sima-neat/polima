@@ -894,3 +894,32 @@ def test_watchdog_waits_for_cleanup_and_restarts_after_output_changes(tmp_path, 
     monkeypatch.setattr(tensor.os, "_exit", lambda code: (exits.append((code, current[0])), stop.set()))
     targets[0]()
     assert exits == [(0, 600)]
+
+
+def _fake_compiler(home, folder):
+    bin_dir = home / folder / "model-compiler" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python").write_text("")
+    return bin_dir
+
+
+def test_the_current_sima_cli_location_wins_over_the_older_one(tmp_path, monkeypatch):
+    """An install left in ~/sima-sdk-extensions must not shadow a newer compiler."""
+    from polima.compile.toolchain import find_compiler_bin
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MODEL_COMPILER_BIN", raising=False)
+    older = _fake_compiler(tmp_path, "sima-sdk-extensions")
+    assert find_compiler_bin() == older
+    current = _fake_compiler(tmp_path, "sdk-extensions")
+    assert find_compiler_bin() == current
+
+
+def test_model_compiler_bin_overrides_both_default_locations(tmp_path, monkeypatch):
+    from polima.compile.toolchain import find_compiler_bin
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _fake_compiler(tmp_path, "sdk-extensions")
+    chosen = _fake_compiler(tmp_path, "elsewhere")
+    monkeypatch.setenv("MODEL_COMPILER_BIN", str(chosen))
+    assert find_compiler_bin() == chosen
