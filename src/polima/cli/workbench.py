@@ -111,7 +111,7 @@ def _manage(action: str, argv: list[str]) -> int:
 def default_models(on_board: bool) -> list[Path]:
     """Discover checkpoints automatically only in a source checkout."""
     root = package_root()
-    checkout = (root / "pyproject.toml").is_file() and (root / "src/polima/__init__.py").is_file()
+    checkout = (root / "pyproject.toml").is_file() and (root / "src/polima").is_dir()
     return [root / "models"] if checkout and not on_board else []
 
 

@@ -394,3 +394,13 @@ def test_checkpoint_folder_override_precedence(monkeypatch, explicit, environmen
 
     monkeypatch.setenv('POLIMA_MODELS', environment)
     assert folders(explicit, 'POLIMA_MODELS', [Path('models')]) == [Path(p) for p in expected]
+
+
+def test_checkout_models_folder_is_the_default_on_the_build_host():
+    from polima.cli import workbench
+    from polima.util.paths import package_root
+
+    assert workbench.default_models(on_board=False) == [package_root() / "models"]
+    assert (package_root() / "pyproject.toml").is_file()
+    # The DevKit runs bundles; it has no checkpoints to list.
+    assert workbench.default_models(on_board=True) == []
