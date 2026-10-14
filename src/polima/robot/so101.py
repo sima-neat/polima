@@ -41,6 +41,10 @@ COMMON_RECIPE = {
 }
 
 
+#: Upper bounds a run accepts: above these the per-move safety clamp stops protecting the arm.
+MAX_RELATIVE_TARGET = 30.0
+MAX_FPS = 60
+
 FAST_ENV = "POLIMA_FAST"
 FAST_RECIPE = {"fps": 30, "POLIMA_SMOOTH_MOVES": "10", "POLIMA_SUBSTEPS": "1",
                "POLIMA_CHUNK_THRESHOLD": "0.6"}
@@ -189,8 +193,15 @@ def client_configuration(root, spec, task_id, instruction, args):
         spec.robot.actions_per_chunk if args.actions_per_chunk is None else args.actions_per_chunk
     )
     fps = control_fps(spec, args)
-    if not 1 <= actions <= spec.robot.actions_per_chunk or fps <= 0:
-        raise ValueError("Invalid action horizon or control rate")
+    if not 1 <= actions <= spec.robot.actions_per_chunk:
+        raise ValueError(
+            f"--actions-per-chunk must be between 1 and {spec.robot.actions_per_chunk}")
+    if not 1 <= fps <= MAX_FPS:
+        raise ValueError(f"--fps must be between 1 and {MAX_FPS}")
+    if not (np.isfinite(args.max_relative_target)
+            and 0 < args.max_relative_target <= MAX_RELATIVE_TARGET):
+        raise ValueError(f"--max-relative-target must be greater than 0 and at most "
+                         f"{MAX_RELATIVE_TARGET} degrees")
     cameras = {
         role: {
             "type": "opencv",
@@ -235,7 +246,7 @@ def client_configuration(root, spec, task_id, instruction, args):
         raise ValueError(f"{smoothing.ENV} replaces the overlap blend; leave POLIMA_AGGREGATE "
                          "unset or set it to latest_only")
     argv = [
-        str(robot_dir / "run_robot_client_with_live_view.py"),
+        str(Path(__file__).parent / "assets/so101/run_robot_client_with_live_view.py"),
         f"--server_address={args.server_address}",
         "--robot.type=so101_follower",
         f"--robot.port={args.robot_port}",

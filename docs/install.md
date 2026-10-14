@@ -6,7 +6,7 @@ The Workbench host connects to the DevKit over SSH.
 
 | Task | Where it runs | Needs |
 |---|---|---|
-| Compile a checkpoint | x86_64 Linux computer | Python 3.10 to 3.12, the SiMa ModelSDK; for GR00T also NVIDIA's GR00T code ([your-own-model.md](your-own-model.md)) |
+| Compile a checkpoint | x86_64 Linux computer | Python 3.12, the SiMa ModelSDK; for GR00T also NVIDIA's GR00T code ([your-own-model.md](your-own-model.md)) |
 | Deploy and check bundles, Workbench | Linux, macOS, or Windows with WSL | Python 3.10 to 3.12, `ssh`, `rsync` |
 | Run the model and the arm | Modalix DevKit | SiMa.ai SDK 2.1.2 or 2.1.3, internet access for the first install |
 
@@ -31,7 +31,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[deploy]"
 polima --version
-polima doctor
+polima doctor --deploy-only
 ```
 
 Keep the virtual environment active when using `polima`. In a new terminal,
@@ -40,11 +40,15 @@ The deploy installation supports imports and deployment; compilation needs
 the additional dependencies below.
 
 **To compile**, on an x86_64 Linux computer, build the full environment
-instead. It installs a CPU-only PyTorch and LeRobot from your LeRobot checkout
-(the one your checkpoints were trained with):
+instead. It needs Python 3.12 with its `venv` module,
+`cmake` and a C++ compiler, and internet access. It installs a CPU-only
+PyTorch and LeRobot from a LeRobot checkout at the supported commit. If you
+already created `.venv` above with a different Python, remove it first.
 
 ```bash
-make venv LEROBOT_SOURCE=/path/to/lerobot
+git clone https://github.com/huggingface/lerobot.git ../lerobot
+git -C ../lerobot checkout 36b8face988669509272b00f4abe6592d0b17aa0
+make venv LEROBOT_SOURCE=../lerobot
 source .venv/bin/activate
 export MODEL_COMPILER_BIN=/path/to/model-compiler/bin   # the ModelSDK's bin folder
 polima doctor                                           # finds the compiler
@@ -68,12 +72,20 @@ The DevKit must have its SDK build tools installed, writable installation
 directories and the privileges required to register a system service. The
 installer checks these prerequisites and reports missing requirements.
 
+The installer registers the Studio service with `sudo` and cannot answer a
+password prompt. If `sudo` asks for your password, run `sudo -v` right before
+the installer. If the installation outlasts sudo's timeout, run the installer
+again; it continues from what is already installed.
+
 The installer:
 
 - creates the LeRobot 0.4.4 environment at `/media/nvme/lerobot` (or reuses it),
 - installs PoLiMa and PoLiMa Studio into it,
 - builds the runtime (`polima_server`, `polima_cli`) under `/media/nvme/polima`,
 - puts the `polima` command on the `PATH`.
+
+If the LeRobot step adds your account to the `dialout` group (needed to open
+the arm's serial port), log out and back in before using the arm.
 
 Supported DevKit software:
 
@@ -124,9 +136,13 @@ once with `ssh-keygen -R <devkit-address>`.
 
 ## Check
 
+For a deployment-only host:
+
 ```bash
-polima doctor
+polima doctor --deploy-only
 ```
+
+On a compiler host or the DevKit, run `polima doctor` for the full checks.
 
 It checks Python, the compiler (if installed), and the DevKit when one is set.
 

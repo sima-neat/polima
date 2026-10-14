@@ -203,11 +203,7 @@ int run_camera_preview(const fs::path& bundle_root,
                        const std::string& fourcc,
                        int preview_port,
                        const fs::path& venv) {
-  const fs::path script = bundle_root / "robot_client/preview_robot_cameras.py";
   const fs::path python = venv / "bin/python";
-  if (!fs::is_regular_file(script))
-    throw std::runtime_error(
-        "bundle has no robot_client/preview_robot_cameras.py; redeploy it");
   if (!fs::exists(python))
     throw std::runtime_error("LeRobot environment not found at " + venv.string());
   auto primary = cameras.assigned.find("overhead");
@@ -228,7 +224,7 @@ int run_camera_preview(const fs::path& bundle_root,
   if (pid == 0) {
     const std::string port = std::to_string(preview_port);
     const fs::path focus = bundle_root / "robot_client/camera_focus_config.json";
-    ::execl(python.c_str(), python.c_str(), script.c_str(),
+    ::execl(python.c_str(), python.c_str(), "-m", "polima.robot.preview",
             "--perspective", primary->second.c_str(),
             "--wrist", wrist->second.c_str(),
             "--host", "0.0.0.0",
@@ -254,8 +250,14 @@ int run_robot_client(const fs::path& bundle_root,
                      const std::string& server_address,
                      const fs::path& venv) {
   const fs::path launcher = bundle_root / "robot_client/start.sh";
+  std::ifstream manifest_stream(bundle_root / "bundle.json");
+  json manifest;
+  if (manifest_stream) manifest_stream >> manifest;
+  const std::string policy = manifest.is_object() ? manifest.value("policy", "") : "";
+  const bool installed_client = description.calibration_id == "so-arm101" &&
+                                (policy == "act" || policy == "groot");
   const fs::path python = venv / "bin/python";
-  if (!fs::is_regular_file(launcher))
+  if (!installed_client && !fs::is_regular_file(launcher))
     throw std::runtime_error("bundle has no robot_client/start.sh; repack and redeploy it");
   if (!fs::exists(python))
     throw std::runtime_error("LeRobot environment not found at " + venv.string());
@@ -292,6 +294,19 @@ int run_robot_client(const fs::path& bundle_root,
     const std::string fps = std::to_string(description.fps);
     const std::string actions = std::to_string(description.actions_per_chunk);
     const std::string target = std::to_string(description.max_relative_target);
+    if (installed_client) {
+      ::execl(python.c_str(), python.c_str(), "-m", "polima.robot.so101",
+              "--bundle", bundle_root.c_str(),
+              "--robot-port", robot_port.c_str(),
+              primary_option.c_str(), primary->second.c_str(),
+              "--wrist-camera", wrist->second.c_str(),
+              "--server-address", server_address.c_str(),
+              "--fps", fps.c_str(),
+              "--max-relative-target", target.c_str(),
+              "--actions-per-chunk", actions.c_str(),
+              static_cast<char*>(nullptr));
+      ::_exit(127);
+    }
     ::execl("/bin/bash", "bash", launcher.c_str(),
             "--robot-port", robot_port.c_str(),
             primary_option.c_str(), primary->second.c_str(),

@@ -521,3 +521,51 @@ def test_studio_preflight_accepts_cli_calibration(tmp_path, monkeypatch):
     checks = {item["name"]: item["ok"] for item in runtime.preflight(run)}
     assert checks["follower-arm calibration"]
     assert runtime._calibration_path(run.bundle).parent != devkit
+
+
+def test_reset_under_service_restrictions_does_not_stop_running_process(tmp_path, monkeypatch):
+    from polima.studio.runtime import StudioRuntime
+    engine = StudioRuntime(tmp_path)
+    original = Path.read_text
+    def read(path, *args, **kwargs):
+        if str(path) == "/proc/self/status":
+            return "Name:\tpython\nNoNewPrivs:\t1\n"
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(engine, "server_status", lambda: pytest.fail("must reject before touching server"))
+    with pytest.raises(RuntimeError, match="authorized terminal"):
+        engine.reset()
+
+
+def test_child_logs_use_writable_studio_root(tmp_path, monkeypatch):
+    import sys
+
+    from polima.studio.runtime import StudioRuntime, StudioState
+    engine = StudioRuntime(tmp_path)
+    monkeypatch.setattr(engine, "_monitor", lambda *args: None)
+    engine._spawn("preview", [sys.executable, "-c", "from pathlib import Path; print(Path.cwd())"],
+                  StudioState.PREVIEWING, tmp_path / "output.log", {})
+    output, _ = engine._process.communicate(timeout=5)
+    assert output.strip() == str(tmp_path)
+
+
+def test_process_failure_reports_the_cli_message_not_the_detail_hint():
+    recent = ["polima robot: error: unknown policy 'polima'; available: ['act', 'groot']",
+              "  (for more detail, set POLIMA_LOG_LEVEL=DEBUG and run the command again)"]
+    assert process_failure("calibration", 1, recent) == f"calibration: {recent[0]}"
+
+
+@pytest.mark.parametrize("value, expected", [(12, 12), (12.0, 12), ("30", 30)])
+def test_run_config_sends_whole_degree_motion_limits(value, expected):
+    config = RunConfig.from_json({"bundle": "b", "task": "t", "robot_port": "/dev/arm",
+                                  "overhead_camera": "/dev/o", "wrist_camera": "/dev/w",
+                                  "max_relative_target": value})
+    assert config.max_relative_target == expected
+
+
+@pytest.mark.parametrize("value", [0, 12.5, 31, 90])
+def test_run_config_refuses_motion_limits_the_robot_would_refuse(value):
+    with pytest.raises(ValueError, match="max_relative_target"):
+        RunConfig.from_json({"bundle": "b", "task": "t", "robot_port": "/dev/arm",
+                             "overhead_camera": "/dev/o", "wrist_camera": "/dev/w",
+                             "max_relative_target": value})

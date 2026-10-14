@@ -18,6 +18,7 @@ from pathlib import Path
 
 from polima import role
 from polima.util.net import lan_address
+from polima.util.paths import package_root
 from polima.workbench.app import Workbench, folders, serve
 from polima.workbench.inputs import workspace
 
@@ -107,6 +108,13 @@ def _manage(action: str, argv: list[str]) -> int:
     return 1
 
 
+def default_models(on_board: bool) -> list[Path]:
+    """Discover checkpoints automatically only in a source checkout."""
+    root = package_root()
+    checkout = (root / "pyproject.toml").is_file() and (root / "src/polima/__init__.py").is_file()
+    return [root / "models"] if checkout and not on_board else []
+
+
 def needs_capability(argv: list[str]) -> None:
     return None
 
@@ -115,7 +123,7 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     parser = argparse.ArgumentParser(prog="polima workbench", description=__doc__)
     parser.add_argument("action", nargs="?", choices=("serve", "start", "stop", "status"), default="serve")
     parser.add_argument("--models", action="append", metavar="DIR",
-                        help="folder of trained checkpoints (repeatable; POLIMA_MODELS)")
+                        help="folder of trained checkpoints (repeatable; POLIMA_MODELS; default: checkout models/)")
     parser.add_argument("--bundles", action="append", metavar="DIR",
                         help="folder of compiled bundles (repeatable; POLIMA_BUNDLES)")
     parser.add_argument("--devkit", "--board", dest="board", action="append", metavar="ADDRESS",
@@ -138,7 +146,7 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     boards = args.board or [b for b in (os.environ.get("POLIMA_DEVKIT_URLS") or os.environ.get("POLIMA_BOARDS", "")).split(",") if b] or (
         ["localhost:8080"] if on_board else [])
     workbench = Workbench(
-        models=folders(args.models, "POLIMA_MODELS", []),
+        models=folders(args.models, "POLIMA_MODELS", default_models(on_board)),
         bundles=folders(args.bundles, "POLIMA_BUNDLES", bundles),
         boards=boards,
     )

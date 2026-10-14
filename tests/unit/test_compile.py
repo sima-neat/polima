@@ -894,3 +894,59 @@ def test_watchdog_waits_for_cleanup_and_restarts_after_output_changes(tmp_path, 
     monkeypatch.setattr(tensor.os, "_exit", lambda code: (exits.append((code, current[0])), stop.set()))
     targets[0]()
     assert exits == [(0, 600)]
+
+
+def _fake_compiler(home, folder):
+    bin_dir = home / folder / "model-compiler" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python").write_text("")
+    return bin_dir
+
+
+def test_the_current_sima_cli_location_wins_over_the_older_one(tmp_path, monkeypatch):
+    """An install left in ~/sima-sdk-extensions must not shadow a newer compiler."""
+    from polima.compile.toolchain import find_compiler_bin
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MODEL_COMPILER_BIN", raising=False)
+    older = _fake_compiler(tmp_path, "sima-sdk-extensions")
+    assert find_compiler_bin() == older
+    current = _fake_compiler(tmp_path, "sdk-extensions")
+    assert find_compiler_bin() == current
+
+
+def test_model_compiler_bin_overrides_both_default_locations(tmp_path, monkeypatch):
+    from polima.compile.toolchain import find_compiler_bin
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _fake_compiler(tmp_path, "sdk-extensions")
+    chosen = _fake_compiler(tmp_path, "elsewhere")
+    monkeypatch.setenv("MODEL_COMPILER_BIN", str(chosen))
+    assert find_compiler_bin() == chosen
+
+
+@pytest.mark.parametrize("finished", ["compiled", "reused", None])
+def test_failed_compile_explains_reusing_finished_graphs(monkeypatch, tmp_path, capsys, finished):
+    from polima.cli import compile as compile_cli
+
+    results = [GraphResult(name="decoder_action_tail", status="failed", note="compiler failed")]
+    if finished:
+        results.append(GraphResult(name="vision_backbone", status=finished))
+
+    class FailedDriver:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, only=None):
+            return results
+
+    monkeypatch.setattr("polima.compile.driver.Driver", FailedDriver)
+    monkeypatch.setattr("polima.compile.driver.sdk_version", lambda *a, **k: "2.1.3")
+    monkeypatch.setattr("polima.compile.toolchain.require_compiler_python",
+                        lambda *a, **k: tmp_path / "python")
+    monkeypatch.setattr("polima.compile.toolchain.compiler_env", lambda *a, **k: {})
+    (tmp_path / "retained").mkdir()
+    assert compile_cli.run(["--build-dir", str(tmp_path), "--stop-after", "compile"]) == 1
+    error = capsys.readouterr().err
+    assert "decoder_action_tail" in error
+    assert ("add --reuse" in error) == bool(finished)

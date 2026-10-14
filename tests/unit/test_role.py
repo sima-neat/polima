@@ -14,6 +14,7 @@ guarantee:
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 
@@ -113,8 +114,63 @@ def test_import_build_is_exempt_from_the_compiler_gate(monkeypatch, tmp_path, ca
     """
     monkeypatch.setattr(role, "detect", lambda: BOARD)
     # Reaches the command (and fails on the empty dir), rather than exiting 3.
-    with pytest.raises(FileNotFoundError):
-        cli_main.main(["compile", "--import-build", str(tmp_path / "absent")])
+    assert cli_main.main(["compile", "--import-build", str(tmp_path / "absent")]) == 1
+    assert "no such build directory" in capsys.readouterr().err
+
+
+def test_command_errors_print_one_line_without_traceback(monkeypatch, capsys):
+    from polima.cli import doctor
+    from polima.deploy.ssh import BoardError
+
+    def fail(argv, parent=None):
+        raise BoardError("cannot reach sima@devkit.invalid")
+
+    monkeypatch.setattr(doctor, "run", fail)
+    assert cli_main.main(["doctor"]) == 1
+    err = capsys.readouterr().err
+    assert "polima doctor: error: cannot reach sima@devkit.invalid" in err
+    assert "Traceback" not in err
+
+
+def test_debug_log_level_keeps_the_full_error(monkeypatch):
+    import logging
+
+    from polima.cli import doctor
+
+    def fail(argv, parent=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(doctor, "run", fail)
+    monkeypatch.setattr(cli_main, "setup", lambda level: None)
+    root = logging.getLogger()
+    previous = root.level
+    root.setLevel(logging.DEBUG)
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            cli_main.main(["doctor"])
+    finally:
+        root.setLevel(previous)
+
+
+def test_unknown_policy_names_the_available_ones():
+    from polima.policies.registry import get_policy
+
+    with pytest.raises(ImportError, match="unknown policy 'nope'; available:"):
+        get_policy("nope")
+
+
+def test_saved_compiler_location_satisfies_the_compile_gate(monkeypatch, tmp_path):
+    compiler = tmp_path / "model-compiler" / "bin"
+    compiler.mkdir(parents=True)
+    (compiler / "python").touch()
+    config_home = tmp_path / "config"
+    (config_home / "polima").mkdir(parents=True)
+    (config_home / "polima" / "config.json").write_text(
+        json.dumps({"paths": {"model_compiler_bin": str(compiler)}}))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MODEL_COMPILER_BIN", raising=False)
+    assert role.detect().can_compile
 
 
 def test_needs_capability_refines_by_argv():
@@ -131,3 +187,13 @@ def test_split_argv_finds_the_command():
         ["--dry-run"], "deploy", ["--bundle", "x"]
     )
     assert cli_main.split_argv(["--version"]) == (["--version"], None, [])
+
+
+@pytest.mark.parametrize('command', ['compile', 'deploy', 'run', 'robot', 'studio', 'workbench'])
+@pytest.mark.parametrize('flag', ['--help', '-h'])
+def test_help_does_not_require_runtime_capabilities(monkeypatch, capsys, command, flag):
+    monkeypatch.setattr(role, 'detect', lambda: BOARD)
+    with pytest.raises(SystemExit) as result:
+        cli_main.main([command, flag])
+    assert result.value.code == 0
+    assert 'usage: polima ' + command in capsys.readouterr().out

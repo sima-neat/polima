@@ -13,6 +13,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from polima.compile import toolchain
@@ -84,7 +85,10 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     parser.add_argument("--imports", action="store_true", help="only the import matrix")
     parser.add_argument("--no-devkit", "--no-board", dest="no_board", action="store_true",
                         help="skip the DevKit checks")
-    parser.add_argument("--all", action="store_true",
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--deploy-only", action="store_true",
+                       help="check a deployment host without compiler or training dependencies")
+    scope.add_argument("--all", action="store_true",
                         help="run every section, including ones this machine's role skips")
     args = parser.parse_args(argv)
 
@@ -100,19 +104,21 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     # not the flag, is the default: `polima doctor` should be clean on a healthy
     # SoM without anyone having to know which flags to pass.
     on_board = capabilities.role == role.BOARD
-    host_side = args.all or not on_board
+    host_side = (args.all or not on_board) and not args.deploy_only
 
     if everything:
         check_role(doc)
         check_host(doc, host_side)
     if everything or only_imports:
-        check_import_matrix(doc, config)
+        check_import_matrix(doc, config, include_compiler=not args.deploy_only)
     if everything:
         if host_side:
             check_compiler(doc, config)
         check_policies(doc)
         if host_side:
             check_datasets(doc, config)
+        elif args.deploy_only:
+            doc.record(table.SKIP, "compilation checks", "deployment-only installation")
         else:
             skip_host_sections(doc, capabilities)
     # On the board, probe this machine directly; ssh'ing to the configured board
@@ -196,57 +202,83 @@ def check_host(doc: Doctor, host_side: bool = True) -> None:
 
     if host_side:
         for module in ("torch", "lerobot", "onnx", "onnxruntime", "pyarrow"):
-            present = importlib.util.find_spec(module) is not None
-            doc.record(
-                table.OK if present else table.WARN,
-                f"host dependency {module}",
-                "installed in current environment" if present else "missing; run `make venv`",
-            )
+            if importlib.util.find_spec(module) is None:
+                doc.record(table.WARN, f"host dependency {module}", "missing; run `make venv`")
+                continue
+            # Installed is not the same as usable: a binary wheel built against
+            # another numpy is found by find_spec and still fails on import.
+            try:
+                importlib.import_module(module)
+            except Exception as error:  # noqa: BLE001 - any import failure is the finding
+                doc.record(
+                    table.FAIL, f"host dependency {module}",
+                    f"installed but fails to import ({error}); run `make venv`",
+                )
+            else:
+                doc.record(
+                    table.OK, f"host dependency {module}", "installed in current environment"
+                )
 
 
 # -------------------------------------------------------------- import matrix
 
 
-def check_import_matrix(doc: Doctor, config) -> None:
+def check_import_matrix(doc: Doctor, config, *, include_compiler: bool = True) -> None:
     doc.heading("import matrix (core modules must need only stdlib + numpy)")
     interpreters = {"current": sys.executable}
 
-    compiler_bin = _find_compiler_bin(config)
+    compiler_bin = _find_compiler_bin(config) if include_compiler else None
     if compiler_bin:
         interpreters["model-compiler"] = str(Path(compiler_bin) / "python")
 
-    source_root = str(Path(__file__).resolve().parents[2])
-    snippet = (
-        f"import sys; sys.path.insert(0, {source_root!r});\n"
-        + "import importlib\n"
-        + f"mods = {list(CORE_MODULES)!r}\n"
-        + "bad = []\n"
-        + "for m in mods:\n"
-        + "    try: importlib.import_module(m)\n"
-        + "    except Exception as e: bad.append(f'{m}: {type(e).__name__}: {e}')\n"
-        + "print('|'.join(bad))\n"
-    )
-
-    for label, python in interpreters.items():
-        if not python or not Path(python).exists():
-            doc.record(table.SKIP, f"imports [{label}]", "interpreter not found")
-            continue
-        result = subprocess.run(
-            [python, "-c", snippet], capture_output=True, text=True, timeout=120, check=False
+    # Expose only PoLiMa; another interpreter must use its own binary dependencies.
+    with tempfile.TemporaryDirectory(prefix="polima-imports-") as probe_root:
+        source_root = probe_root
+        (Path(probe_root) / "polima").symlink_to(Path(__file__).resolve().parents[1], target_is_directory=True)
+        snippet = (
+            f"import sys; sys.path.insert(0, {source_root!r});\n"
+            + "import importlib\n"
+            + f"mods = {list(CORE_MODULES)!r}\n"
+            + "bad = []\n"
+            + "for m in mods:\n"
+            + "    try: importlib.import_module(m)\n"
+            + "    except Exception as e: bad.append(f'{m}: {type(e).__name__}: {e}')\n"
+            + "print('|'.join(bad))\n"
         )
-        failures = result.stdout.strip()
-        version = _capture([python, "-c", "import sys;print(sys.version.split()[0])"]).strip()
-        if result.returncode != 0:
-            doc.record(table.FAIL, f"imports [{label}]", result.stderr.strip()[:160])
-        elif failures:
-            doc.record(table.FAIL, f"imports [{label}]", failures[:200])
-        else:
-            doc.record(
-                table.OK, f"imports [{label}]", f"py{version}: all {len(CORE_MODULES)} core modules"
+
+        for label, python in interpreters.items():
+            if not python or not Path(python).exists():
+                doc.record(table.SKIP, f"imports [{label}]", "interpreter not found")
+                continue
+            result = subprocess.run(
+                [python, "-c", snippet], capture_output=True, text=True, timeout=120, check=False
             )
+            failures = result.stdout.strip()
+            version = _capture([python, "-c", "import sys;print(sys.version.split()[0])"]).strip()
+            if result.returncode != 0:
+                doc.record(table.FAIL, f"imports [{label}]", result.stderr.strip()[:160])
+            elif failures:
+                doc.record(table.FAIL, f"imports [{label}]", failures[:200])
+            else:
+                doc.record(
+                    table.OK, f"imports [{label}]", f"py{version}: all {len(CORE_MODULES)} core modules"
+                )
 
 
 # -------------------------------------------------------------- compiler venv
+
+#: The ModelSDK release docs/install.md names for this version of PoLiMa.
+DOCUMENTED_MODELSDK = "2.1.3"
+
+
+def _older_than(version: str, reference: str) -> bool:
+    """Compare dotted release numbers; an unreadable version is not called old."""
+    def numbers(text: str) -> tuple[int, ...] | None:
+        parts = text.strip().split(".")[:3]
+        return tuple(int(part) for part in parts) if all(p.isdigit() for p in parts) else None
+
+    found, wanted = numbers(version), numbers(reference)
+    return found is not None and wanted is not None and found < wanted
 
 
 def check_compiler(doc: Doctor, config) -> None:
@@ -278,7 +310,16 @@ def check_compiler(doc: Doctor, config) -> None:
         [python, "-c",
          "from afe.apis.release_v1 import get_model_sdk_version as v;print(v())"]
     ).strip()
-    doc.record(table.OK if afe else table.FAIL, "afe / ModelSDK", afe or "import failed")
+    if afe and _older_than(afe, DOCUMENTED_MODELSDK):
+        # An install left behind by an earlier SDK is found before a newer one
+        # elsewhere on the search path, and nothing else would say so.
+        doc.record(
+            table.WARN, "afe / ModelSDK",
+            f"{afe} -- older than {DOCUMENTED_MODELSDK}, the version docs/install.md names; "
+            "set MODEL_COMPILER_BIN if a newer compiler is installed elsewhere",
+        )
+    else:
+        doc.record(table.OK if afe else table.FAIL, "afe / ModelSDK", afe or "import failed")
 
     # By IMPORT, never by exec: the llima-compile console script's shebang points
     # at /sdk-extensions/..., which exists only inside the SDK container.

@@ -86,7 +86,14 @@ def stop(session: BoardSession, board: BoardConfig, *, port: int | None = None,
 
     pid_text = session.capture(f"cat {shlex.quote(pid_file)} 2>/dev/null")
     if pid_text.strip().isdigit():
-        targets.append(int(pid_text))
+        pid = int(pid_text)
+        # The pid file survives reboots, so its pid may now belong to another program.
+        program = session.capture(
+            f"tr '\\0' '\\n' < /proc/{pid}/cmdline 2>/dev/null | head -n 1")
+        if program.strip().rsplit("/", 1)[-1] == "polima_server":
+            targets.append(pid)
+        else:
+            log.info("ignoring stale server pid file (pid %d is not polima_server)", pid)
     if port:
         for pid in listening_pids(session, port):
             if pid not in targets:
@@ -117,16 +124,11 @@ def stop(session: BoardSession, board: BoardConfig, *, port: int | None = None,
         time.sleep(0.5)
         alive = still
 
-    for pid in alive:
-        session.run(f"kill -9 {pid} 2>/dev/null || true", check=False)
-    session.run(f"rm -f {shlex.quote(pid_file)}", check=False)
-    # Worth the noise: SIGKILL is how the MLA's CMA pool gets fragmented, since
-    # the dead process never releases its DMA buffers. `start` recovers from the
-    # resulting MLA_LOAD_FAILED automatically, but not fragmenting it is better.
-    log.warning("server pid(s) %s did not exit within %.0fs; sent SIGKILL "
-                "(this leaks MLA buffers -- raise board.stop_timeout_s if it recurs)",
-                ", ".join(str(p) for p in alive), timeout)
-    return True
+    raise RuntimeError(
+        f"Policy server pid(s) {', '.join(str(p) for p in alive)} did not stop cleanly "
+        f"within {timeout:.0f}s; model switch aborted. Stop robot motion and recover "
+        "the accelerator from an authorized terminal."
+    )
 
 
 def start(

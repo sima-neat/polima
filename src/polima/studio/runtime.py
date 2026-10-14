@@ -424,6 +424,7 @@ class StudioRuntime:
                 "lease": {"held": lease_active, "expires_at": self._lease_expires},
                 "uptime_s": round(time.time() - self.started_at, 1),
             }
+        data["reset_unavailable_reason"] = self.reset_unavailable_reason()
         data["bundles"] = self.bundles()
         data["hardware"] = self.hardware()
         data["server"] = self.server_status()
@@ -556,7 +557,7 @@ class StudioRuntime:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             process = subprocess.Popen(
                 args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
+                text=True, bufsize=1, cwd=self.root,
                 start_new_session=True, env={**self._env(), **extra_env},
             )
             self._process = process
@@ -669,15 +670,24 @@ class StudioRuntime:
                 except OSError:
                     pass
 
-    def reset(self) -> dict[str, Any]:
-        """Return the board to a clean slate: no child, no server, fresh MLA.
+    @staticmethod
+    def reset_unavailable_reason() -> str | None:
+        try:
+            status = Path("/proc/self/status").read_text()
+        except OSError:
+            return None
+        if any(line.split() == ["NoNewPrivs:", "1"] for line in status.splitlines()):
+            return ("Accelerator recovery requires an authorized terminal because Studio "
+                    "cannot elevate privileges. Stop robot motion first, then run "
+                    "`polima server stop` and `sudo /usr/bin/fix_devkit_runtime.sh` "
+                    "on the DevKit.")
+        return None
 
-        Deliberately takes no lease. This is the control that gets reached for
-        when the studio is already wedged -- a run that will not die, a server
-        holding models after a failed load, an MLA whose CMA pool is too
-        fragmented to place an ELF -- and a recovery path that can itself be
-        blocked by the thing it recovers from is not a recovery path.
-        """
+    def reset(self) -> dict[str, Any]:
+        """Stop managed processes and recover the accelerator when permitted."""
+        reason = self.reset_unavailable_reason()
+        if reason:
+            raise RuntimeError(reason)
         steps: list[str] = []
 
         with self._lock:

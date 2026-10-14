@@ -121,6 +121,8 @@ def check(command: str, argv: list[str], module: object = None) -> str | None:
 
     returning the capability actually required, or None for "no gate".
     """
+    if "--help" in argv or "-h" in argv:
+        return None
     resolver = getattr(module, "needs_capability", None)
     capability = resolver(argv) if callable(resolver) else command
     if capability is None:
@@ -147,7 +149,14 @@ def detect() -> Capabilities:
     # So the real question is whether that venv is discoverable. Requiring an
     # in-process afe would refuse a compile that works. It is still accepted as
     # an alternative, since inside the SDK container afe *is* importable here.
-    can_compile = find_compiler_bin() is not None or (_installed("afe") and _installed("onnx"))
+    try:
+        from polima.config.loader import load
+
+        config = load()
+    except Exception:  # noqa: BLE001 - a bad config file is reported by the command itself
+        config = None
+    can_compile = (find_compiler_bin(config) is not None
+                   or (_installed("afe") and _installed("onnx")))
     can_deploy = bool(which("ssh") and which("rsync"))
     can_robot = _installed("flask") and _installed("cv2")
 

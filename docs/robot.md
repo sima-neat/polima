@@ -48,12 +48,12 @@ running until `polima server stop`.
 | Option | Use |
 |---|---|
 | `--slow` | GR00T at 15 commands/s with its slow motion settings. Default is 30 commands/s; `--fast` selects the default explicitly. |
-| `--fps N` | Override the command rate. Camera capture rates stay unchanged. |
+| `--fps N` | Override the command rate, 1 to 60. Camera capture rates stay unchanged. |
 | `--no-auto-complete` | Disable the gripper-sequence completion detector. |
 | `--bundle DIR` | Run a bundle other than the active one. |
 | `--robot-port PATH`, `--overhead-camera PATH`, `--wrist-camera PATH` | Skip the questions. |
 | `--task N` | Which of the bundle's instructions to use (default 0, the first). |
-| `--max-relative-target DEG` | How far one command may move a joint (default 12°). |
+| `--max-relative-target DEG` | How far one command may move a joint: a whole number of degrees from 1 to 30 (default 12). |
 | `--yes` | Do not ask for confirmation. |
 
 ## After each pick

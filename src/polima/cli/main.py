@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import logging
 import sys
 
 from polima import role
@@ -99,7 +100,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"polima {command}: {denial}", file=sys.stderr)
         return 3
 
-    return module.run(rest, parent=args)
+    try:
+        return module.run(rest, parent=args)
+    except KeyboardInterrupt:
+        print(f"\npolima {command}: interrupted", file=sys.stderr)
+        return 130
+    except (OSError, ValueError, RuntimeError, ImportError, KeyError) as exc:
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            raise
+        message = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
+        # Studio reports the last output line containing words like "error": this one, not the hint.
+        print(f"polima {command}: error: {message}", file=sys.stderr)
+        print("  (for more detail, set POLIMA_LOG_LEVEL=DEBUG and run the command again)",
+              file=sys.stderr)
+        return 1
 
 
 def _version() -> str:

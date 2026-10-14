@@ -78,7 +78,7 @@ def resolve_roots(
     """Accept either a bare dataset name (resolved under `parent`) or a path.
 
     `polima train --dataset rcwb_f_t` and
-    `polima train --dataset-root /ml_datasets/rcwb_f_t` both work.
+    `polima train --dataset-root /path/to/dataset` both work.
     """
     parent = Path(parent)
     roots: list[Path] = []

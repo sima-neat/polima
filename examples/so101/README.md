@@ -18,7 +18,7 @@ white basket. A model trained for this task is not a general-purpose robot polic
 
 A precompiled bundle does not require the training dataset, PyTorch checkpoint
 or ModelSDK on the customer's host. To compile your own checkpoint, use the
-[compiler guide](../../docs/your-own-model.md#groot) first.
+[compiler guide](../../docs/your-own-model.md#gr00t) first.
 
 ## Reference models
 
@@ -32,9 +32,9 @@ precision. N1.7 was trained with a native 40-step architecture and supervised
 | GR00T N1.6 | [simaai/GR00T-N1.6-SO101-PickPlace](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace) |
 | GR00T N1.7 | [simaai/GR00T-N1.7-SO101-PickPlace](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace) |
 
-Both packages are uploaded as private previews. Access requires an authorized
-Hugging Face account. They contain compiled models, not training checkpoints
-or datasets. Follow each model card for download instructions.
+These packages contain compiled models, not training checkpoints or datasets.
+If access is restricted, run `hf auth login` with an authorized Hugging Face
+account before downloading.
 
 Uploaded revisions: [N1.6 `dea49322`](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace/commit/dea49322cdc48384da4a34b6ecde5b16d92f99a9)
 and [N1.7 `fc452a54`](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace/commit/fc452a5463eba524c317d9fa5c05f8d9b7cc795c).
@@ -82,10 +82,25 @@ to the Workbench host, not the laptop displaying the page.
 Expected result: the connection check succeeds. An authentication failure needs
 the correct account/key or first-time password setup; it is not a model error.
 
-## 2. Deploy the bundle
+## 2. Download and deploy the bundle
+
+Download N1.7 on the host without needing PoLiMa for the download:
+
+```bash
+python -m pip install "huggingface_hub>=0.34,<1"
+hf download simaai/GR00T-N1.7-SO101-PickPlace --local-dir GR00T-N1.7-SO101-PickPlace
+cd GR00T-N1.7-SO101-PickPlace
+sha256sum --check SHA256SUMS
+```
+
+For N1.6, replace `N1.7` with `N1.6` in the command and directory name.
+The deployable bundle is the **`bundle/` subdirectory**, not the download root.
+On macOS, use `shasum -a 256 --check SHA256SUMS` to verify the files.
+
 
 Run in the host terminal (Ubuntu/WSL on Windows). Enter the downloaded bundle
-folder containing `bundle.json`, and the complete DevKit login when prompted:
+folder containing `bundle.json` (`./bundle` after the download above), and the
+complete DevKit login when prompted:
 
 ```bash
 printf "Bundle folder: "

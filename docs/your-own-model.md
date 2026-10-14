@@ -28,11 +28,13 @@ views; if a camera moves, the arm misses.
 ## 2. Train
 
 **ACT:** train with LeRobot's `lerobot-train --policy.type=act` on your
-dataset. PoLiMa compiles the `pretrained_model` folder of a checkpoint.
+dataset. PoLiMa compiles the `pretrained_model` folder of a checkpoint and
+reads the dataset in LeRobot format v3.0, as `lerobot-record` writes it.
 
 **GR00T N1.6 or N1.7:** fine-tune with NVIDIA's
 [Isaac-GR00T](https://github.com/NVIDIA/Isaac-GR00T) code. GR00T needs a
-LeRobot dataset in format v2.0 or v2.1 with a `meta/modality.json`; see
+LeRobot dataset in format v2.0 or v2.1 (convert a v3.0 recording with
+Isaac-GR00T's `scripts/lerobot_conversion`) with a `meta/modality.json`; see
 [groot.md](groot.md#preparing-your-dataset) for the file and the settings our
 models were trained with.
 
@@ -48,9 +50,10 @@ polima compile --policy act \
     --build-dir ~/polima-builds/my-task -j 3
 ```
 
-PoLiMa finds the training dataset from the checkpoint; add
-`--dataset-root /path/to/dataset` if it has moved. `-j 3` compiles three parts
-at once, each needing about 1.6 GB of memory. The bundle is written to
+PoLiMa reads the training dataset's path from the checkpoint. That is the path
+on the computer that trained it, so add `--dataset-root /path/to/dataset` if
+the checkpoint or the dataset has moved since. `-j 3` compiles three parts at
+once, each needing about 1.6 GB of memory. The bundle is written to
 `outputs/bundles/<bundle-id>/` and the command prints its id.
 
 ### GR00T

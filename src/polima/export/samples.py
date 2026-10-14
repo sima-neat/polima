@@ -31,6 +31,23 @@ def resolve_dataset(checkpoint: str | Path, override: str | Path | None = None) 
     return config["dataset"]["repo_id"], root.resolve()
 
 
+def require_local_dataset(root: Path, overridden: bool) -> None:
+    """Fail here when the dataset is not on disk.
+
+    LeRobot treats a missing root as "download it" and asks the Hub for the
+    checkpoint's repo_id, which for a locally recorded dataset ends in an
+    unrelated 404.
+    """
+    if (root / "meta" / "info.json").is_file():
+        return
+    source = "--dataset-root" if overridden else "the checkpoint's train_config.json"
+    raise FileNotFoundError(
+        f"no LeRobot dataset at {root} (from {source}; meta/info.json is missing). "
+        "The checkpoint records the path used on the training machine; "
+        "pass --dataset-root to say where the dataset is now"
+    )
+
+
 def _processor_overrides(
     checkpoint: str | Path, config_filename: str
 ) -> dict[str, dict[str, str]]:
@@ -139,6 +156,7 @@ def load(policy, checkpoint: str | Path, observation_keys: Sequence[str],
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     repo_id, root = resolve_dataset(checkpoint, dataset_root)
+    require_local_dataset(root, overridden=bool(dataset_root))
     # A checkpoint may rename raw dataset features before the model sees them
     # (e.g. overhead/wrist to camera1/camera2).  The
     # graph module names processed tensors; dataset lookup must use the inverse

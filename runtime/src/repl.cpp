@@ -22,6 +22,7 @@
 #include "polima/robot.hpp"
 #include "polima/service.hpp"
 #include "polima/socket.hpp"
+#include "polima/smoke.hpp"
 
 namespace polima {
 namespace {
@@ -84,29 +85,6 @@ std::vector<std::string> split(const std::string& line) {
   std::vector<std::string> parts;
   for (std::string word; stream >> word;) parts.push_back(word);
   return parts;
-}
-
-// Cosine and mean absolute error, the same pair the host-side smoke test uses.
-struct Agreement {
-  double cosine = 0.0;
-  double mean_abs = 0.0;
-  double max_abs = 0.0;
-};
-
-Agreement compare(const std::vector<float>& actual, const std::vector<float>& expected) {
-  Agreement result;
-  double dot = 0.0, left = 0.0, right = 0.0, total = 0.0;
-  for (size_t index = 0; index < actual.size(); ++index) {
-    dot += static_cast<double>(actual[index]) * expected[index];
-    left += static_cast<double>(actual[index]) * actual[index];
-    right += static_cast<double>(expected[index]) * expected[index];
-    const double gap = std::fabs(actual[index] - expected[index]);
-    total += gap;
-    result.max_abs = std::max(result.max_abs, gap);
-  }
-  result.cosine = (left > 0 && right > 0) ? dot / (std::sqrt(left) * std::sqrt(right)) : 0.0;
-  result.mean_abs = actual.empty() ? 0.0 : total / actual.size();
-  return result;
 }
 
 void print_help() {
@@ -676,7 +654,10 @@ int repl(const fs::path& store, const std::string& preselect, bool verbose) {
           continue;
         }
         const auto reference = read_f32(expected, last_result.size());
-        const auto agreement = compare(last_result, reference);
+        const auto state = staging.find("state");
+        const auto agreement = compare_fixture(
+            fs::path(store) / loaded, last_result, reference,
+            state == staging.end() ? std::vector<float>{} : state->second);
         // The bar travels with the bundle: a quantized VLA cannot meet ACT's
         // 0.01, and hardcoding one threshold here would either fail every
         // quantized VLA build or stop catching a genuinely broken ACT one.

@@ -362,6 +362,11 @@ int device_command(int argc, char** argv, const polima::Args& args) {
   if (args.has("--max-relative-target"))
     description.max_relative_target =
         args.get_int("--max-relative-target", description.max_relative_target);
+  // Same limits as polima.robot.so101: beyond them the per-move clamp no longer protects the arm.
+  if (description.max_relative_target <= 0 || description.max_relative_target > 30)
+    throw std::runtime_error("--max-relative-target must be between 1 and 30 degrees");
+  if (description.fps < 1 || description.fps > 60)
+    throw std::runtime_error("--fps must be between 1 and 60");
   [[maybe_unused]] const int control_lock = acquire_control_lock(root);
 
   std::string robot_port = args.get("--robot-port", "");
@@ -460,8 +465,13 @@ int main(int argc, char** argv) {
             const std::string action = value;
             return action == "calibrate" || action == "export-improvement-manifest";
           });
-      if (command == "studio" || command == "help" || robot_python)
+      if (command == "--version" || command == "doctor" || command == "workbench" ||
+          command == "compile" || command == "deploy" || command == "run" ||
+          command == "studio" || command == "help" || robot_python)
         return run_python_command(command, argc, argv);
+      if (!command.empty() && command.front() != '-' && command != "server" &&
+          command != "robot" && command != "activate")
+        throw std::runtime_error("unknown command: " + command + "; use polima --help");
     }
 
     polima::Args args(argc, argv);

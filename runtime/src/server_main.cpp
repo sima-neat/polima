@@ -107,6 +107,7 @@ int main(int argc, char** argv) {
       const int client = accept(server, nullptr, nullptr);
       // EINTR here is the stop signal arriving; `continue` re-tests g_running.
       if (client < 0) continue;
+      polima::set_io_timeout(client, 10);
 
       RequestHeader header{};
       try {

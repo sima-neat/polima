@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <fstream>
 #include <thread>
+#include <stdexcept>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -21,7 +22,23 @@ namespace {
 fs::path pid_path(const fs::path& root) { return root / "var" / "run" / "server.pid"; }
 fs::path log_path(const fs::path& root) { return root / "var" / "log" / "server.log"; }
 
-bool alive(int pid) { return pid > 0 && ::kill(pid, 0) == 0; }
+bool alive(int pid) {
+  if (pid <= 0 || ::kill(pid, 0) != 0) return false;
+  std::ifstream status("/proc/" + std::to_string(pid) + "/stat");
+  std::string stat;
+  std::getline(status, stat);
+  const auto end = stat.rfind(')');
+  // An exited child may remain a zombie until its parent reaps it.
+  return end == std::string::npos || end + 2 >= stat.size() || stat[end + 2] != 'Z';
+}
+
+// The pid file survives reboots, so its pid may now belong to another program.
+bool is_server(int pid) {
+  std::ifstream command("/proc/" + std::to_string(pid) + "/cmdline", std::ios::binary);
+  std::string program;
+  std::getline(command, program, char{0});
+  return fs::path(program).filename() == "polima_server";
+}
 
 bool listening(int port) {
   const int socket = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -42,7 +59,7 @@ ServerState server_state(const fs::path& root) {
   ServerState state;
   std::ifstream stream(pid_path(root));
   if (stream) stream >> state.pid;
-  state.running = alive(state.pid);
+  state.running = alive(state.pid) && is_server(state.pid);
   if (!state.running) state.pid = 0;
 
   std::error_code code;
@@ -92,7 +109,10 @@ bool stop_server(const fs::path& root, double timeout_s) {
   }
   // A server mid-inference will not see SIGTERM until the MLA call returns, so
   // the wait above is not optional -- but it cannot be unbounded either.
-  if (alive(state.pid)) ::kill(state.pid, SIGKILL);
+  if (alive(state.pid)) {
+    throw std::runtime_error("Policy server did not stop cleanly; model switch aborted. "
+                             "Stop robot motion and recover the accelerator from an authorized terminal.");
+  }
 
   std::error_code code;
   fs::remove(pid_path(root), code);
@@ -102,6 +122,11 @@ bool stop_server(const fs::path& root, double timeout_s) {
 int start_server(const fs::path& root, const fs::path& bundle, int port) {
   const fs::path binary = root / "bin" / "polima_server";
   if (!fs::exists(binary)) return 0;
+  // Otherwise the new server fails to bind while the readiness check below
+  // connects to the other process and reports success.
+  if (listening(port))
+    throw std::runtime_error("port " + std::to_string(port) +
+                             " is already in use by another process; stop it or pass --port N");
 
   std::error_code code;
   fs::create_directories(log_path(root).parent_path(), code);

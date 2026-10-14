@@ -47,6 +47,32 @@ int main() {
     expect(assignment.assigned.count("wrist") && assignment.assigned.at("wrist") == "/dev/wrist",
            std::string(name) + ": the Sonix camera is the wrist camera");
   }
+  const auto root = bundle("launcher", R"({"calibration_id":"so-arm101"})");
+  std::ofstream(root / "bundle.json") << R"({"policy":"act"})";
+  fs::create_directories(root / "robot_client");
+  std::ofstream(root / "robot_client/start.sh") << "#!/bin/sh\nexit 77\n";
+  fs::create_directories(root / "venv/bin");
+  const auto python = root / "venv/bin/python";
+  std::ofstream(python) << "#!/bin/sh\n[ \"$1\" = -m ] && [ \"$2\" = polima.robot.so101 ] && [ \"$3\" = --bundle ]\n";
+  fs::permissions(python, fs::perms::owner_all);
+  polima::RobotDescription description;
+  description.calibration_id = "so-arm101";
+  polima::CameraAssignment assigned;
+  assigned.assigned = {{"overhead", "/dev/front"}, {"wrist", "/dev/wrist"}};
+  for (const auto* policy : {"act", "groot"}) {
+    std::ofstream(root / "bundle.json") << "{\"policy\":\"" << policy << "\"}";
+    expect(polima::run_robot_client(root, description, "/dev/arm", assigned,
+                                    "127.0.0.1:8092", root / "venv") == 0,
+           std::string(policy) + ": installed SO101 launcher receives bundle path");
+  }
+  std::ofstream(root / "bundle.json") << R"({"policy":"smolvla"})";
+  expect(polima::run_robot_client(root, description, "/dev/arm", assigned,
+                                  "127.0.0.1:8092", root / "venv") == 77,
+         "unsupported policy retains its bundle launcher");
+  std::ofstream(root / "robot_client/preview_robot_cameras.py") << "raise RuntimeError('old preview')\n";
+  std::ofstream(python) << "#!/bin/sh\n[ \"$1\" = -m ] && [ \"$2\" = polima.robot.preview ]\n";
+  expect(polima::run_camera_preview(root, assigned, "MJPG", 8081, root / "venv") == 0,
+         "preview uses installed module instead of legacy bundle script");
   if (!failures) std::cout << "robot tests passed\n";
   return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

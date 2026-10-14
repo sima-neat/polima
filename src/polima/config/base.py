@@ -100,8 +100,8 @@ class PathsConfig:
     dataset_parent: Path | None = None
     outputs: Path | None = None             # None -> polima/outputs
     build_root: Path | None = None          # None -> <outputs>/build
-    # $HOME/sima-sdk-extensions/model-compiler/bin -- overridable by
-    # $MODEL_COMPILER_BIN.
+    # $HOME/sdk-extensions/model-compiler/bin, then the older
+    # $HOME/sima-sdk-extensions -- overridable by $MODEL_COMPILER_BIN.
     model_compiler_bin: Path | None = None
     lerobot_dir: Path | None = None         # host clone used for training
     # GR00T compile (`polima compile --policy groot`): each model family's export

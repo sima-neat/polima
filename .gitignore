@@ -16,6 +16,7 @@ outputs/
 *.f32
 *.npz
 *_mpk.tar.gz
+/models/
 
 # Local site config (board address etc.); .polima.yaml.example is tracked.
 .polima.yaml

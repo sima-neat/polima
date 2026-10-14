@@ -6,8 +6,8 @@
 //
 // What the DevKit needs to know about the robot -- camera roles, which physical
 // device fills each, joint order, fps -- travels in plan.json's `robot` section,
-// written from RobotSpec at pack time. That is what lets this do discovery
-// without a PolicySpec, and the DevKit deliberately has no polima Python.
+// written from RobotSpec at pack time. Native discovery reads this contract;
+// the installed Python package supplies preview and supported SO-101 clients.
 //
 // The control loop itself is not here and cannot be: driving an SO-101 means
 // lerobot, which is Python. polima-cli launches it in the DevKit's

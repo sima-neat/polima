@@ -103,14 +103,23 @@ A model load failure (`MLA_LOAD_FAILED`) can require accelerator recovery.
 DevKit runtime services and can interrupt other accelerator workloads. End
 robot runs and other accelerator work before recovery.
 
-To recover manually, run on the DevKit:
+Studio's system service cannot elevate privileges. In that service, **Reset
+runtime** is unavailable and shows the terminal recovery instructions. This
+restriction is checked before stopping any running process.
+
+Server shutdown waits up to 30 seconds for a clean exit. If the server does not
+exit, the stop reports "did not stop cleanly" and leaves the server running.
+
+To recover, stop any robot run, then run on the DevKit:
 
 ```bash
-polima server stop
-sudo /usr/bin/fix_devkit_runtime.sh
+polima server stop                     # if this reports "did not stop cleanly", continue:
+kill -9 "$(cat /media/nvme/polima/var/run/server.pid)"
+sudo /usr/bin/fix_devkit_runtime.sh    # resets the accelerator
 ```
 
-or from the host: `polima deploy --reset-mla`.
+When the server still stops normally, `polima deploy --reset-mla` from the host
+does the stop and the reset in one step.
 
 The reset needs `sudo` on the DevKit. PoLiMa does not store a password. Either
 allow passwordless `sudo` for `/usr/bin/fix_devkit_runtime.sh` and

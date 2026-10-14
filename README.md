@@ -33,9 +33,8 @@ After installation, run `polima workbench start` and open its printed URL.
 Download the SO-101 pick-and-place bundles from Hugging Face:
 [GR00T N1.6](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace) and
 [GR00T N1.7](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace). Both produce 32 actions per plan.
-The repositories are private previews; access requires an authorized Hugging Face
-account. Follow each model card for download instructions and
-[the SO-101 guide](examples/so101/README.md) for setup.
+Follow the [download and setup instructions](examples/so101/README.md#2-download-and-deploy-the-bundle).
+If repository access is restricted, sign in with an authorized Hugging Face account.
 
 ## Reference robot setup
 

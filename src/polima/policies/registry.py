@@ -94,6 +94,10 @@ def _import_policy(name: str) -> None:
                 f"policy {name!r} is a built-in but is not implemented yet "
                 f"(ported policies: {registered()})"
             ) from first_error
+        if getattr(first_error, "name", None) == f"polima.policies.{name}":
+            raise ImportError(
+                f"unknown policy {name!r}; available: {available()}"
+            ) from first_error
         raise
 
 

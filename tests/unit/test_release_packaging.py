@@ -32,3 +32,22 @@ def test_customer_document_links_resolve():
             if ":" in link or link.startswith("#"):
                 continue
             assert (document.parent / link.split("#", 1)[0]).exists(), (document, link)
+
+
+def test_upgrade_replaces_shadow_package_and_keeps_backup(tmp_path):
+    installer = (ROOT / "scripts/install_polima_modalix.sh").read_text()
+    migration = installer.split("<<'PY_PACKAGE'\n", 1)[1].split("\nPY_PACKAGE", 1)[0]
+    root = tmp_path / "install"
+    shadow = root / "python/polima"
+    shadow.mkdir(parents=True)
+    (shadow / "__init__.py").write_text("old version")
+    installed = tmp_path / "site-packages/polima"
+    installed.mkdir(parents=True)
+    (installed / "__main__.py").write_text("new version")
+    subprocess.run([sys.executable, "-", str(root), str(installed)], input=migration, text=True, check=True)
+    assert shadow.resolve() == installed
+    backups = list((root / "var/backups").glob("python-polima-*"))
+    assert len(backups) == 1
+    assert (backups[0] / "__init__.py").read_text() == "old version"
+    subprocess.run([sys.executable, "-", str(root), str(installed)], input=migration, text=True, check=True)
+    assert len(list((root / "var/backups").glob("python-polima-*"))) == 1

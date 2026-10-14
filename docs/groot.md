@@ -9,14 +9,14 @@ Reference for GR00T N1.6 and N1.7 bundles. The step-by-step guides are
 | You have | Start here | Dataset needed? |
 |---|---|---|
 | A compiled PoLiMa GR00T bundle | [Install and run on SO-101](../examples/so101/README.md) | No training dataset; the bundle includes inference fixtures and model metadata. |
-| A fine-tuned N1.6 or N1.7 checkpoint | [Prepare the compiler and import your model](your-own-model.md#groot) | Yes, compatible representative observations and metadata for export. |
+| A fine-tuned N1.6 or N1.7 checkpoint | [Prepare the compiler and import your model](your-own-model.md#gr00t) | Yes, compatible representative observations and metadata for export. |
 | A base model and demonstrations | NVIDIA's [SO100/SO101 training example](https://github.com/NVIDIA/Isaac-GR00T/blob/main/examples/SO100/README.md) | Training happens upstream; PoLiMa starts from the resulting checkpoint. |
 
 A compiled package is specific to its model version, embodiment, camera mapping,
 action horizon and precision. A different SO-101 checkpoint is a new build.
 The reference compiled bundles are on Hugging Face: [GR00T N1.6](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace) and
 [GR00T N1.7](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace).
-These are private previews requiring an authorized account. Download instructions
+If repository access is restricted, sign in with an authorized account. Download instructions
 are in the model cards; uploaded revisions are recorded in the
 [SO-101 guide](../examples/so101/README.md#reference-models).
 
@@ -54,7 +54,7 @@ refinement passes and runs four of its layers per accelerator call.
 
 `polima compile --policy groot` takes a GR00T N1.6 or N1.7 checkpoint and its
 LeRobot training dataset and produces one bundle. Setup and the command are in
-[your-own-model.md](your-own-model.md#groot). The stages:
+[your-own-model.md](your-own-model.md#gr00t). The stages:
 
 | Stage | What it does |
 |---|---|
@@ -97,7 +97,10 @@ Our SO-101 models reach 0.9987 to 0.9995 in mixed precision.
 
 ## Preparing your dataset
 
-Record with LeRobot in dataset format **v2.0 or v2.1**. GR00T needs a
+GR00T reads LeRobot dataset format **v2.0 or v2.1**. `lerobot-record` writes
+format v3.0; convert it with Isaac-GR00T's
+[`scripts/lerobot_conversion`](https://github.com/NVIDIA/Isaac-GR00T/tree/main/scripts/lerobot_conversion)
+(`convert_v3_to_v2.py`, set up as its README describes). GR00T also needs a
 `meta/modality.json` that names the parts of the robot state and the cameras:
 
 - **state and action:** two groups, `single_arm` (the arm joints) then

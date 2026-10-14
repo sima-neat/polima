@@ -1,3 +1,4 @@
+import { initialConfig } from "./selection.js";
 import { render } from "preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
 import "./styles.css";
@@ -61,20 +62,7 @@ function Studio() {
     setSnapshot(data);
     setConfig(old => {
       if (old.bundle) return old;
-      const saved = data.last_run_config || {};
-      const savedExists = data.bundles.some(bundle => bundle.id === saved.bundle);
-      const bundle = (savedExists && saved.bundle) || data.bundles.find(item => item.active)?.id || data.bundles[0]?.id || "";
-      const selected = data.bundles.find(item => item.id === bundle);
-      return {
-        ...blank,
-        ...(savedExists ? saved : {}),
-        bundle,
-        autocomplete: selected?.policy === "groot" ? null : (savedExists ? saved.autocomplete ?? null : null),
-        task: (savedExists && saved.task) || selected?.default_task || "",
-        robot_port: saved.robot_port || data.hardware.arms[0] || "",
-        overhead_camera: saved.overhead_camera || data.hardware.cameras.find(c => /046d|c920/i.test(c)) || data.hardware.cameras[0] || "",
-        wrist_camera: saved.wrist_camera || data.hardware.cameras.find(c => /sonix|cam1/i.test(c)) || data.hardware.cameras[1] || "",
-      };
+      return initialConfig(data, blank);
     });
   });
   const refreshLists = () => Promise.all([
@@ -224,7 +212,8 @@ function Studio() {
           <div class="cardhead"><div><span class="step-label">STEP 3</span><h3>Preflight</h3><p>Review preflight results before enabling motion.</p></div></div>
           <div class="run-summary"><div><span>Policy</span><b>{selected?.policy?.toUpperCase() || "—"}</b></div><div><span>Task</span><b>{config.task || "—"}</b></div><div><span>State</span><b class={`text-${active}`}>{snapshot.fault || active}</b></div></div>
           {!arming ? <button class="primary wide" disabled={!canPrepare || !config.bundle || !config.task} onClick={arm}>Run Preflight Check</button> : <div class="armed"><div><b>Preflight complete</b><small>Authorization expires in 15 seconds</small></div>{arming.preflight.map(check => <span class={check.ok ? "ok" : "bad"} key={check.name}>{check.ok ? "✓" : "×"} {check.name}</span>)}<button class="danger wide" onClick={start}>Confirm And Start Robot</button></div>}
-          <div class="stop-row"><button disabled={!controller || !["running", "previewing"].includes(active)} onClick={() => stop(false)}>Graceful Stop</button><button class="halt" onClick={() => stop(true)}>Emergency Halt</button><button onClick={resetSystem} title="Stop everything, reset the accelerator, clear the controller lease">Reset runtime</button></div>
+          <div class="stop-row"><button disabled={!controller || !["running", "previewing"].includes(active)} onClick={() => stop(false)}>Graceful Stop</button><button class="halt" onClick={() => stop(true)}>Emergency Halt</button><button disabled={Boolean(snapshot.reset_unavailable_reason)} onClick={resetSystem} title={snapshot.reset_unavailable_reason || "Stop everything, reset the accelerator, clear the controller lease"}>Reset runtime</button></div>
+          {snapshot.reset_unavailable_reason && <p class="hint">{snapshot.reset_unavailable_reason}</p>}
         </section>
       </div>
 

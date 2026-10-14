@@ -325,3 +325,72 @@ def test_groot_rejects_unrelated_source_directory(storage, tmp_path, monkeypatch
     monkeypatch.setenv('POLIMA_GROOT17_SOURCE', str(tmp_path))
     checks = inputs.prerequisites('GR00T N1.7')
     assert next(row for row in checks if row['label'].endswith('Isaac-GR00T source'))['ok'] is False
+
+
+def test_shutdown_acknowledges_before_stopping_server(storage, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv('POLIMA_WORKBENCH_INSTANCE', 'test-instance')
+    monkeypatch.setattr(app.secrets, 'token_urlsafe', lambda _: 'test-token')
+    server = app.serve(app.Workbench([], [], []), port=0)
+    events = []
+
+    class ImmediateThread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(app, 'threading', SimpleNamespace(Thread=ImmediateThread))
+    monkeypatch.setattr(server, 'shutdown', lambda: events.append('shutdown'))
+    handler = server.RequestHandlerClass.__new__(server.RequestHandlerClass)
+    handler.server = server
+    handler.path = '/api/v1/shutdown'
+    handler.headers = {'Cookie': 'polima_workbench_csrf=test-token',
+                       'X-CSRF-Token': 'test-token', 'Content-Length': '2'}
+    handler.rfile = io.BytesIO(b'{}')
+    handler.wfile = io.BytesIO()
+    handler.send = lambda *args: events.append('response')
+    try:
+        handler.do_POST()
+    finally:
+        server.server_close()
+    assert events == ['response', 'shutdown']
+
+
+@pytest.mark.parametrize('layout,on_board,expected', [
+    ('checkout', False, True), ('checkout', True, False),
+    ('wheel', False, False), ('unrelated', False, False),
+])
+def test_default_checkpoint_discovery_layout(tmp_path, monkeypatch, layout, on_board, expected):
+    from polima.cli import workbench
+    from polima.workbench.app import walk
+
+    monkeypatch.setattr(workbench, 'package_root', lambda: tmp_path)
+    if layout != 'wheel':
+        (tmp_path / 'pyproject.toml').write_text('[project]\nname="polima"\n')
+    if layout == 'checkout':
+        (tmp_path / 'src/polima').mkdir(parents=True)
+        (tmp_path / 'src/polima/__init__.py').touch()
+    roots = workbench.default_models(on_board)
+    assert roots == ([tmp_path / 'models'] if expected else [])
+    assert walk(roots, 'config.json') == []
+    checkpoint = tmp_path / 'models/run/checkpoints/100000/pretrained_model'
+    checkpoint.mkdir(parents=True)
+    (checkpoint / 'config.json').write_text('{}')
+    assert walk(roots, 'config.json') == ([checkpoint] if expected else [])
+
+
+@pytest.mark.parametrize('explicit,environment,expected', [
+    (['chosen'], 'environment', ['chosen']),
+    (None, 'first:second', ['first', 'second']),
+    (None, '', ['models']),
+])
+def test_checkpoint_folder_override_precedence(monkeypatch, explicit, environment, expected):
+    from pathlib import Path
+
+    from polima.workbench.app import folders
+
+    monkeypatch.setenv('POLIMA_MODELS', environment)
+    assert folders(explicit, 'POLIMA_MODELS', [Path('models')]) == [Path(p) for p in expected]

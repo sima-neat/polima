@@ -619,8 +619,10 @@ def serve(workbench: Workbench, host: str = "127.0.0.1", port: int = 8686) -> Th
                 if path == "/api/v1/shutdown" and os.environ.get("POLIMA_WORKBENCH_INSTANCE"):
                     if (workbench.jobs.snapshot() or {}).get("status") == "running":
                         raise ValueError("A workflow is running. Wait for it to finish before stopping Workbench.")
-                    reply = {"ok": True}
+                    self.send(b'{"ok": true}', "application/json")
+                    self.wfile.flush()
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
+                    return
                 elif path == "/api/v1/prerequisites":
                     reply = {"checks": prerequisites(str(body.get("policy", "")), str(body.get("dataset", "")))}
                 elif path == "/api/v1/imports":

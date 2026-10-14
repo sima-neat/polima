@@ -205,9 +205,19 @@ Plan::Plan(const std::filesystem::path& bundle_root, bool verbose)
     wire_.version = wire.value("version", 1u);
     wire_.default_port = wire.value("default_port", 0);
     wire_.response_elements = wire.value("response_elements", size_t{0});
-    for (const auto& tensor : wire.value("request_tensors", json::array()))
-      wire_.request_tensors.emplace_back(tensor.at("name").get<std::string>(),
-                                         tensor.at("elements").get<size_t>());
+    for (const auto& tensor : wire.value("request_tensors", json::array())) {
+      const auto name = tensor.at("name").get<std::string>();
+      const auto elements = tensor.at("elements").get<size_t>();
+      // The server reads requests straight into these buffers.
+      const auto declared = buffer_sizes_.find(name);
+      if (declared == buffer_sizes_.end())
+        throw std::runtime_error("wire request tensor '" + name + "' is not a declared buffer");
+      if (elements > declared->second)
+        throw std::runtime_error("wire request tensor '" + name + "' has " +
+                                 std::to_string(elements) + " elements but its buffer holds " +
+                                 std::to_string(declared->second));
+      wire_.request_tensors.emplace_back(name, elements);
+    }
   }
 
   sidecars_ = Sidecars(root_ / "constants");

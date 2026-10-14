@@ -4,7 +4,7 @@ PoLiMa never stores a machine-specific path. Everything resolves from this
 file's own location or from an environment variable:
 
   POLIMA_OUTPUTS          build and bundle outputs; default <checkout>/outputs.
-  POLIMA_DATASET_PARENT   where LeRobot datasets live; default /ml_datasets.
+  POLIMA_DATASET_PARENT   optional parent directory for LeRobot datasets.
 """
 
 from __future__ import annotations

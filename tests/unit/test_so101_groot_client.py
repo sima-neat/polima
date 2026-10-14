@@ -117,7 +117,13 @@ def test_launcher_keeps_existing_lerobot_control_configuration(tmp_path):
         server_address="127.0.0.1:8093",
         max_relative_target=12,
     )
+    from pathlib import Path
+
+    from polima.robot import so101
+
     env, argv = client_configuration(tmp_path, spec, 1, bundle.tasks[1], args)
+    assert Path(argv[0]).resolve() == Path(so101.__file__).parent / "assets/so101/run_robot_client_with_live_view.py"
+    assert env["ACT_REST_POSITION"] == str(tmp_path / "robot_client/robot_rest_position.json")
     assert env["ACT_SOM_DIRECT"] == "1"
     assert env["POLIMA_TASK_ID"] == "1"
     assert "--task=second task" in argv
@@ -128,7 +134,25 @@ def test_launcher_keeps_existing_lerobot_control_configuration(tmp_path):
     assert cameras["overhead"]["index_or_path"] == "/dev/front"
     assert cameras["wrist"]["index_or_path"] == "/dev/wrist"
     args.actions_per_chunk = 17
-    with pytest.raises(ValueError, match="horizon"):
+    with pytest.raises(ValueError, match="--actions-per-chunk"):
+        client_configuration(tmp_path, spec, 0, bundle.tasks[0], args)
+
+
+@pytest.mark.parametrize("field, value, message", [
+    ("max_relative_target", -5, "--max-relative-target"),
+    ("max_relative_target", 0, "--max-relative-target"),
+    ("max_relative_target", 1000, "--max-relative-target"),
+    ("max_relative_target", float("nan"), "--max-relative-target"),
+    ("fps", 0, "--fps"),
+    ("fps", 500, "--fps"),
+])
+def test_unsafe_motion_limits_are_refused(tmp_path, field, value, message):
+    bundle, spec = make_bundle(tmp_path)
+    args = Namespace(actions_per_chunk=16, fps=30, robot_port="/dev/arm",
+                     front_camera="/dev/front", wrist_camera="/dev/wrist",
+                     server_address="127.0.0.1:8093", max_relative_target=12)
+    setattr(args, field, value)
+    with pytest.raises(ValueError, match=message):
         client_configuration(tmp_path, spec, 0, bundle.tasks[0], args)
 
 @pytest.mark.parametrize("control_fps", [10, 15, 30])

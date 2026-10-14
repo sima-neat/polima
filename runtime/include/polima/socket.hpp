@@ -3,6 +3,7 @@
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <cstdint>
@@ -31,6 +32,15 @@ inline void write_all(int fd, const void* source, size_t size) {
     bytes += count;
     size -= static_cast<size_t>(count);
   }
+}
+
+// Bounds how long one connection may stall a blocking read or write, so an idle
+// or vanished client cannot hold a single-threaded server indefinitely.
+inline void set_io_timeout(int fd, int seconds) {
+  timeval timeout{};
+  timeout.tv_sec = seconds;
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 }
 
 inline int listen_on(int port, int backlog = 4) {
@@ -72,8 +82,20 @@ class Args {
   }
 
   int get_int(const std::string& key, int fallback) const {
-    for (int index = 1; index + 1 < argc_; ++index)
-      if (key == argv_[index]) return std::stoi(argv_[index + 1]);
+    for (int index = 1; index + 1 < argc_; ++index) {
+      if (key != argv_[index]) continue;
+      const std::string text = argv_[index + 1];
+      size_t used = 0;
+      int value = 0;
+      try {
+        value = std::stoi(text, &used);
+      } catch (const std::exception&) {
+        used = 0;
+      }
+      if (used == 0 || used != text.size())
+        throw std::runtime_error(key + " expects a whole number, got '" + text + "'");
+      return value;
+    }
     return fallback;
   }
 
