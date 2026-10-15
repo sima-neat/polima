@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/images/polima-logo.svg" alt="PoLiMa logo: a robot holding the Neat stars" width="180"></p>
+<p align="center"><img src="docs/images/polima-logo.png" alt="PoLiMa logo: a robot holding the Neat stars" width="180"></p>
 
 # PoLiMa
 
