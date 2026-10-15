@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/images/polima-logo.svg" alt="PoLiMa logo: a robot holding the Neat stars" width="180"></p>
+
 # PoLiMa
 
 **Po**licy + Si**Ma**: compile robot policies (ACT, NVIDIA GR00T) for the SiMa.ai

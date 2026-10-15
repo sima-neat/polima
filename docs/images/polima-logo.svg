@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="PoLiMa logo: a robot holding the Neat stars">
+  <title>PoLiMa</title>
+  <g stroke="#1F2A2E" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <!-- arms raised to the stars -->
+    <path d="M176 330 L120 290 L112 220" fill="none" stroke-width="22"/>
+    <path d="M176 330 L120 290 L112 220" fill="none" stroke="#F07A1A" stroke-width="12"/>
+    <path d="M336 330 L392 300 L404 252" fill="none" stroke-width="22"/>
+    <path d="M336 330 L392 300 L404 252" fill="none" stroke="#F07A1A" stroke-width="12"/>
+    <circle cx="120" cy="290" r="13" fill="#F4F6F7"/>
+    <circle cx="392" cy="300" r="13" fill="#F4F6F7"/>
+    <!-- grippers -->
+    <path d="M96 222 L104 196 M128 222 L120 196" fill="none" stroke-width="10"/>
+    <path d="M390 252 L396 234 M418 252 L412 234" fill="none" stroke-width="10"/>
+    <!-- antenna -->
+    <line x1="256" y1="150" x2="256" y2="118"/>
+    <circle cx="256" cy="108" r="12" fill="#F07A1A"/>
+    <!-- head -->
+    <rect x="176" y="150" width="160" height="118" rx="34" fill="#F4F6F7"/>
+    <rect x="198" y="178" width="116" height="60" rx="26" fill="#1F2A2E"/>
+    <!-- body -->
+    <rect x="186" y="284" width="140" height="122" rx="28" fill="#F4F6F7"/>
+    <rect x="232" y="268" width="48" height="20" fill="#D5DBDE"/>
+    <rect x="160" y="414" width="192" height="30" rx="15" fill="#D5DBDE"/>
+  </g>
+  <!-- eyes -->
+  <circle cx="232" cy="208" r="10" fill="#7FE0C2"/>
+  <circle cx="280" cy="208" r="10" fill="#7FE0C2"/>
+  <!-- chest light -->
+  <circle cx="256" cy="345" r="16" fill="#F07A1A"/>
+  <!-- the Neat stars, held in the grippers -->
+  <polygon fill="#C0E8DB" points="112.0,48.0 95.0,115.0 112.0,132.0"/>
+  <polygon fill="#2A9C4F" points="112.0,48.0 129.0,115.0 112.0,132.0"/>
+  <polygon fill="#A4CC2D" points="196.0,132.0 129.0,115.0 112.0,132.0"/>
+  <polygon fill="#010F0E" points="196.0,132.0 129.0,149.0 112.0,132.0"/>
+  <polygon fill="#D26728" points="112.0,216.0 129.0,149.0 112.0,132.0"/>
+  <polygon fill="#D1CEE6" points="112.0,216.0 95.0,149.0 112.0,132.0"/>
+  <polygon fill="#010F0E" points="28.0,132.0 95.0,149.0 112.0,132.0"/>
+  <polygon fill="#5998DD" points="28.0,132.0 95.0,115.0 112.0,132.0"/>
+  <polygon fill="#C0E8DB" points="404.0,150.0 395.0,187.0 404.0,196.0"/>
+  <polygon fill="#2A9C4F" points="404.0,150.0 413.0,187.0 404.0,196.0"/>
+  <polygon fill="#A4CC2D" points="450.0,196.0 413.0,187.0 404.0,196.0"/>
+  <polygon fill="#010F0E" points="450.0,196.0 413.0,205.0 404.0,196.0"/>
+  <polygon fill="#D26728" points="404.0,242.0 413.0,205.0 404.0,196.0"/>
+  <polygon fill="#D1CEE6" points="404.0,242.0 395.0,205.0 404.0,196.0"/>
+  <polygon fill="#010F0E" points="358.0,196.0 395.0,205.0 404.0,196.0"/>
+  <polygon fill="#5998DD" points="358.0,196.0 395.0,187.0 404.0,196.0"/>
+</svg>
