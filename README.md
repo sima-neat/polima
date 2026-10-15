@@ -1,9 +1,13 @@
-<p align="center"><img src="docs/images/polima-logo.png" alt="PoLiMa logo: a robot holding the Neat stars" width="180"></p>
+<div align="center">
 
-# PoLiMa
+<img src="docs/images/polima-logo.png" alt="PoLiMa logo: a robot holding the Neat stars" width="200">
+
+# PoLiMa: Running Robot Policies on SiMa.ai Modalix
 
 **Po**licy + Si**Ma**: compile robot policies (ACT, NVIDIA GR00T) for the SiMa.ai
 Modalix DevKit and drive a robot arm with them.
+
+</div>
 
 <img src="docs/images/so101-pick-and-place.gif" alt="SO-101 arm running pick-and-place over a white basket (2x speed)" width="100%">
 
