@@ -1,7 +1,6 @@
 """Episode spec grammar.
 
-The legacy bash implementations accept "9-0" and silently select nothing; these
-tests pin the corrected behaviour.
+A reversed range such as "9-0" is an error, not an empty selection.
 """
 
 from __future__ import annotations
@@ -44,7 +43,6 @@ def test_parse_invalid(spec):
 
 
 def test_backwards_range_is_an_error_not_an_empty_selection():
-    # ACT/train_act_local.sh's episodes_json() accepts this and yields [].
     with pytest.raises(EpisodeSpecError, match="runs backwards"):
         parse_episode_spec("9-0")
 

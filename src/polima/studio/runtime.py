@@ -139,7 +139,7 @@ class StudioRuntime:
 
             # Takeover, not refusal. One controller at a time is a safety
             # property -- two tabs driving one arm is genuinely unsafe -- but
-            # refusing the second browser outright made a stale tab, a reload
+            # refusing the second browser outright would let a stale tab, a reload
             # in a different window, or a second machine lock everyone out for
             # the rest of the 30s lease with no way to recover but waiting.
             # The newest claimant wins and the previous token stops validating,
@@ -192,22 +192,19 @@ class StudioRuntime:
             "--robot-port", config.robot_port, "--overhead-camera", config.overhead_camera,
             "--wrist-camera", config.wrist_camera,
         ]
-        autocomplete = "1" if config.autocomplete else "0"
+        policy = self._policy_of(config.bundle)
+        enabled = config.autocomplete if config.autocomplete is not None else policy != "groot"
+        autocomplete = "1" if enabled else "0"
         env = {
             "POLIMA_TASK": config.task,
             "POLIMA_LIVE_PREVIEW": "1" if config.preview else "0",
             "POLIMA_AUTO_REPEAT": "1" if config.repeat else "0",
             "POLIMA_AUTO_COMPLETE": autocomplete,
-            # The launcher maps POLIMA_AUTO_REPEAT but hardcodes its own
-            # AUTO_COMPLETE as `${<POLICY>_AUTO_COMPLETE:-1}` -- no POLIMA_
-            # spelling -- so the toggle was silently ignored and the arm always
-            # ran the grasp-release detector. That `:-` does honour an inherited
-            # value, so set the policy's own name too. The launchers live in the
-            # legacy stacks, which PoLiMa must not edit, so this is the fix that
-            # does not fork them. POLIMA_AUTO_COMPLETE above is for whenever
-            # they do grow the generic spelling.
-            f"{self._policy_of(config.bundle).upper()}_AUTO_COMPLETE": autocomplete,
+            "POLIMA_FAST": "0" if config.speed == "slow" else "1",
+            "ACT_AUTO_COMPLETE": autocomplete,
+            f"{policy.upper()}_AUTO_COMPLETE": autocomplete,
         }
+        args.append("--slow" if config.speed == "slow" else "--fast")
         if config.fps is not None:
             args += ["--fps", str(config.fps)]
         if config.actions_per_chunk is not None:
@@ -232,7 +229,7 @@ class StudioRuntime:
 
     def start_calibration(self, bundle: str, robot_port: str) -> dict[str, Any]:
         self._require_idle()
-        bundle_path = Path(self._bundle_path(bundle))
+        self._bundle_path(bundle)
         if not Path(robot_port).exists():
             raise ValueError("follower arm is not connected")
         calibration_dir = self._calibration_path(bundle).parent
@@ -390,13 +387,19 @@ class StudioRuntime:
         return {"output": result.stdout.strip()}
 
     def preflight(self, config: RunConfig) -> list[dict[str, Any]]:
-        calibration = self._calibration_path(config.bundle)
+        from polima.robot.so101 import arm_calibration_dir
+
+        try:
+            arm_calibration_dir(self._calibration_path(config.bundle).parent.parent)
+            calibrated = True
+        except FileNotFoundError:
+            calibrated = False
         checks = [
             ("bundle", Path(self._bundle_path(config.bundle)).exists()),
             ("follower arm", Path(config.robot_port).exists()),
             ("overhead camera", Path(config.overhead_camera).exists()),
             ("wrist camera", Path(config.wrist_camera).exists()),
-            ("follower-arm calibration", calibration.is_file()),
+            ("follower-arm calibration", calibrated),
             ("native control binary", self.command.exists() and os.access(self.command, os.X_OK)),
         ]
         return [{"name": name, "ok": ok} for name, ok in checks]
@@ -421,6 +424,7 @@ class StudioRuntime:
                 "lease": {"held": lease_active, "expires_at": self._lease_expires},
                 "uptime_s": round(time.time() - self.started_at, 1),
             }
+        data["reset_unavailable_reason"] = self.reset_unavailable_reason()
         data["bundles"] = self.bundles()
         data["hardware"] = self.hardware()
         data["server"] = self.server_status()
@@ -465,10 +469,9 @@ class StudioRuntime:
     def _bundle_tasks(path: Path, metadata: dict[str, Any]) -> list[str]:
         """Return the task instructions shipped with a policy bundle.
 
-        Newer bundle manifests may declare ``tasks`` or ``default_task``
-        directly.  Existing deployed bundles predate that field but already
-        contain the authoritative launcher default as ``POLIMA_TASK``.  Reading
-        both formats keeps Studio correct across in-place upgrades.
+        A bundle manifest may declare ``tasks`` or ``default_task`` directly;
+        otherwise the launcher default ``POLIMA_TASK`` is authoritative. Both are
+        read.
         """
         candidates: list[Any] = []
         declared = metadata.get("tasks", [])
@@ -554,7 +557,7 @@ class StudioRuntime:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             process = subprocess.Popen(
                 args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
+                text=True, bufsize=1, cwd=self.root,
                 start_new_session=True, env={**self._env(), **extra_env},
             )
             self._process = process
@@ -667,15 +670,24 @@ class StudioRuntime:
                 except OSError:
                     pass
 
-    def reset(self) -> dict[str, Any]:
-        """Return the board to a clean slate: no child, no server, fresh MLA.
+    @staticmethod
+    def reset_unavailable_reason() -> str | None:
+        try:
+            status = Path("/proc/self/status").read_text()
+        except OSError:
+            return None
+        if any(line.split() == ["NoNewPrivs:", "1"] for line in status.splitlines()):
+            return ("Accelerator recovery requires an authorized terminal because Studio "
+                    "cannot elevate privileges. Stop robot motion first, then run "
+                    "`polima server stop` and `sudo /usr/bin/fix_devkit_runtime.sh` "
+                    "on the DevKit.")
+        return None
 
-        Deliberately takes no lease. This is the control that gets reached for
-        when the studio is already wedged -- a run that will not die, a server
-        holding models after a failed load, an MLA whose CMA pool is too
-        fragmented to place an ELF -- and a recovery path that can itself be
-        blocked by the thing it recovers from is not a recovery path.
-        """
+    def reset(self) -> dict[str, Any]:
+        """Stop managed processes and recover the accelerator when permitted."""
+        reason = self.reset_unavailable_reason()
+        if reason:
+            raise RuntimeError(reason)
         steps: list[str] = []
 
         with self._lock:
@@ -712,7 +724,12 @@ class StudioRuntime:
             self._lease_expires = 0.0
         steps.append("cleared controller lease and arming tokens")
 
-        self.emit("state", state=self.state.value, reason="reset to a clean slate")
+        if not report.ok:
+            self.fault = "Accelerator reset failed. Run the DevKit recovery procedure from an authorized terminal."
+            self.emit("state", state=self.state.value, reason=self.fault)
+            raise RuntimeError(self.fault + " " + report.detail)
+        self.fault = None
+        self.emit("state", state=self.state.value, reason="runtime reset completed")
         result = {"ok": report.ok, "state": self.state.value, "steps": steps,
                   "mla": report.to_dict()}
         return result

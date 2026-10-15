@@ -1,9 +1,4 @@
-"""Logging setup.
-
-The legacy tree has none: bare `logging.getLogger(__name__)` in the ACT/SmolVLA
-robot clients, bare module-level `logging.info(...)` in the GR00T one, and
-training output captured only by shell `tee`. One place to configure it.
-"""
+"""Logging setup, configured in one place."""
 
 from __future__ import annotations
 

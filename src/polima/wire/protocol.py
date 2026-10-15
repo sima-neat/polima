@@ -1,22 +1,15 @@
-"""The SoM wire protocol, derived from WireSpec instead of hardcoded.
+"""The DevKit wire protocol, derived from WireSpec instead of hardcoded.
 
-ACT/scripts/act_som_client.py and SmolVLA/scripts/smolvla_som_client.py each
-hardcode `HEADER = struct.Struct("<IIII")` and `RESPONSE = struct.Struct("<IIIIfI")`
-plus their own `_recv_exact`, image coercion and >1.0 scaling heuristic. Same
-wire format, written twice, drifting.
-
-Here the packers come from the spec, so one Protocol serves every policy and the
-C++ side reads the same description out of bundle.json.
-
-Byte-exactness with act_som_client.py is a unit test, not an aspiration --
-tests/unit/test_wire.py compares against captured bytes.
+The packers come from the spec, so one Protocol serves every policy and the
+C++ side reads the same description out of bundle.json. Byte-exactness is
+pinned by tests/unit/test_wire.py against captured bytes.
 """
 
 from __future__ import annotations
 
 import struct
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 import numpy as np
 
@@ -101,7 +94,7 @@ class Protocol:
         return ResponseHeader(magic, version, request_id, status, float(latency_ms), count)
 
     def check_response(self, header: ResponseHeader, request_id: int) -> None:
-        """The same three assertions both legacy clients make, in one place."""
+        """Check a response header: magic, version, request id, status and count."""
         if (header.magic, header.version) != (self.spec.magic, self.spec.version):
             raise ProtocolError(
                 f"protocol mismatch: got magic={header.magic:#x} version={header.version}, "
@@ -159,9 +152,7 @@ class Protocol:
 def coerce_image(image: np.ndarray, shape: tuple[int, int, int]) -> np.ndarray:
     """Accept CHW or HWC, return HWC float32 in [0, 1].
 
-    The `>1.0 => /255` heuristic is taken verbatim from
-    ACT/scripts/act_som_client.py:50-51; both legacy clients implement it
-    separately.
+    An image whose maximum exceeds 1.0 is taken as 0..255 and divided by 255.
     """
     array = np.asarray(image)
     height, width, channels = shape

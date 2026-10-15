@@ -131,3 +131,36 @@ def test_studio_never_deletes_the_active_bundle(tmp_path: Path) -> None:
 def test_default_task_index_selects_from_tasks(tmp_path: Path) -> None:
     manifest = json.loads(bundle_files()["act-demo-1234/bundle.json"])
     assert StudioRuntime._bundle_tasks(tmp_path, manifest)[0] == "Stack the blocks."
+
+
+@pytest.fixture
+def arm_calibration():
+    names = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
+    return {name: {"id": index, "drive_mode": 0, "homing_offset": -120,
+                   "range_min": 100, "range_max": 3900}
+            for index, name in enumerate(names, 1)}
+
+
+def test_calibration_upload_accepts_so101_registers(arm_calibration):
+    arm_calibration["wrist_roll"].update(range_min=0, range_max=4095, drive_mode=1)
+    assert transfer.validate_calibration(arm_calibration, None) == arm_calibration
+
+
+@pytest.mark.parametrize("field,value", [
+    ("id", 2), ("id", True), ("drive_mode", 2), ("drive_mode", False),
+    ("range_min", -1), ("range_min", 3900), ("range_min", 4000),
+    ("range_max", 4096), ("homing_offset", 0.5),
+])
+def test_calibration_upload_rejects_invalid_registers(arm_calibration, field, value):
+    arm_calibration["shoulder_pan"][field] = value
+    with pytest.raises(ValueError):
+        transfer.validate_calibration(arm_calibration, None)
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_calibration_upload_requires_all_six_joints(arm_calibration, replace):
+    joint = arm_calibration.pop("gripper")
+    if replace:
+        arm_calibration["another_joint"] = joint
+    with pytest.raises(ValueError, match="six SO-101"):
+        transfer.validate_calibration(arm_calibration, None)

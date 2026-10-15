@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PoLiMa · Setup guide</title>
+<style>body{background:#0b1221;color:#e5edf8;font:16px/1.65 system-ui;margin:0}main{max-width:850px;margin:40px auto;padding:24px}h1,h2{line-height:1.2}h2{margin-top:48px;color:#49e3d3}a{color:#49e3d3}pre{background:#15213a;padding:20px;border:1px solid #304360;border-radius:12px;overflow:auto}code{font-size:.9em}p,li{color:#b9c9df}nav{display:flex;gap:24px;flex-wrap:wrap}section{scroll-margin-top:24px}</style>
+<main><a href="/">← Workbench</a><h1>Get started with PoLiMa</h1><p>Import a policy, compile for Modalix and deploy to your DevKit.</p>
+<nav><a href="#host">Workbench</a><a href="#inputs">Model and dataset</a><a href="#compiler">Compiler setup</a><a href="#devkit">DevKit setup</a></nav>
+<section id="host"><h2>1. Set up Workbench</h2><p>Workbench runs on Linux, macOS or Windows with WSL. Compilation requires a Linux x86_64 build host with the licensed SiMa ModelSDK. A Mac can open that host's Workbench in a browser and upload files from its own disk.</p>
+<p>From a PoLiMa source checkout, using Python 3.10–3.12:</p><pre>python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[deploy]"
+polima workbench start
+polima workbench status
+polima workbench stop</pre><p>The start command prints the browser address. For access from another computer on your trusted network, use <code>--host 0.0.0.0</code> and the Workbench host's address. This server has no user-login system; keep it on a trusted network or use an SSH tunnel. A foreground session uses <code>polima workbench serve</code> and stops with Ctrl-C.</p></section>
+<section id="inputs"><h2>2. Import a model and dataset</h2><p>In <strong>Models → Upload checkpoint</strong>, select the complete extracted checkpoint folder. Include <code>config.json</code>, all model <code>.safetensors</code> files and the processor, normalization and metadata files saved by training. Supported policies are ACT, GR00T N1.6 and GR00T N1.7. Detecting the folder does not establish compiler compatibility.</p>
+<p>Use <strong>Upload dataset</strong> for an extracted LeRobot dataset. Browser uploads copy files to the Workbench host. Each upload is limited to 64 GiB. If files already exist on that host, use <code>--models /path/to/checkpoints</code> and enter the dataset path on the Compile page.</p>
+<pre>dataset/
+  meta/
+    info.json
+    ... dataset metadata
+  data/
+    ... episode tables
+  videos/
+    ... videos referenced by those tables</pre>
+<p><strong>Why is data required?</strong> PoLiMa's GR00T export uses observations to prepare model inputs, numerical reference checks and bundle metadata. Quantized compilation also uses calibration samples. The current GR00T pipeline requires a dataset even for BF16; this does not mean BF16 universally requires quantization calibration. Compilation does not retrain your policy.</p>
+<p><strong>What should I prepare?</strong> Start with the LeRobot dataset used to train the checkpoint. Keep its camera names, image dimensions, joint ordering, action representation and normalization metadata unchanged. GR00T currently accepts dataset formats v2.0 and v2.1, including <code>meta/modality.json</code>. Include all metadata and referenced episode/video files. A folder of unrelated images is insufficient.</p>
+<p>For a smaller dataset, use your training pipeline's dataset tooling to export complete representative episodes with consistent metadata. Include the lighting, viewpoints, robot states and tasks the model will encounter. Do not remove videos or edit the dataset version label to bypass validation. PoLiMa does not currently provide a general dataset converter or a universally valid minimum sample count.</p>
+<p><strong>GR00T N1.7 minimum:</strong> the current exporter requires at least three complete episodes, each with 16 valid observations after accounting for image history and action horizon. Include their referenced videos and metadata.</p>
+<p>Calibration and evaluation serve different purposes. Use separate held-out episodes to evaluate generalization. Numerical agreement with PyTorch measures fidelity; it is not robot task success.</p></section>
+<section id="compiler"><h2>3. Configure compilation</h2><p>Install the licensed ModelSDK on the Linux build host. The compiler currently targets ModelSDK 2.1.3. Follow <code>docs/install.md</code> and <code>docs/your-own-model.md</code> in your checkout to prepare the model-specific dependencies and weights.</p>
+<pre>export MODEL_COMPILER_BIN=/path/to/model-compiler/bin
+# For a GR00T N1.7 checkpoint:
+export POLIMA_GROOT17_PYTHON=/path/to/groot-environment/bin/python
+export POLIMA_GROOT17_SOURCE=/path/to/Isaac-GR00T</pre>
+<p>For N1.6 use <code>POLIMA_GROOT16_PYTHON</code> and <code>POLIMA_GROOT16_SOURCE</code>. These paths must point to your installed environment and matching source version; creating an empty folder is insufficient. N1.6 export needs its GPU dependencies. ACT needs the compatible LeRobot environment described in the installation guide.</p>
+<p>Compiler dependencies are installed once on the Linux build host. A laptop used only to open Workbench and upload folders needs no ModelSDK or GR00T environment.</p>
+<p>For N1.7, download the matching backbone using the instructions in <code>docs/your-own-model.md</code>, then set <code>POLIMA_GROOT17_BACKBONE</code> to its complete local directory. A cached Hub model ID is also accepted; its cache must remain accessible to Workbench.</p>
+<p>Save the settings above once. This merges supplied paths into <code>~/.config/polima/config.json</code> (or <code>$XDG_CONFIG_HOME/polima/config.json</code>) and preserves other settings:</p>
+<pre>python3 - &lt;&lt;&#x27;PYCONFIG&#x27;
+import json, os
+from pathlib import Path
+
+path = Path(os.environ.get(&quot;XDG_CONFIG_HOME&quot;) or Path.home() / &quot;.config&quot;) / &quot;polima/config.json&quot;
+config = json.loads(path.read_text()) if path.exists() else {}
+paths = config.setdefault(&quot;paths&quot;, {})
+for key in (&quot;groot16_python&quot;, &quot;groot16_source&quot;, &quot;groot17_python&quot;, &quot;groot17_source&quot;, &quot;groot17_backbone&quot;):
+    value = os.environ.get(&quot;POLIMA_&quot; + key.upper())
+    if value:
+        paths[key] = value
+if os.environ.get(&quot;MODEL_COMPILER_BIN&quot;):
+    paths[&quot;model_compiler_bin&quot;] = os.environ[&quot;MODEL_COMPILER_BIN&quot;]
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(config, indent=2) + &quot;\n&quot;)
+print(path)
+PYCONFIG</pre>
+<p>Environment variables override saved values. Saved paths do not install dependencies. Restart Workbench on the build host to apply settings:</p>
+<pre>polima workbench stop
+polima workbench start</pre>
+<p>Select the checkpoint and dataset, then choose <strong>Check prerequisites</strong>. These checks confirm basic paths and dataset structure; dependency compatibility, weights and model execution are checked during the build. Successful compilation does not prove robot readiness.</p></section>
+<section id="devkit"><h2>4. Install PoLiMa on your DevKit</h2><p>Connecting over SSH does not install PoLiMa. On a new Modalix DevKit with supported SiMa runtime software, obtain the PoLiMa source checkout and run its installer on the DevKit:</p>
+<pre>git clone https://github.com/sima-neat/polima.git
+cd polima
+./scripts/install_polima_modalix.sh</pre>
+<p>Repository access and internet access are required. The installer prepares the Python environment, runtime and Studio. Review <code>docs/install.md</code> for the supported SDK versions and required privileges. With systemd available, it installs <code>polima-studio.service</code>; installing the Python package alone does not create this service. The installer leaves Studio stopped.</p>
+<pre>polima studio start
+polima studio status
+polima studio stop</pre><p>Open the address printed by <code>studio start</code> from your laptop. If the service is missing, complete the DevKit installer and inspect its output. To run Studio in the foreground after its dependencies are installed, use <code>polima studio serve</code>; Ctrl-C stops it.</p>
+<h2>5. Connect and deploy</h2><p>In Workbench → DevKits, enter <code>username@devkit-address</code>. SSH originates on the Workbench host, so that host must be able to reach the DevKit.</p><p>Use an SSH key already authorized on the DevKit, or enter its password to authorize the Workbench host's key. A key path refers to the Workbench host, not the laptop displaying the page. Password setup creates a key if necessary and adds its public key to the DevKit; passwords are not saved.</p>
+<p><strong>Permission denied</strong> means SSH rejected authentication. Check the username and password, or select the private key whose public key the DevKit trusts. A successful connection is saved only after SSH verification. Runtime installation and Studio availability are separate checks.</p><p>After installing PoLiMa, deploy a compiled bundle and open Studio. Configure cameras, robot calibration and safety settings before any robot run. Deployment alone does not validate arm motion.</p></section></main></html>

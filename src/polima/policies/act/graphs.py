@@ -1,9 +1,5 @@
 """ACT's torch side: the module decomposition that becomes six ONNX graphs.
 
-Ported from `ACT/scripts/export_act_modalix.py` with the arithmetic unchanged --
-the ONNX these produce has to be the same, because the ELFs compiled from it are
-the reproduction target.
-
 This module needs torch and lerobot, so it is imported only by the export stage
 running in PoLiMa's self-contained CPU venv. Everything else in
 `polima.policies.act` stays numpy-only; `GraphSpec.builder` names the classes
@@ -28,9 +24,9 @@ Two details are load bearing:
   board would be pure cost, and passing them as inputs would add two large
   tensors to every MLA call.
 * The **action head is padded from its real width to 16 outputs**. The MLA's last
-  dimension is tiled; both the SO-101's 6 lanes and MyCobot's 7 lanes are sliced
-  back out by the profile-aware runtime. `decoder_action_tail` therefore keeps
-  the same (1, 1, 100, 16) hardware boundary for both robots.
+  dimension is tiled; the profile's real action lanes (6 for the SO-101) are
+  sliced back out by the profile-aware runtime, so `decoder_action_tail` keeps
+  the same (1, 1, 100, 16) hardware boundary for every robot profile.
 """
 
 from __future__ import annotations
@@ -183,8 +179,8 @@ class EncoderStemLayer(nn.Module):
         # Keep this as its own statement. Inlining it into the cat below is
         # numerically identical but emits the state Gemm *after* the latent's
         # Unsqueeze instead of before it, because torch.onnx traces in evaluation
-        # order. The graph is equivalent and the ELF is not byte-identical, which
-        # breaks the reproduction check in docs/compile.md.
+        # order. The graph is equivalent but the ELF is not byte-identical, so a
+        # rebuild would no longer reproduce the same ELF.
         state_token = self.state(state)
         hidden = torch.cat(
             [latent.unsqueeze(1), state_token.unsqueeze(1), camera0, camera1], dim=1
@@ -240,7 +236,7 @@ class DecoderActionTail(nn.Module):
 class EncoderStemPacked(nn.Module):
     """Takes the host-packed (1, 1, 601, 512) buffer.
 
-    Token 0 carries the profile's 6 or 7 state values; tokens 1..300 and
+    Token 0 carries the profile's state values; tokens 1..300 and
     301..600 are the two cameras. The board packs exactly this layout, so the
     slicing here and `RuntimePlan`'s pack offsets must agree.
     """
@@ -269,7 +265,7 @@ class EncoderLayerRank4(nn.Module):
 
 
 class DecoderActionRank4(nn.Module):
-    """Decoder tail with the 6- or 7-wide action head padded to 16 outputs.
+    """Decoder tail with the profile's action head padded to 16 outputs.
 
     The padding is a hardware fit, not a model change: rows beyond the real
     action dimension are zeroed weights and zeroed bias, so they contribute
@@ -477,13 +473,11 @@ def verify_chain(onnx_dir: Path, fixture_path: Path, report_path: Path,
 
     `stage_dir` also dumps every graph's input and output. Those are what turn
     "the actions are wrong" into "graph 3 is wrong": the board can replay one ELF
-    against its recorded input and compare. The legacy build trees carried these
-    files, but they came from a separate devkit validation run rather than from
-    the export, so a freshly built tree silently lacked them. Every value here is
-    already computed, so writing them costs nothing.
+    against its recorded input and compare. Every value here is already computed,
+    so writing them costs nothing.
 
     Note these are **onnxruntime** values, unlike `expected_normalized_actions.f32`
-    which is PyTorch. See docs/export.md -- the two differ by ~1.4e-06.
+    which is PyTorch -- the two differ by ~1.4e-06.
     """
     import onnxruntime as ort
 

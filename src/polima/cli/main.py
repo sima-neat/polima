@@ -1,26 +1,22 @@
 """`polima` -- one CLI for compiling, deploying and running robot policies on
 SiMa.ai Modalix.
 
-Mirrors LLiMa's shape (llima-compile / llima-deploy / llima-run) as subcommands:
-
-    polima compile  --policy act --checkpoint <path>
-    polima deploy   --bundle <id> --board sima@<board-address>
-    polima run      --bundle <id> --fixture
-    polima robot    install | ports | doctor | preview | calibrate | run | export-improvement-manifest
+    polima compile    --policy act --checkpoint <path> --build-dir <dir>
+    polima deploy     --bundle <id> --devkit <address>
+    polima run        --bundle <id> --fixture
+    polima robot      install | ports | doctor | preview | calibrate | run | export-improvement-manifest
+    polima studio     start | stop | status
+    polima workbench  start | stop | status
     polima doctor
-    polima data     validate <roots...>
-    polima list
-    polima clean    <build-dir> [--level scratch|inputs|all] [--yes]
 
-Subcommand modules are imported lazily so `polima doctor` still works in an
-environment where, say, torch or afe is missing -- which is exactly the
-situation doctor exists to diagnose.
+Run `polima <command> --help` for a command's options.
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib
+import logging
 import sys
 
 from polima import role
@@ -31,17 +27,13 @@ from polima.util.logging import setup
 #: is exactly the situation doctor exists to diagnose.
 #: Where each stage runs: see polima.role.HOST_COMMANDS / BOARD_COMMANDS.
 COMMANDS = {
-    "help": ("polima.cli.help_cmd", "show help for PoLiMa or a specific command"),
-    "doctor": ("polima.cli.doctor", "diagnose the environment (host, compiler venv, board)"),
-    "data": ("polima.cli.data", "inspect, validate and combine datasets"),
-    "list": ("polima.cli.list_cmd", "list registered policies"),
-    "clean": ("polima.cli.clean", "reclaim space from build trees"),
-    "compile": ("polima.cli.compile", "export, quantize and compile a policy to MLA ELFs"),
-    "deploy": ("polima.cli.deploy", "push a bundle to a Modalix board and start it"),
-    "run": ("polima.cli.run", "run inference against a deployed bundle"),
-    "robot": ("polima.cli.robot", "robot control: teleop, diagnostics, live view"),
-    "studio": ("polima.cli.studio", "manage the SOM web control cockpit"),
-    "workbench": ("polima.cli.workbench", "open the build computer's page (localhost:8686)"),
+    "compile": ("polima.cli.compile", "compile a checkpoint into a bundle for Modalix"),
+    "deploy": ("polima.cli.deploy", "deploy a bundle to a Modalix DevKit"),
+    "run": ("polima.cli.run", "measure numerical fidelity and inference latency"),
+    "robot": ("polima.cli.robot", "check, calibrate and drive the arm"),
+    "studio": ("polima.cli.studio", "start or stop PoLiMa Studio on the DevKit"),
+    "workbench": ("polima.cli.workbench", "manage PoLiMa Workbench on this computer"),
+    "doctor": ("polima.cli.doctor", "check this computer, the compiler and the DevKit"),
 }
 
 
@@ -108,7 +100,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"polima {command}: {denial}", file=sys.stderr)
         return 3
 
-    return module.run(rest, parent=args)
+    try:
+        return module.run(rest, parent=args)
+    except KeyboardInterrupt:
+        print(f"\npolima {command}: interrupted", file=sys.stderr)
+        return 130
+    except (OSError, ValueError, RuntimeError, ImportError, KeyError) as exc:
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            raise
+        message = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
+        # Studio reports the last output line containing words like "error": this one, not the hint.
+        print(f"polima {command}: error: {message}", file=sys.stderr)
+        print("  (for more detail, set POLIMA_LOG_LEVEL=DEBUG and run the command again)",
+              file=sys.stderr)
+        return 1
 
 
 def _version() -> str:
@@ -117,7 +122,7 @@ def _version() -> str:
 
         return version("polima")
     except Exception:  # noqa: BLE001
-        return "0.2.0+src"
+        return "0.3.0+src"
 
 
 if __name__ == "__main__":

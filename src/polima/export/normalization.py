@@ -11,15 +11,15 @@ LeRobot stores them indirectly. `policy_preprocessor.json` lists processor steps
 the one named `normalizer_processor` names a safetensors file, and that file
 holds `<feature>.mean` / `<feature>.std`. The unnormalizer for actions is the
 mirror image in `policy_postprocessor.json`. Following that indirection is the
-whole job, and it is identical for ACT, SmolVLA and GR00T -- which is why this
-lives in `export/` rather than under a policy.
+whole job, and it is identical for every policy -- which is why this lives in
+`export/` rather than under a policy.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 PREPROCESSOR = "policy_preprocessor.json"
 POSTPROCESSOR = "policy_postprocessor.json"

@@ -1,15 +1,8 @@
-"""Build the native runtime on the board, skipping when nothing changed.
+"""Build the native runtime on the DevKit, skipping when nothing changed.
 
-The legacy deploy scripts run cmake unconditionally with `-j2`, so every SmolVLA
-deploy rebuilds the whole server even when only the model changed. Two things
-fix that here:
-
-  * there is now ONE binary instead of four, so a policy change does not touch
-    the C++ at all; and
-  * the build tree is keyed by a content hash of native/, so an unchanged source
-    tree skips configure and compile entirely.
-
-The board has 16 cores (verified), not the 2 both legacy scripts assume.
+There is one binary for every policy, so a policy change does not touch the
+C++ at all, and the build tree is keyed by a content hash of runtime/, so an
+unchanged source tree skips configure and compile entirely.
 """
 
 from __future__ import annotations
@@ -43,7 +36,7 @@ class BuildResult:
 
 
 def source_hash(source_dir=None) -> str:
-    """Content hash of native/ -- the build-skip key."""
+    """Content hash of runtime/ -- the build-skip key."""
     return short(
         sha256_tree(
             source_dir or native_dir(),
@@ -60,7 +53,7 @@ def build_native(
     force: bool = False,
     jobs: int | None = None,
 ) -> BuildResult:
-    """Sync native/ to the board and build it if the source changed."""
+    """Sync runtime/ to the DevKit and build it if the source changed."""
     digest = source_hash()
     build_dir = board.path("build", digest)
     sentinel = f"{build_dir}/.ok"
@@ -106,14 +99,14 @@ def _link_binaries(session: BoardSession, board: BoardConfig, build_dir: str) ->
 
 
 #: Alias -> binary, installed onto PATH. Dashes match the console scripts
-#: (`polima-run`, `polima-doctor`); the binaries keep their underscored names.
+#: (`polima run`, `polima doctor`); the binaries keep their underscored names.
 PATH_ALIASES = {
     "polima": "polima_cli",
     "polima-server": "polima_server",
     "polima-cli": "polima_cli",
 }
 
-#: Where LLiMa lives on the SoM (`/usr/bin/llima`), so this is the convention
+#: Where LLiMa lives on the DevKit (`/usr/bin/llima`), so this is the convention
 #: the devkit already follows. /usr/local/bin is preferred because it is ahead
 #: of /usr/bin on PATH and is not owned by a package.
 PATH_DIRS = ("/usr/local/bin", "/usr/bin")

@@ -1,12 +1,9 @@
 """Numerical smoke tests.
 
-The thresholds are not invented: `cosine >= 0.999` and `mean_abs <= 0.01` are
-what ACT/scripts/compile_deploy_act_som.sh asserts in a bash heredoc today.
-Promoting them to a function makes them reusable, per-policy, and reportable.
-
 Two levels:
 
-  * `end_to_end` -- the whole pipeline against expected_normalized_actions.f32.
+  * `end_to_end` -- the whole pipeline against expected_normalized_actions.f32,
+    by default at `cosine >= 0.999` and `mean_abs <= 0.01`.
   * `per_stage`  -- each graph against its own recorded golden. The ACT build
     ships `<graph>_input.f32` / `<graph>_output.f32` for every stage, so when the
     end-to-end check fails this says WHICH ELF is wrong instead of just that
@@ -24,7 +21,7 @@ from polima.util.logging import get
 
 log = get("deploy.smoke")
 
-#: From ACT/scripts/compile_deploy_act_som.sh.
+#: The default end-to-end pass bar.
 DEFAULT_COSINE_MIN = 0.999
 DEFAULT_MEAN_ABS_MAX = 0.01
 
@@ -82,7 +79,7 @@ def compare(
     cosine_min: float = DEFAULT_COSINE_MIN,
     mean_abs_max: float = DEFAULT_MEAN_ABS_MAX,
 ) -> SmokeResult:
-    """The assertion compile_deploy_act_som.sh makes, as a function."""
+    """Compare deployed actions with the reference by cosine and mean abs error."""
     actual = np.asarray(actual, dtype=np.float32).reshape(-1)
     expected = np.asarray(expected, dtype=np.float32).reshape(-1)
 
@@ -202,9 +199,9 @@ def compare_normalized_actions(
 
 
 def compare_against_reference(
-    actual: np.ndarray, reference: np.ndarray, *, name: str = "vs-legacy"
+    actual: np.ndarray, reference: np.ndarray, *, name: str = "vs-reference"
 ) -> SmokeResult:
-    """A/B two servers on the same fixture.
+    """Compare two servers on the same fixture.
 
     Held to a far tighter bar than the torch comparison: both sides run the same
     ELFs on the same MLA, so anything but a near-exact match means the host-side

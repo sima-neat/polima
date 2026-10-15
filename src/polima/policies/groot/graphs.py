@@ -1,10 +1,5 @@
 """GR00T N1.6's torch side: checkpoint -> 45 ONNX graphs, calibration, fixtures.
 
-Ported from the two scripts that produced the build tree PoLiMa adopts:
-
-    GR00T-N1.6/scripts/export_groot_modalix_eagle.py    the 26-stage Eagle cut
-    GR00T-N1.6/scripts/export_groot_modalix_action.py   the 19-graph action cut
-
 This is the only GR00T module that imports torch. It runs in the `groot-n1.6`
 conda environment; `polima.policies.groot` and `.runtime` stay importable in the
 compiler venv and on the board, which is why the spec names these entry points
@@ -17,7 +12,7 @@ as dotted strings rather than holding the callables.
 object. A GR00T checkpoint is a `transformers` AutoModel with its own
 AutoProcessor over a LeRobot *v2.1* dataset, so that path does not apply. The
 export driver therefore prefers a graphs module's own `load_samples` when it
-defines one; GR00T does, ACT and SmolVLA do not.
+defines one; GR00T does, ACT does not.
 
 ## Why the cut lands where it does
 
@@ -397,8 +392,8 @@ def load_policy(
     """(model, image_keys) for a GR00T checkpoint.
 
     `lerobot_src` is accepted and ignored: GR00T loads through `transformers`,
-    not through a LeRobot source tree. The signature matches ACT's and
-    SmolVLA's so `polima.export.driver` needs no branch.
+    not through a LeRobot source tree. The signature matches ACT's so
+    `polima.export.driver` needs no branch.
     """
     # Importing registers GR00T's custom AutoModel/AutoProcessor classes.
     import gr00t.model  # noqa: F401

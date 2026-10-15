@@ -14,17 +14,17 @@ runs the runtime that matches your PoLiMa version.
 
 1. Install PoLiMa on the DevKit once with `./scripts/install_polima_modalix.sh`
    (see the README).
-2. Make sure `ssh sima@<board-address>` works from the host without a password
+2. Make sure `ssh sima@<devkit-address>` works from the host without a password
    prompt (use an SSH key).
 3. Tell PoLiMa the address:
 
    ```bash
-   export POLIMA_BOARD=sima@<board-address>
+   export POLIMA_DEVKIT=sima@<devkit-address>
    ```
 
-   or pass `--board sima@<board-address>` to every command, or set `board.host`
+   or pass `--devkit sima@<devkit-address>` to every command, or set `board.host`
    in `.polima.yaml` (copy `.polima.yaml.example`). The name of a DevKit added
-   in the Workbench works too, with its saved ssh key: `--board <name>`.
+   in the Workbench works too, with its saved ssh key: `--devkit <name>`.
 
 ## Deploy a bundle
 
@@ -33,7 +33,8 @@ polima deploy --bundle <bundle-id>                 # a bundle under outputs/bund
 polima deploy --bundle /path/to/<bundle-folder>    # or any bundle folder
 ```
 
-`polima deploy` with no options asks for the bundle and the board.
+Provide a bundle with `--bundle` and configure the DevKit address before
+deployment. Use `--list` to inspect bundles already installed on the DevKit.
 
 What happens, in order (the command prints each step):
 
@@ -79,7 +80,7 @@ Check a running model from the host:
 
 ```bash
 polima run --bundle <bundle-id> --fixture              # test input, checked against the expected answer
-polima run --bundle <bundle-id> --fixture --repeat 20  # also report the time per answer
+polima run --bundle <bundle-id> --fixture --repeat 20  # also report inference latency
 ```
 
 ## Manage the DevKit on the DevKit
@@ -97,16 +98,28 @@ one bundle while running another.
 
 ## Accelerator reset and sudo
 
-If a model fails to load with `MLA_LOAD_FAILED`, the accelerator's memory is
-usually fragmented by an earlier server that was killed. `polima deploy` resets
-the accelerator and retries once on its own. To reset it by hand, on the DevKit:
+A model load failure (`MLA_LOAD_FAILED`) can require accelerator recovery.
+`polima deploy` attempts recovery and retries once. Recovery restarts shared
+DevKit runtime services and can interrupt other accelerator workloads. End
+robot runs and other accelerator work before recovery.
+
+Studio's system service cannot elevate privileges. In that service, **Reset
+runtime** is unavailable and shows the terminal recovery instructions. This
+restriction is checked before stopping any running process.
+
+Server shutdown waits up to 30 seconds for a clean exit. If the server does not
+exit, the stop reports "did not stop cleanly" and leaves the server running.
+
+To recover, stop any robot run, then run on the DevKit:
 
 ```bash
-polima server stop
-sudo /usr/bin/fix_devkit_runtime.sh
+polima server stop                     # if this reports "did not stop cleanly", continue:
+kill -9 "$(cat /media/nvme/polima/var/run/server.pid)"
+sudo /usr/bin/fix_devkit_runtime.sh    # resets the accelerator
 ```
 
-or from the host: `polima deploy --reset-mla`.
+When the server still stops normally, `polima deploy --reset-mla` from the host
+does the stop and the reset in one step.
 
 The reset needs `sudo` on the DevKit. PoLiMa does not store a password. Either
 allow passwordless `sudo` for `/usr/bin/fix_devkit_runtime.sh` and
@@ -120,6 +133,6 @@ export POLIMA_MLA_SUDO_PASSWORD=...
 ## Installing from a browser instead
 
 PoLiMa Studio can install a bundle uploaded from a browser
-([polima-studio.md](polima-studio.md)). It checks the model files the same way
+([Studio guide](../src/polima/studio/README.md)). It checks the model files the same way
 but does not rebuild the runtime, so the DevKit must already have the runtime
 from this PoLiMa version (from the installer or an earlier `polima deploy`).

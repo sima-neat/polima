@@ -12,8 +12,8 @@ controllers.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 _CHUNK = 1 << 20
 
@@ -39,7 +39,7 @@ def sha256_tree(root: str | Path, *, patterns: Iterable[str] = ("**/*",),
     """Hash a directory's *content and layout*.
 
     Used for the `src_hash` that lets `polima deploy` skip the on-board cmake
-    build when native/ has not changed. Paths are recorded relative to `root` and
+    build when runtime/ has not changed. Paths are recorded relative to `root` and
     sorted, so the result is independent of filesystem iteration order.
     """
     root = Path(root)

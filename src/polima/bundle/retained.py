@@ -1,13 +1,12 @@
 """Source ELFs from a compiler build tree.
 
-The compiler leaves MLA ELFs in two places, and the legacy stacks each picked a
-different one:
+The compiler leaves MLA ELFs in two places:
 
-  retained/<variant>/<graph>_stage1_mla.elf     ACT's compile_deploy path
-  <graph>_mpk.tar.gz                            SmolVLA's (see unpack.py)
+  retained/<variant>/<graph>_stage1_mla.elf
+  <graph>_mpk.tar.gz                            (see unpack.py)
 
-`retained/` is a *working* directory, not a curated one. The real ACT build
-contains 16 ELFs in 11 directories, including abandoned experiments:
+`retained/` is a *working* directory, not a curated one. A build can hold
+several variants of one graph, including abandoned experiments:
 
     vision_backbone/               <- shipped
     vision_backbone_rank3/         <- identical to the above
@@ -89,9 +88,6 @@ def select(retained_dir: str | Path, graph: str) -> ElfCandidate:
       1. retained/<graph>/          -- the canonical, unsuffixed name
       2. the single non-rejected variant, if there is exactly one
       3. otherwise: raise, listing what was found
-
-    Verified against the real ACT build: rule 1 selects the ELF that is
-    byte-identical to what is deployed and running on the board.
     """
     candidates = find_variants(retained_dir, graph)
     if not candidates:
@@ -117,16 +113,15 @@ def select(retained_dir: str | Path, graph: str) -> ElfCandidate:
 def from_deployed_tree(models_dir: str | Path, graph: str) -> ElfCandidate:
     """Read an ELF from an already-unpacked models/<graph>/share/ tree.
 
-    This is the layout ACT's deploy script produces (models_uncompressed/ on the
-    host, models/ on the board) and is also PoLiMa's own bundle layout, verified
-    identical on the live unit.
+    This is the layout of an unpacked deploy tree (models_uncompressed/ on the
+    host, models/ on the DevKit) and is also PoLiMa's own bundle layout.
     """
     models_dir = Path(models_dir)
     share = models_dir / graph / "share"
     elf = share / elf_filename(graph)
     if not elf.is_file():
-        # The directory is the selector here, not the filename. SmolVLA's
-        # LLiMa-compiled graphs are named for the ONNX they came from --
+        # The directory is the selector here, not the filename. LLiMa-compiled
+        # graphs can be named for the ONNX they came from --
         # `7b375e1b..._vision_with_output_stage1_mla.elf` -- so requiring
         # `<graph>_stage1_mla.elf` would reject a tree that is unambiguous.
         # Only accept when there is exactly one: several means the directory

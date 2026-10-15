@@ -5,18 +5,18 @@ PoLiMa spans two machines with incompatible dependency sets:
     HOST  (x86_64 workstation / VM)      BOARD (Modalix SoM, aarch64)
     ------------------------------      ----------------------------
     build it                            run it
-    polima-compile  export (torch)      polima-run     serve the policy
+    polima compile  export (torch)      polima run     serve the policy
                     + compile (afe),    polima robot   drive the arm
                     two separate venvs                 (lerobot venv)
-    polima-deploy   ssh, rsync
+    polima deploy   ssh, rsync
 
 The host builds; the board runs. Nothing on the host drives a robot and nothing
 on the board compiles. The robot client sits with the server because it sends
 two 640x480 frames per control step -- ~110 MB/s at 30 Hz -- which should be a
 loopback copy, not a network hop.
 
-PoLiMa does not train. Training stays with `lerobot-train` in the model stacks;
-PoLiMa picks up at the checkpoint.
+PoLiMa does not train. Training stays with the policy's own trainer (e.g.
+`lerobot-train`); PoLiMa picks up at the checkpoint.
 
 Both halves share one core -- policy specs, wire protocol, bundle layout, config
 -- because that core *is* the contract between them: the host writes bundle.json
@@ -45,7 +45,7 @@ HOST_COMMANDS = ("compile", "deploy")
 #: Commands that run where the MLA and the arm are.
 BOARD_COMMANDS = ("run", "robot", "studio")
 #: Commands that work anywhere.
-SHARED_COMMANDS = ("help", "doctor", "data", "list", "clean", "workbench")
+SHARED_COMMANDS = ("doctor", "workbench")
 
 _CAPABILITY_MODULES = {
     "torch": "export (compile stage)",
@@ -66,10 +66,10 @@ def _installed(module: str) -> bool:
 
 
 def is_board() -> bool:
-    """True on a Modalix SoM.
+    """True on a Modalix DevKit.
 
-    aarch64 alone is not sufficient (an ARM laptop is not a board), so this also
-    looks for the MLA runtime headers that only exist on the SoM.
+    aarch64 alone is not sufficient (an ARM laptop is not a DevKit), so this also
+    looks for the MLA runtime headers that only exist on the DevKit.
     """
     if platform.machine() != "aarch64":
         return False
@@ -113,14 +113,16 @@ def check(command: str, argv: list[str], module: object = None) -> str | None:
     """Decide whether `command` can run here. Returns None to allow.
 
     The capability a command needs depends on *what it is being asked to do*,
-    not just its name: `polima-compile --import-legacy` copies already-built
-    ELFs and needs nothing but numpy, while `polima-compile` proper needs the
+    not just its name: `polima compile --import-build` copies already-built
+    ELFs and needs nothing but numpy, while `polima compile` proper needs the
     whole SiMa model-compiler venv. A command module refines this by defining
 
         def needs_capability(argv) -> str | None
 
     returning the capability actually required, or None for "no gate".
     """
+    if "--help" in argv or "-h" in argv:
+        return None
     resolver = getattr(module, "needs_capability", None)
     capability = resolver(argv) if callable(resolver) else command
     if capability is None:
@@ -147,7 +149,14 @@ def detect() -> Capabilities:
     # So the real question is whether that venv is discoverable. Requiring an
     # in-process afe would refuse a compile that works. It is still accepted as
     # an alternative, since inside the SDK container afe *is* importable here.
-    can_compile = find_compiler_bin() is not None or (_installed("afe") and _installed("onnx"))
+    try:
+        from polima.config.loader import load
+
+        config = load()
+    except Exception:  # noqa: BLE001 - a bad config file is reported by the command itself
+        config = None
+    can_compile = (find_compiler_bin(config) is not None
+                   or (_installed("afe") and _installed("onnx")))
     can_deploy = bool(which("ssh") and which("rsync"))
     can_robot = _installed("flask") and _installed("cv2")
 

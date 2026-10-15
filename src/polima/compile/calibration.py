@@ -1,16 +1,16 @@
-"""Calibration sample construction, unified across the three legacy variants.
+"""Calibration sample construction.
 
-This is the part of `sima_compile_onnx_tensors.py` that actually differs between
-ACT, SmolVLA and GR00T, and the part most likely to be silently wrong: a bad
-calibration set does not raise, it just produces a quantized model whose outputs
-drift. So it lives here, depends on numpy only, and is covered by unit tests.
+This is the part of compilation that differs most between policies, and the part
+most likely to be silently wrong: a bad calibration set does not raise, it just
+produces a quantized model whose outputs drift. So it lives here, depends on
+numpy only, and is covered by unit tests.
 
 The three sources are a union, not a choice of one:
 
   npz      ACT and GR00T -- one array per model input, leading axis = sample.
-  raw_f32  SmolVLA -- a flat .f32 file for a single-input graph, samples
-           concatenated. Used where the calibration data is an activation
-           captured from a previous stage rather than a dataset sample.
+  raw_f32  a flat .f32 file for a single-input graph, samples concatenated.
+           Used where the calibration data is an activation captured from a
+           previous stage rather than a dataset sample.
   random   the fallback when no data is supplied.
 
 ## The layout rule
@@ -18,19 +18,18 @@ The three sources are a union, not a choice of one:
 `ImporterParams(layout=...)` tells afe how to read the *model*. It does not
 describe the calibration data: afe's quantizer wants NHWC regardless, which is
 why the curated `quantize_compile` helper transposes unconditionally. That
-unconditional transpose is exactly what SmolVLA had to work around, because it
-corrupts rank-2/rank-3 action-side tensors that have no spatial axes at all.
+unconditional transpose corrupts rank-2/rank-3 action-side tensors that have no
+spatial axes at all.
 
-The correct rule, and the one all three legacy copies converge on once you line
-them up, is narrower: transpose only a rank-4 tensor, and only when the model is
-NCHW. Everything else passes through untouched. It is applied uniformly to all
+The correct rule is narrower: transpose only a rank-4 tensor, and only when the
+model is NCHW. Everything else passes through untouched. It is applied uniformly to all
 three sources here so the source cannot change the meaning of the layout flag.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Mapping, Sequence
 
 import numpy as np
 
@@ -90,9 +89,8 @@ def from_raw_f32(path: str | Path, names: Sequence[str], shapes: Sequence[Shape]
                  layout: str = "NCHW") -> list[Sample]:
     """A flat float32 file for a single-input graph, samples concatenated.
 
-    SmolVLA uses this for the prefix/suffix/denoise stages, whose calibration
-    input is an activation dumped by the preceding stage rather than anything
-    that came from a dataset. There is no shape metadata in the file, so the
+    For a stage whose calibration input is an activation dumped by the
+    preceding stage rather than anything that came from a dataset. There is no shape metadata in the file, so the
     only available check is that the size divides evenly into whole samples.
     """
     path = Path(path)
@@ -143,13 +141,12 @@ def plan(activation: str, weights: str, npz: str | Path | None = None,
 
     bf16 is a float format: there are no scales to fit, so calibration data
     cannot change the generated code. afe still wants one sample to trace
-    shapes, but the values are ignored -- verified by compiling ACT's
-    decoder_action_tail with 8 real dataset samples and with 1 random sample and
-    getting the identical ELF (b1eece6992dbddc6...).
+    shapes, but the values are ignored: compiling ACT's decoder_action_tail
+    with 8 real dataset samples or with 1 random sample gives the identical ELF.
 
     This matters beyond tidiness: it is what lets a pure-bf16 build skip the
     dataset entirely, and skip reading calibration files that run to hundreds of
-    megabytes. Every ACT and SmolVLA graph currently compiles bf16.
+    megabytes.
     """
     if activation == "bf16" and weights == "bf16":
         note = "bf16 has no scales to fit" if (npz or raw_f32) else ""

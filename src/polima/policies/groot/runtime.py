@@ -1,14 +1,5 @@
 """GR00T N1.6's on-device pipeline, as plan.json.
 
-Every constant here is transcribed from the working DevKit binaries in the
-GR00T-N1.6 tree, which are what currently run this policy on Modalix:
-
-    GR00T-N1.6/devkit/groot_eagle_llima/groot_eagle_llima.cpp    Eagle geometry
-    GR00T-N1.6/devkit/groot_action_llima/groot_action_llima.cpp  action geometry
-    GR00T-N1.6/devkit/groot_full_llima/groot_full_llima.cpp      the joined pipeline
-    GR00T-N1.6/scripts/export_groot_modalix_eagle.py             the Eagle cut
-    GR00T-N1.6/scripts/export_groot_modalix_action.py            the action cut
-
 ## The pipeline
 
     patches(324x588)                                     } one device-resident
@@ -35,8 +26,8 @@ GR00T-N1.6 tree, which are what currently run this policy on Modalix:
 Four things that look arbitrary and are not:
 
 * **The alternating attention mask.** Even pairs attend to text, odd pairs to
-  images. `export_groot_modalix_action.py` selects `text_additive if start % 4
-  == 0 else image_additive` over block starts, which is pair parity. Feeding one
+  images. The action head selects `text_additive if start % 4 == 0 else
+  image_additive` over block starts, which is pair parity. Feeding one
   mask to every block does not error; it silently attends to the wrong half of
   the prompt.
 * **The 128-wide state and action lanes carrying 6 real joints.** GR00T pads
@@ -46,14 +37,14 @@ Four things that look arbitrary and are not:
   contiguous run of `<image>` tokens there, which is what lets the language
   embedding be a `pack` of one constant plus one live buffer instead of a
   gather against a 151,680-row vocabulary table.
-* **The Euler update adds where SmolVLA's subtracts.** GR00T integrates
+* **The Euler update adds.** GR00T integrates
   `x += (1/N) * velocity`; the `euler` opcode computes `out - scalar * src`, so
   the plan carries a negative DT. See `EULER_SCALAR`.
 
 ## Why the loop is unrolled
 
 Four denoise steps x (1 + 16 + 1) ELF calls are emitted as explicit steps rather
-than a loop opcode, exactly as SmolVLA's ten are: the interpreter needs no
+than a loop opcode: the interpreter needs no
 control flow, each step's tau is a literal, and `--verbose` reports which of the
 seventy-odd MLA calls is slow.
 """
@@ -85,7 +76,7 @@ LANGUAGE_CHANNELS = 2048                                 # Qwen hidden width
 QWEN_PAIRS = 8                                           # 16 layers, paired
 
 #: Where the contiguous run of 81 <image> tokens begins in the GR1 prompt.
-#: Verified against eagle_fixture.npz: input_ids == 151669 at 32..112.
+#: In eagle_fixture.npz, input_ids == 151669 at 32..112.
 IMAGE_TOKEN_START = 32
 
 PATCH_ELEMENTS = VISION_WIDTH * PATCH_CHANNELS           # 190512
@@ -138,8 +129,8 @@ def two_digits(value: int) -> str:
 def vision_stage_names() -> tuple[str, ...]:
     """The 27 SigLIP layers, paired -- the last one is odd and stands alone.
 
-    `export_groot_modalix_eagle.py` names a pair by its first and last layer,
-    so the tail stage is `eagle_vision_26_26`, not `eagle_vision_26_27`.
+    A pair is named by its first and last layer, so the tail stage is
+    `eagle_vision_26_26`, not `eagle_vision_26_27`.
     """
     names = []
     for start in range(0, 2 * VISION_PAIRS, 2):
@@ -163,8 +154,7 @@ def block_names() -> tuple[str, ...]:
 
 
 #: The two device-resident chains. One upload and one download each, with every
-#: intermediate staying in MLA DRAM -- this is what took Eagle from 362 ms to
-#: 169 ms in the GR00T-N1.6 build tree's own validation runs.
+#: intermediate staying in MLA DRAM.
 VISION_CHAIN = ("eagle_vision_patch", *vision_stage_names(), "eagle_vision_post_norm")
 QWEN_CHAIN = (*qwen_stage_names(), "eagle_output_norm")
 
@@ -429,7 +419,7 @@ def build_steps(spec: PolicySpec | None = None) -> list[Step]:
         steps.append(_step("euler", "actions", src="velocity", scalar=EULER_SCALAR))
 
     # The model lane remains 50x128, but the saved processor decodes only its
-    # first horizon x real-action-width block (16x7 for MyCobot).
+    # first horizon x real-action-width block.
     steps.append(_step("gather_strided", "actions_lane", src="actions",
                        stride=ACTION_LANE, take=action_dim, count=horizon))
     steps.append(_step("clip_unit", "actions_clipped", src="actions_lane"))

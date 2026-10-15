@@ -1,17 +1,14 @@
 # Running the SO-101 arm
 
 Everything here runs on the DevKit. The arm and both cameras plug into the
-DevKit by USB. `polima robot` runs in the LeRobot environment that the DevKit
-installer creates at `/media/nvme/lerobot`.
+DevKit by USB. The robot client runs in the LeRobot environment that the
+DevKit installer creates at `/media/nvme/lerobot`.
 
 ## Check the hardware
 
-Cheapest first:
-
 ```bash
-polima robot ports      # which arm and cameras are attached, and which role each fills
-polima robot doctor     # the same, plus the model server and the arm calibration
-polima robot preview    # open each camera and report what it actually delivers
+polima robot status     # the active bundle, the attached arm and cameras
+polima robot preview    # show each camera in a browser, to check the views
 ```
 
 Use stable device names (`/dev/serial/by-id/...`, `/dev/v4l/by-id/...`) when
@@ -20,24 +17,22 @@ reconnect or reboot.
 
 ## Calibrate the arm
 
-Calibrate once per arm, before its first run:
+Once per arm, before its first run:
 
 ```bash
 polima robot calibrate
 ```
 
 It backs up the existing calibration, then runs LeRobot's calibration. The
-calibration file is
-`~/.cache/huggingface/lerobot/calibration/robots/so_follower/so-arm101.json`;
+file is `~/.cache/huggingface/lerobot/calibration/robots/so_follower/so-arm101.json`;
 `--calibration-dir DIR` uses another folder.
 
-A run uses this DevKit calibration. A bundle can also carry its own, set from
-PoLiMa Studio; a run then uses the bundle's. Without either, `polima robot run`
-refuses to move the arm.
+A run uses this DevKit calibration. A bundle can also carry its own, set in
+PoLiMa Studio, and a run then uses the bundle's. Without either,
+`polima robot run` refuses to move the arm.
 
-A shifted calibration moves every target the model sends by the same offset.
-If an arm that worked starts missing in one direction, check the calibration
-first.
+Use the calibration recorded for the connected arm. Do not reuse another
+arm's calibration.
 
 ## Run
 
@@ -45,41 +40,69 @@ first.
 polima robot run
 ```
 
-It asks for the arm and the cameras, asks for confirmation, moves the arm to
-its rest pose, then hands over to the active bundle's model. **Ctrl-C** stops
-the run and returns the arm to rest.
-
-Useful options:
+It asks for the arm's serial port and for each camera, asks for confirmation,
+moves the arm to its rest pose, then hands over to the active bundle's model.
+**Ctrl-C** stops the run and returns the arm to rest. The model server keeps
+running until `polima server stop`.
 
 | Option | Use |
 |---|---|
-| `--fps N` | Position commands per second. ACT uses the bundle's default; GR00T uses 15. |
+| `--slow` | GR00T at 15 commands/s with its slow motion settings. Default is 30 commands/s; `--fast` selects the default explicitly. |
+| `--fps N` | Override the command rate, 1 to 60. Camera capture rates stay unchanged. |
+| `--no-auto-complete` | Disable the gripper-sequence completion detector. |
 | `--bundle DIR` | Run a bundle other than the active one. |
-| `--robot-port`, `--front-camera`, `--wrist-camera` | Skip the questions. |
-| `--task TEXT` | The instruction, for language-conditioned models. |
-| `--no-live-view` | Do not open the camera window. |
+| `--robot-port PATH`, `--overhead-camera PATH`, `--wrist-camera PATH` | Skip the questions. |
+| `--task N` | Which of the bundle's instructions to use (default 0, the first). |
+| `--max-relative-target DEG` | How far one command may move a joint: a whole number of degrees from 1 to 30 (default 12). |
+| `--yes` | Do not ask for confirmation. |
+
+## After each pick
+
+GR00T uses policy-controlled placement and return by default. When the policy
+commands a return near the dataset rest pose, the client holds that pose for
+two seconds before continuing. This rest hold is separate from the optional
+gripper-sequence completion detector.
+**Ctrl-C** ends the run and returns the arm to rest.
+
+### Optional automatic return
+
+To return to rest after a detected gripper release:
+
+```bash
+POLIMA_AUTO_COMPLETE=1 polima robot run
+```
+
+In Studio, enable **Automatic return**. The detector uses a gripper
+open–close–open sequence; it does not verify that the object reached the basket.
+With **Repeat task** enabled, the client waits two seconds at rest before
+continuing. Set `POLIMA_AUTO_REPEAT=0` to stop after a detected cycle.
+
+The command above applies to one run. The next plain `polima robot run` uses
+the GR00T default. ACT enables automatic return by default; use
+`--no-auto-complete` to disable it. Rest-position holding and return on
+**Ctrl-C** remain available in either mode.
 
 ## Motion settings
 
-All are off unless set, in the same terminal as `polima robot run`. GR00T was
-tested with all of them; see [groot.md](groot.md).
+GR00T uses fast motion settings by default and slow settings with `--slow`
+([groot.md](groot.md#running)). Any of them can be changed for one run
+by setting it in the same terminal before `polima robot run`:
 
 | Variable | What it does |
 |---|---|
-| `POLIMA_CHUNK_THRESHOLD=0.5` | Each model answer is a plan of upcoming moves. Ask for the next plan when this fraction of the current one is left. |
-| `POLIMA_GROOT_NOISE=zero` | GR00T starts every plan from the same (zero) noise, so the same view gives the same plan. |
-| `POLIMA_SMOOTH_MOVES=5` | Spread the jump from the old plan to the new one over 5 moves. |
-| `POLIMA_SMOOTH_SHAPE=smoothstep` | Make that spreading an S-curve instead of equal steps. |
-| `POLIMA_SUBSTEPS=2` | Send each command as 2 smaller steps. |
-| `POLIMA_RESET_EASE=smoothstep` | Ease into and out of the return to rest. |
-
-Each command may move a joint at most 12° from where it is.
+| `POLIMA_CHUNK_THRESHOLD` | Each model answer is a plan of upcoming moves. Ask for the next plan when this fraction of the current one is left. |
+| `POLIMA_SMOOTH_MOVES` | Spread the jump from the old plan to the new one over this many commands. |
+| `POLIMA_SMOOTH_SHAPE` | `smoothstep`: make that spreading an S-curve instead of equal steps. |
+| `POLIMA_SUBSTEPS` | Send each command as this many smaller steps. |
+| `POLIMA_RESET_EASE` | `smoothstep`: ease into and out of the return to rest. |
+| `POLIMA_GROOT_NOISE` | `zero`: start every plan from the same noise, so the same view gives the same plan; `random` otherwise. |
 
 ## Troubleshooting
 
 | What you see | What to do |
 |---|---|
 | A camera or the motors drop out ("exceeded maximum consecutive read failures", "There is no status packet") | A USB connection dropped. Use a powered USB hub and secure the cables, especially along the arm. |
-| The arm consistently moves the wrong way | The cameras are in the wrong slots or placed differently from training. |
+| The arm consistently moves the wrong way | The cameras are in the wrong roles, or placed differently from the recording. |
 | The arm misses by the same amount every time | Recalibrate (see above). |
-| The model server is not running | `polima server status`, then `polima server start`; on `MLA_LOAD_FAILED`, see [deploy.md](deploy.md). |
+| The run stops before moving and asks for `polima robot calibrate` | The arm has no calibration on this DevKit yet; calibrate it once. |
+| The model server does not start | `polima server status`; on `MLA_LOAD_FAILED`, see [deploy.md](deploy.md#accelerator-reset-and-sudo). |

@@ -324,8 +324,8 @@ def run_plan(tmp_path_factory):
     binary = tmp_path_factory.mktemp("native") / "run_plan"
     native = ROOT / "tests" / "native"
     subprocess.run([compiler, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror",
-                    f"-I{native / 'llima_mock'}", f"-I{ROOT / 'native/include'}",
-                    str(native / "run_plan.cpp"), str(ROOT / "native/src/plan.cpp"),
+                    f"-I{native / 'llima_mock'}", f"-I{ROOT / 'runtime/include'}",
+                    str(native / "run_plan.cpp"), str(ROOT / "runtime/src/plan.cpp"),
                     "-o", str(binary)], check=True, capture_output=True, text=True)
     return binary
 

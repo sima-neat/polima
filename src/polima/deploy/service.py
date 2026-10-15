@@ -1,11 +1,9 @@
-"""Start, stop and health-check polima_server on the board.
+"""Start, stop and health-check polima_server on the DevKit.
 
-The legacy scripts use `nohup ... & echo $! > server.pid` and then poll with
-`</dev/tcp/host/port` in bash. Kept the same shape -- no systemd unit, because
-the board is a development target and an operator needs to be able to kill and
-restart the server by hand -- but the health poll moved to a real socket
-connect, which can tell "refused" from "no route" and does not spawn a subshell
-per probe.
+The server runs under `nohup` with a pid file -- no systemd unit, because the
+DevKit is a development target and an operator needs to be able to kill and
+restart the server by hand. The health poll is a real socket connect, which can
+tell "refused" from "no route" and does not spawn a subshell per probe.
 """
 
 from __future__ import annotations
@@ -50,9 +48,8 @@ def status(session: BoardSession, board: BoardConfig, port: int | None = None) -
     """What is actually serving, which is not always what the pid file says.
 
     `bound` is the pid(s) holding the port, resolved independently of the pid
-    file. The two disagreeing is the exact Phase-1a failure -- a stale server
-    kept answering while every redeploy died on bind -- so status reports both
-    rather than trusting either.
+    file. The two can disagree -- a stale server keeps answering while every
+    redeploy dies on bind -- so status reports both rather than trusting either.
     """
     pid_text = session.capture(f"cat {shlex.quote(board.path('var/run/server.pid'))} 2>/dev/null")
     pid = int(pid_text) if pid_text.strip().isdigit() else None
@@ -68,8 +65,7 @@ def listening_pids(session: BoardSession, port: int) -> list[int]:
     The pid file alone is not enough. If a server is started while a stale one
     still holds the port, the new process dies on bind, the pid file records the
     corpse, and the stale process keeps answering -- so a redeploy silently has
-    no effect and every subsequent measurement describes the OLD binary. That
-    happened during Phase 1a and cost two wrong performance conclusions.
+    no effect and every subsequent measurement describes the OLD binary.
     """
     output = session.capture(
         f"ss -ltnpH 'sport = :{port}' 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2"
@@ -90,7 +86,14 @@ def stop(session: BoardSession, board: BoardConfig, *, port: int | None = None,
 
     pid_text = session.capture(f"cat {shlex.quote(pid_file)} 2>/dev/null")
     if pid_text.strip().isdigit():
-        targets.append(int(pid_text))
+        pid = int(pid_text)
+        # The pid file survives reboots, so its pid may now belong to another program.
+        program = session.capture(
+            f"tr '\\0' '\\n' < /proc/{pid}/cmdline 2>/dev/null | head -n 1")
+        if program.strip().rsplit("/", 1)[-1] == "polima_server":
+            targets.append(pid)
+        else:
+            log.info("ignoring stale server pid file (pid %d is not polima_server)", pid)
     if port:
         for pid in listening_pids(session, port):
             if pid not in targets:
@@ -121,16 +124,11 @@ def stop(session: BoardSession, board: BoardConfig, *, port: int | None = None,
         time.sleep(0.5)
         alive = still
 
-    for pid in alive:
-        session.run(f"kill -9 {pid} 2>/dev/null || true", check=False)
-    session.run(f"rm -f {shlex.quote(pid_file)}", check=False)
-    # Worth the noise: SIGKILL is how the MLA's CMA pool gets fragmented, since
-    # the dead process never releases its DMA buffers. `start` recovers from the
-    # resulting MLA_LOAD_FAILED automatically, but not fragmenting it is better.
-    log.warning("server pid(s) %s did not exit within %.0fs; sent SIGKILL "
-                "(this leaks MLA buffers -- raise board.stop_timeout_s if it recurs)",
-                ", ".join(str(p) for p in alive), timeout)
-    return True
+    raise RuntimeError(
+        f"Policy server pid(s) {', '.join(str(p) for p in alive)} did not stop cleanly "
+        f"within {timeout:.0f}s; model switch aborted. Stop robot motion and recover "
+        "the accelerator from an authorized terminal."
+    )
 
 
 def start(

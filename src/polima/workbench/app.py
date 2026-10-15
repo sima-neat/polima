@@ -14,6 +14,8 @@ import os
 import re
 import secrets
 import socket
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -26,12 +28,14 @@ from typing import Any
 
 from polima.config import devkits
 from polima.config.base import BoardConfig
+from polima.util.hashing import sha256_file
+from polima.workbench.inputs import Inputs, prerequisites, workspace
+from polima.workbench.jobs import WorkflowJobs, compile_command
 
 STATIC = Path(__file__).with_name("static")
 LOGO = Path(__file__).resolve().parents[1] / "studio/static/assets/neat-mark.svg"
 SKIP = {".git", ".venv", "node_modules", "__pycache__", "datasets", "wandb", "models", "fixtures"}
-POLICIES = {"act": "ACT", "smolvla": "SmolVLA", "groot": "GR00T N1.6", "groot17": "GR00T N1.7",
-            "Gr00tN1d6": "GR00T N1.6", "Gr00tN1d7": "GR00T N1.7"}
+POLICIES = {"act": "ACT", "Gr00tN1d6": "GR00T N1.6", "Gr00tN1d7": "GR00T N1.7"}
 
 
 def walk(roots: list[Path], marker: str, depth: int = 8, limit: int = 400) -> list[Path]:
@@ -79,6 +83,90 @@ def checkpoint(folder: Path) -> dict[str, Any] | None:
             "path": str(folder), "modified": folder.stat().st_mtime}
 
 
+def policy_label(manifest: dict, plan: dict) -> str:
+    """ACT, or the GR00T family the bundle was compiled from (N1.7 reads images with Qwen3-VL)."""
+    name = manifest.get("policy", "?")
+    if name != "groot":
+        return POLICIES.get(name, name)
+    context = (plan.get("profile") or {}).get("runtime_context") or {}
+    return "GR00T N1.7" if "qwen3" in str((context.get("image_preprocess") or {}).get("format")) else "GR00T N1.6"
+
+
+def graph_inspection(manifest: dict, plan: dict) -> dict:
+    """Link packaged graphs to declared runtime steps; absent reports stay absent."""
+    steps = plan.get("steps") or []
+    graphs = []
+    mla_ops = {"run_elf", "run_elf_chain", "run_bound_chain", "run_dit_chain", "run_device_chain"}
+    for artifact in manifest.get("graphs", []):
+        name = artifact.get("name")
+        uses = []
+        for index, step in enumerate(steps):
+            args = step.get("args") or {}
+            names = [args.get("graph"), *args.get("graphs", []), *args.get("prelude", [])]
+            if name and name in names:
+                uses.append({"index": index, "op": step.get("op"), "out": step.get("out")})
+        graphs.append({key: artifact.get(key) for key in (
+            "name", "elf", "precision", "elf_bytes", "input_elements", "output_elements",
+            "dram_layout", "external_dram_layout")} | {
+                "runtime_steps": uses,
+                "placement": "MLA (runtime plan)" if uses and all(s["op"] in mla_ops for s in uses) else None,
+                "operators": None, "memory_bytes": None, "compiler_warnings": None,
+            })
+    return {"graphs": graphs, "steps": [{"index": i, "op": s.get("op"), "out": s.get("out")}
+                                         for i, s in enumerate(steps)]}
+
+
+def build_reports(folder: Path, manifest: dict) -> dict:
+    """Use nearby build reports only when compiled graph hashes match the bundle."""
+    result = {"export": None, "compiled": None, "graphs": {}, "dataset": "", "checkpoint": ""}
+    embedded = (manifest.get("tool_versions") or {}).get("onnx_max_abs")
+    if isinstance(embedded, int | float):
+        result["export"] = {"max_abs": embedded, "source": "Bundle metadata"}
+    graphs = manifest.get("graphs") or []
+    for root in [path for parent in list(folder.parents)[:3] for path in (parent, parent / "build")]:
+        artifact = read_json(root / "artifact_manifest.json")
+        records = {row.get("name"): row for row in artifact.get("graphs", [])}
+        if graphs and records:
+            try:
+                matched = all(g.get("sha256") and g["sha256"] ==
+                              sha256_file(Path(records[g["name"]]["elf"])) for g in graphs)
+            except (OSError, KeyError, TypeError):
+                matched = False
+            if matched:
+                exported = artifact.get("export") or {}
+                report = read_json(root / "onnx_verification_report.json")
+                result.update(dataset=exported.get("dataset_root", ""),
+                              checkpoint=exported.get("checkpoint", ""))
+                if report:
+                    result["export"] = {**report, "source": "ONNX export report",
+                                        "path": str(root / "onnx_verification_report.json")}
+                result["graphs"] = {name: {"compile_seconds": row["duration_s"]}
+                                    for name, row in records.items()
+                                    if isinstance(row.get("duration_s"), int | float)}
+                break
+        compiled = read_json(root / "compiled/compile_results.json")
+        if not graphs or not all(g.get("sha256") and g["sha256"] ==
+                (compiled.get(g.get("name")) or {}).get("elf_sha256") for g in graphs):
+            continue
+        settings = read_json(root / "build.json")
+        result.update(dataset=settings.get("dataset", ""), checkpoint=settings.get("checkpoint", ""))
+        report = read_json(root / "export/onnx_verification_report.json")
+        if report:
+            result["export"] = {**report, "source": "ONNX export report", "path": str(root / "export/onnx_verification_report.json")}
+        # Full-policy device validation also depends on the runtime plan and fixtures.
+        if Path(settings.get("bundle", "")).resolve() == folder.resolve():
+            report = read_json(root / "check/report.json")
+            if report:
+                result["compiled"] = {**report.get("all", {}), "ok": report.get("ok"),
+                                      "source": "Compiled vs PyTorch · normalized actions",
+                                      "path": str(root / "check/report.json")}
+        result["graphs"] = {name: {"compile_seconds": row.get("minutes", 0) * 60,
+                                   "activation": row.get("activation"), "weights": row.get("weights")}
+                            for name, row in compiled.items() if isinstance(row.get("minutes"), int | float)}
+        break
+    return result
+
+
 def bundle(folder: Path) -> dict[str, Any]:
     manifest, plan = read_json(folder / "bundle.json"), read_json(folder / "plan.json")
     graphs = manifest.get("graphs", [])
@@ -86,8 +174,9 @@ def bundle(folder: Path) -> dict[str, Any]:
     wire = plan.get("wire") or {}
     return {
         "id": manifest.get("bundle_id", folder.name), "path": str(folder),
-        "policy": "GR00T N1.7" if "-v1.7-" in folder.name else
-                  POLICIES.get(manifest.get("policy"), manifest.get("policy", "?")),
+        "policy": policy_label(manifest, plan),
+        "inspection": graph_inspection(manifest, plan),
+        "validation": build_reports(folder, manifest),
         "graphs": len(graphs), "bytes": manifest.get("total_elf_bytes", 0),
         "precision": sorted({str(g.get("precision", "bf16")) for g in graphs}),
         "robot": robot.get("calibration_id", ""), "actions": wire.get("response_shape", []),
@@ -110,10 +199,11 @@ def latest_evidence(records: list[dict], board: str) -> dict[str, dict[str, Any]
         check = result.get("validation") or {}
         evidence[record["bundle"]] = {
             "board": board, "measured_at": record.get("ended_at") or record.get("started_at"),
+            "mean_ms": result.get("mean"), "min_ms": result.get("min"), "max_ms": result.get("max"),
             "median_ms": result.get("median"), "p95_ms": result.get("p95"),
             "p99_ms": result.get("p99"), "rate_hz": result.get("throughput_hz"),
             "iterations": result.get("iterations"), "stages": result.get("stages", []),
-            "check": check.get("status"), "cosine": check.get("cosine"), "max_abs": check.get("max_abs"),
+            "mean_abs": check.get("mean_abs"), "check": check.get("status"), "cosine": check.get("cosine"), "max_abs": check.get("max_abs"),
         }
     return evidence
 
@@ -232,8 +322,8 @@ def readiness(build: dict[str, Any], boards: list[dict[str, Any]],
         return {"status": status, "action": action if status == "needs_action" else None, "note": note}
 
     stages = {
-        "installed": stage(installed, "Install on a board", bool(online),
-                           "" if online else "No board online"),
+        "installed": stage(installed, "Install on a DevKit", bool(online),
+                           "" if online else "No DevKit online"),
         "benchmark": stage(bool(build.get("evidence")), "Run benchmark", installed),
         "robot_run": stage(bool(latest), "Run on robot", installed and build.get("robot_client", True),
                            "" if build.get("robot_client", True) else "Benchmark-only bundle"),
@@ -242,7 +332,7 @@ def readiness(build: dict[str, Any], boards: list[dict[str, Any]],
                           "" if reviewed_elsewhere else "Review runs of another policy to compare"),
         "export": stage(reviewed > 0 and to_fix == 0, "Export failures", to_fix > 0 and exportable,
                         "No export needed" if reviewed and not to_fix
-                        else "" if exportable or not to_fix else "The board's Studio cannot export yet"),
+                        else "" if exportable or not to_fix else "The DevKit's Studio cannot export yet"),
     }
     next_action = next((stages[key]["action"] for key, _ in STAGES if stages[key]["action"]), None)
     complete = all(stage["status"] == "done" or stage["note"] == "No export needed" for stage in stages.values())
@@ -334,7 +424,7 @@ def board_manifest(workbench: Workbench, index: str, everything: bool) -> tuple[
     """
     addresses = workbench.addresses()
     if not index.isdigit() or int(index) >= len(addresses):
-        raise LookupError("no such board")
+        raise LookupError("no such DevKit")
     url = board_url(addresses[int(index)])
     manifest = fetch(f"{url}/api/v1/robot-runs/improvement-manifest{'?all=1' if everything else ''}", 10.0)
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime(manifest.get("created_at") or 0))
@@ -347,13 +437,58 @@ class Workbench:
     def __init__(self, models: list[Path], bundles: list[Path], boards: list[str]) -> None:
         self.models, self.bundles, self.boards = models, bundles, boards
         self.lock, self.scanned, self.found = threading.Lock(), 0.0, ([], [])
+        self.jobs = WorkflowJobs()
+        self.inputs = Inputs()
+        self.upload_lock = threading.Lock()
+
+    def start_job(self, body: dict) -> dict:
+        """Run the existing CLI using a discovered checkpoint or bundle and saved DevKit."""
+        kind = body.get("kind")
+        if kind not in ("compile", "deploy"):
+            raise ValueError("Unknown workflow operation")
+        checkpoints, builds = self.scan()
+        output = Path(os.environ.get("POLIMA_OUTPUTS", workspace() / "outputs")) / "workbench" / (kind + "-" + secrets.token_hex(6))
+        if kind == "compile":
+            selected = next((c for c in checkpoints if c["path"] == body.get("checkpoint")), None)
+            if selected is None:
+                raise ValueError("Choose a discovered checkpoint")
+            dataset = str(body.get("dataset") or "").strip()
+            dataset = str(Path(dataset).expanduser().resolve()) if dataset else ""
+            if dataset and not Path(dataset).is_dir():
+                raise ValueError("The dataset directory does not exist")
+            problems = [r for r in prerequisites(selected["policy"], dataset) if not r["ok"]]
+            if problems:
+                raise ValueError("Setup required: " + " ".join(r["help"] for r in problems))
+            argv = compile_command(selected, dataset, output)
+        else:
+            selected = next((b for b in builds if b["path"] == body.get("bundle")), None)
+            if selected is None:
+                raise ValueError("Choose a discovered bundle")
+            target = next((d for d in devkits.load() if d["name"] == body.get("devkit")), None)
+            if target is None:
+                raise ValueError("Choose a saved DevKit from the DevKits page")
+            argv = [sys.executable, "-m", "polima", "deploy", "--bundle", selected["path"],
+                    "--devkit", target["name"]]
+            if body.get("start_server") is True:
+                argv.append("--start")
+        result = self.jobs.start(kind, argv, output)
+        if kind == "compile":
+            with self.lock:
+                self.bundles.append(output / "bundles" if selected["policy"] == "ACT" else output / "build" / "bundles")
+                self.scanned = 0
+        return result
 
     def scan(self, force: bool = False) -> tuple[list, list]:
         """Folder contents, re-read at most once a minute: large trees are slow to walk."""
         with self.lock:
             if force or time.time() - self.scanned > 60:
-                checkpoints = [c for c in map(checkpoint, walk(self.models, "config.json")) if c]
-                builds = [bundle(folder) for folder in walk(self.bundles, "bundle.json")]
+                imported = self.inputs.items()
+                models = [*self.models, *[Path(i["path"]) for i in imported if i["kind"] == "checkpoint"]]
+                checkpoints = [c for c in map(checkpoint, walk(models, "config.json")) if c]
+                workflow_root = Path(os.environ.get("POLIMA_OUTPUTS", workspace() / "outputs")) / "workbench"
+                roots = [*self.bundles, *workflow_root.glob("compile-*/bundles"),
+                         *workflow_root.glob("compile-*/build/bundles")]
+                builds = [bundle(folder) for folder in sorted(set(walk(roots, "bundle.json")))]
                 self.found, self.scanned = (checkpoints, builds), time.time()
             return self.found
 
@@ -387,10 +522,15 @@ class Workbench:
             "computer": {"host": socket.gethostname(), "compiler": str(compiler or ""),
                          "model_folders": [str(p) for p in self.models],
                          "bundle_folders": [str(p) for p in self.bundles]},
-            "checkpoints": sorted(checkpoints, key=lambda c: -c["modified"]),
+            "checkpoints": sorted([{**c, "dataset": next((b["validation"]["dataset"] for b in builds
+                              if b.get("validation", {}).get("checkpoint") == c["path"]), "")}
+                                   for c in checkpoints], key=lambda c: -c["modified"]),
             "bundles": sorted(builds, key=lambda b: -b["modified"]),
             "boards": boards,
             "generated": self.scanned,
+            "workflow": self.jobs.snapshot(),
+            "inputs": self.inputs.items(),
+            "devkits": [{"name": d["name"], "host": d["host"]} for d in devkits.load()],
         }
 
 
@@ -418,11 +558,17 @@ def serve(workbench: Workbench, host: str = "127.0.0.1", port: int = 8686) -> Th
             path = self.path.split("?", 1)[0]
             if path in ("/", "/index.html"):
                 return self.send((STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
+            if path == "/guide":
+                return self.send((STATIC / "guide.html").read_bytes(), "text/html; charset=utf-8")
             if path == "/logo.svg":
                 return self.send(LOGO.read_bytes(), "image/svg+xml")
+            if path == "/api/v1/instance":
+                return self.send(json.dumps({"instance": os.environ.get("POLIMA_WORKBENCH_INSTANCE")}).encode(), "application/json")
             if path == "/api/v1/session":
                 return self.send(json.dumps({"csrf_token": token}).encode(), "application/json",
-                                 cookie=f"polima_csrf={token}; HttpOnly; SameSite=Strict; Path=/")
+                                 cookie=f"polima_workbench_csrf={token}; HttpOnly; SameSite=Strict; Path=/")
+            if path == "/api/v1/workflow":
+                return self.send(json.dumps(workbench.jobs.snapshot()).encode(), "application/json")
             if path == "/api/v1/snapshot":
                 refresh = self.path.endswith("?refresh=1")
                 return self.send(json.dumps(workbench.snapshot(refresh)).encode(), "application/json")
@@ -438,27 +584,80 @@ def serve(workbench: Workbench, host: str = "127.0.0.1", port: int = 8686) -> Th
                 return self.send(body, "application/json", filename=name)
             self.send(b"not found", "text/plain", 404)
 
+        def do_PUT(self):
+            from urllib.parse import parse_qs, urlsplit
+            cookie = SimpleCookie(self.headers.get("Cookie") or "").get("polima_workbench_csrf")
+            if not (cookie and hmac.compare_digest(cookie.value, token) and
+                    hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), token)):
+                return self.send(b'{"error":"Invalid session"}', "application/json", 403)
+            if urlsplit(self.path).path != "/api/v1/imports/chunk":
+                return self.send(b'{}', "application/json", 404)
+            try:
+                query = parse_qs(urlsplit(self.path).query)
+                with workbench.upload_lock:
+                    reply = workbench.inputs.uploads.receive(query['id'][0], query['path'][0],
+                        int(query['offset'][0]), self.rfile, int(self.headers.get('Content-Length', 0)))
+                self.send(json.dumps(reply).encode(), "application/json")
+            except (ValueError, KeyError, OSError) as error:
+                self.send(json.dumps({"error": str(error)}).encode(), "application/json", 400)
+
         def do_POST(self):
-            """Add or remove a saved DevKit. Only the saved list changes; ssh runs a fixed probe."""
+            """Run an authenticated workflow or update the saved DevKit list."""
             path = self.path.split("?", 1)[0]
-            cookie = SimpleCookie(self.headers.get("Cookie") or "").get("polima_csrf")
+            cookie = SimpleCookie(self.headers.get("Cookie") or "").get("polima_workbench_csrf")
             header = self.headers.get("X-CSRF-Token") or ""
             if not (cookie and hmac.compare_digest(cookie.value.encode(), token.encode())
                     and hmac.compare_digest(header.encode(), token.encode())):
                 return self.send(json.dumps({"error": "invalid CSRF token"}).encode(), "application/json", 403)
             try:
                 length = int(self.headers.get("Content-Length") or 0)
-                body = json.loads(self.rfile.read(min(length, 4096)) or b"{}")
-                if path == "/api/v1/devkits":
-                    entry = devkits.add(str(body.get("host", "")), str(body.get("key", "")),
-                                        str(body.get("name", "")))
-                    reply = {**entry, "ssh": devkits.probe(entry, BoardConfig().ssh_options)}
+                if not 0 <= length <= 16 * 1024 * 1024:
+                    raise ValueError("Request is too large.")
+                body = json.loads(self.rfile.read(length) or b"{}")
+                if not isinstance(body, dict):
+                    raise TypeError("Expected a JSON object.")
+                if path == "/api/v1/shutdown" and os.environ.get("POLIMA_WORKBENCH_INSTANCE"):
+                    if (workbench.jobs.snapshot() or {}).get("status") == "running":
+                        raise ValueError("A workflow is running. Wait for it to finish before stopping Workbench.")
+                    self.send(b'{"ok": true}', "application/json")
+                    self.wfile.flush()
+                    threading.Thread(target=self.server.shutdown, daemon=True).start()
+                    return
+                elif path == "/api/v1/prerequisites":
+                    reply = {"checks": prerequisites(str(body.get("policy", "")), str(body.get("dataset", "")))}
+                elif path == "/api/v1/imports":
+                    reply = workbench.inputs.create(body.get("kind"), body.get("files", []))
+                elif path == "/api/v1/imports/status":
+                    reply = workbench.inputs.uploads.status(body.get("id", ""))
+                elif path == "/api/v1/imports/finish":
+                    reply = workbench.inputs.finish(body.get("id", ""))
+                    workbench.scanned = 0
+                elif path == "/api/v1/imports/cancel":
+                    workbench.inputs.uploads.discard(body.get("id", ""))
+                    reply = {"ok": True}
+                elif path == "/api/v1/workflow":
+                    reply = workbench.start_job(body)
+                elif path == "/api/v1/devkits":
+                    host, key = str(body.get("host", "")), str(body.get("key", ""))
+                    devkits.validate(host, key, str(body.get("name", "")))
+                    if body.get("password"):  # used for this one login only; never stored
+                        key = devkits.install_key(host, str(body["password"]), key)
+                    entry = devkits.validate(host, key, str(body.get("name", "")))
+                    connection = devkits.probe(entry, BoardConfig().ssh_options)
+                    if not connection["reachable"]:
+                        raise ValueError(connection.get("error", "Could not connect to the DevKit."))
+                    entry = devkits.add(host, key, entry["name"])
+                    reply = {**entry, "ssh": connection}
                 elif path == "/api/v1/devkits/remove":
                     devkits.remove(str(body.get("name", "")))
                     reply = {"removed": body["name"]}
                 else:
                     return self.send(b"not found", "text/plain", 404)
-            except (ValueError, LookupError, AttributeError) as error:
+            except subprocess.TimeoutExpired:
+                return self.send(b'{"error":"SSH connection timed out. Check the DevKit address and network access from the Workbench host."}', "application/json", 400)
+            except subprocess.CalledProcessError:
+                return self.send(b'{"error":"SSH key setup failed. Check key-file permissions on the Workbench host."}', "application/json", 400)
+            except (ValueError, TypeError, LookupError, AttributeError, OSError) as error:
                 return self.send(json.dumps({"error": str(error)}).encode(), "application/json", 400)
             self.send(json.dumps(reply).encode(), "application/json")
 

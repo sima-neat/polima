@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 import webbrowser
+
+from polima.util.net import lan_address
 
 SERVICE = "polima-studio.service"
 
@@ -37,12 +38,9 @@ def _service_url() -> str:
     public = os.environ.get("POLIMA_STUDIO_PUBLIC_URL")
     if public:
         return public.rstrip("/")
-    if host in {"0.0.0.0", "::"}:
-        try:
-            addresses = socket.gethostbyname_ex(socket.gethostname())[2]
-            host = next(address for address in addresses if not address.startswith("127."))
-        except (OSError, StopIteration):
-            host = "<som-ip>"
+    host = lan_address(host)
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
     return f"http://{host}:{port}"
 
 
@@ -72,7 +70,15 @@ def _systemctl(args: list[str], *, mutate: bool, dry_run: bool = False) -> int:
         print("+ " + " ".join(command))
         return 0
     try:
-        return subprocess.run(command, check=False).returncode
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+        for output, stream in ((result.stdout, sys.stdout), (result.stderr, sys.stderr)):
+            if isinstance(output, str) and output:
+                print(output, end="", file=stream)
+        if result.returncode and isinstance(result.stderr, str) and "not found" in result.stderr:
+            print("Studio service is not installed. From your PoLiMa checkout on the DevKit, "
+                  "run ./scripts/install_polima_modalix.sh, then polima studio start. "
+                  "See docs/install.md for prerequisites. No installation was performed.", file=sys.stderr)
+        return result.returncode
     except FileNotFoundError as exc:
         print(f"polima studio: {exc.filename} is not installed", file=sys.stderr)
         return 2
@@ -98,7 +104,15 @@ def _logs(follow: bool) -> int:
     command = ["journalctl", "-u", SERVICE, "--no-pager"]
     command += ["--follow"] if follow else ["-n", "100"]
     try:
-        return subprocess.run(command, check=False).returncode
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+        for output, stream in ((result.stdout, sys.stdout), (result.stderr, sys.stderr)):
+            if isinstance(output, str) and output:
+                print(output, end="", file=stream)
+        if result.returncode and isinstance(result.stderr, str) and "not found" in result.stderr:
+            print("Studio service is not installed. From your PoLiMa checkout on the DevKit, "
+                  "run ./scripts/install_polima_modalix.sh, then polima studio start. "
+                  "See docs/install.md for prerequisites. No installation was performed.", file=sys.stderr)
+        return result.returncode
     except FileNotFoundError:
         print("polima studio: journalctl is not installed", file=sys.stderr)
         return 2
@@ -108,6 +122,10 @@ def run(argv: list[str], parent=None) -> int:
     # Backward compatibility for the former foreground-only command.
     if argv and argv[0].startswith("-") and argv[0] not in {"-h", "--help"}:
         argv = ["serve", *argv]
+    if argv[:1] == ["serve"]:  # everything after it is Studio's own options (--port, --host, --root)
+        from polima.studio.main import main
+
+        return main(argv[1:])
     args = _parser().parse_args(argv)
     action = args.action or "status"
     dry_run = bool(getattr(parent, "dry_run", False))

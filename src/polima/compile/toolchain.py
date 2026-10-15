@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from shutil import which
 
-#: Searched in order. The `/sdk-extensions` entry is where the SiMa container
-#: mounts it, and is also the path baked into `llima-compile`'s shebang.
+#: Searched in order. `~/sdk-extensions` is where sima-cli installs the compiler
+#: today; `~/sima-sdk-extensions` is the older location and can hold a stale
+#: release, so it comes after. The `/sdk-extensions` entry is where the SiMa
+#: container mounts it, and is also the path baked into `llima-compile`'s shebang.
 SEARCH_PATH = (
     "$MODEL_COMPILER_BIN",
-    "~/sima-sdk-extensions/model-compiler/bin",
     "~/sdk-extensions/model-compiler/bin",
+    "~/sima-sdk-extensions/model-compiler/bin",
     "/sdk-extensions/model-compiler/bin",
 )
 
@@ -31,8 +34,8 @@ def find_compiler_bin(config=None) -> Path | None:
     if explicit:
         candidates.append(str(explicit))
     candidates.append(os.environ.get("MODEL_COMPILER_BIN", ""))
-    candidates.append(os.path.expanduser("~/sima-sdk-extensions/model-compiler/bin"))
     candidates.append(os.path.expanduser("~/sdk-extensions/model-compiler/bin"))  # sima-cli
+    candidates.append(os.path.expanduser("~/sima-sdk-extensions/model-compiler/bin"))
     candidates.append("/sdk-extensions/model-compiler/bin")
     for candidate in candidates:
         if candidate and (Path(candidate) / "python").exists():
@@ -96,8 +99,8 @@ def activation_env(script: str | Path) -> dict[str, str]:
 
     try:
         result = subprocess.run(
-            ["bash", "-c", f"source {script} >/dev/null 2>&1 && env -0"],
-            capture_output=True, timeout=120,
+            ["bash", "-c", 'source "$1" >/dev/null 2>&1 && env -0', "polima", str(script)],
+            capture_output=True, timeout=120, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return {}
@@ -117,13 +120,13 @@ def activation_env(script: str | Path) -> dict[str, str]:
 def compiler_env(compiler_bin: str | Path, source_root: str | Path | None = None) -> dict[str, str]:
     """Environment for a compiler subprocess.
 
-    Two things matter here, both inherited from the legacy scripts:
+    Two things matter here:
 
-    * `PATH` is prefixed with the compiler bin, because afe shells out to its own
-      helper executables and finds them by name.
+    * Add the compiler bin to `PATH` only when an installed SDK helper is absent.
+      Existing SDK activation remains authoritative.
     * `CUDA_VISIBLE_DEVICES` is cleared. The compiler will happily grab a GPU and
-      then contend with a training run on the same host; the legacy scripts set
-      it empty for exactly that reason. `MODEL_COMPILER_CUDA_VISIBLE_DEVICES`
+      then contend with a training run on the same host.
+      `MODEL_COMPILER_CUDA_VISIBLE_DEVICES`
       overrides it when the GPU is genuinely wanted.
     """
     env = dict(os.environ)
@@ -135,7 +138,10 @@ def compiler_env(compiler_bin: str | Path, source_root: str | Path | None = None
     if script is not None:
         env.update(activation_env(script))
 
-    env["PATH"] = f"{compiler_bin}:{env.get('PATH', '')}"
+    helpers = [path.name for path in Path(compiler_bin).iterdir()
+               if path.name.startswith("mla-") or path.name in ("mpkproject", "mpk2conf")]
+    if any(which(name, path=env.get("PATH", "")) is None for name in helpers):
+        env["PATH"] = f"{compiler_bin}:{env.get('PATH', '')}"
     env["CUDA_VISIBLE_DEVICES"] = env.get("MODEL_COMPILER_CUDA_VISIBLE_DEVICES", "")
     if source_root:
         existing = env.get("PYTHONPATH", "")

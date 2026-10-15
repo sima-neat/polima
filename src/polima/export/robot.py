@@ -44,10 +44,9 @@ def write_rest_pose(dataset_root: str | Path, output: str | Path,
 
 
 def write_so101_rest_pose(dataset_root, output, joint_names):
-    """GR00T/SmolVLA export: the established ACT convention, median episode-start state.
+    """GR00T export: the ACT convention, median episode-start state.
 
-    Kept byte-for-byte with the robot-verified GR00T bundles (it records the
-    dataset's resolved path as its source).
+    Records the dataset's resolved path as its source.
     """
     root = Path(dataset_root)
     info = read_json(root / "meta/info.json")
@@ -60,7 +59,7 @@ def write_so101_rest_pose(dataset_root, output, joint_names):
     write_json(
         Path(output),
         {
-            "source_dataset": str(root.resolve()),
+            "source_dataset": root.resolve().name,
             "method": f"median observation.state at frame_index 0 across {len(states)} episodes",
             "calibration_id": "so-arm101",
             "positions": dict(zip(joint_names, map(float, np.median(states, axis=0)))),

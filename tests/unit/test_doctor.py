@@ -1,10 +1,8 @@
 """`polima doctor` checks the platform it is on.
 
-Every landmine doctor was written for is a host landmine -- the workspace
-checkout, the legacy lerobot clones, the SiMa compiler venv, /ml_datasets. A SoM
-has none of them, so before the platform gate a board install reported
-`fail=1 warn=8` that no board action could clear, and `polima-doctor` exited 1
-on a perfectly healthy board.
+Most checks are host checks -- the workspace checkout, the lerobot clones, the
+SiMa compiler environment and training datasets. A DevKit has none of them, so those sections
+are skipped there and a healthy DevKit install exits 0.
 """
 
 from __future__ import annotations
@@ -118,7 +116,7 @@ def test_an_unconfigured_board_is_a_warning_not_an_ssh(monkeypatch):
 
 
 def test_a_healthy_board_exits_zero(ran, monkeypatch):
-    """The regression this gate exists for: `polima-doctor` on a working SoM."""
+    """`polima-doctor` on a working DevKit exits 0."""
     _as(monkeypatch, BOARD)
     assert doctor.run([]) == 0
 
@@ -138,3 +136,53 @@ def test_skip_notice_is_not_a_failure(monkeypatch):
     doc = doctor.Doctor(json_output=True)
     doctor.skip_host_sections(doc, BOARD)
     assert doc.worst == table.OK
+
+
+def test_a_host_dependency_that_cannot_be_imported_is_a_failure(monkeypatch):
+    """pyarrow built for another numpy is installed, found, and unusable."""
+    def broken(name):
+        if name == "pyarrow":
+            raise ImportError("pyarrow requires NumPy 2.0 or newer")
+        return object()
+
+    monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(doctor.importlib, "import_module", broken)
+    doc = doctor.Doctor(json_output=True)
+    doctor.check_host(doc)
+    by_check = {result["check"]: result for result in doc.results}
+    assert by_check["host dependency pyarrow"]["status"] == table.FAIL
+    assert "NumPy 2.0" in by_check["host dependency pyarrow"]["detail"]
+    assert by_check["host dependency torch"]["status"] == table.OK
+
+
+def test_a_compiler_older_than_the_documented_one_is_noticed():
+    assert doctor._older_than("2.1.0", "2.1.3")
+    assert not doctor._older_than("2.1.3", "2.1.3")
+    assert not doctor._older_than("2.2.0", "2.1.3")
+    # A development build string is reported as found, not guessed at.
+    assert not doctor._older_than("main-abc123", "2.1.3")
+
+
+def test_import_probe_does_not_expose_foreign_site_packages(tmp_path, monkeypatch):
+    import shutil
+    from pathlib import Path
+
+    from polima.cli import doctor
+
+    package = Path(doctor.__file__).resolve().parents[1]
+    copied = tmp_path / 'site-packages/polima'
+    shutil.copytree(package, copied, ignore=shutil.ignore_patterns('__pycache__', 'static', 'ui'))
+    (copied.parent / 'numpy.py').write_text('raise RuntimeError("foreign NumPy imported")')
+    monkeypatch.setattr(doctor, '__file__', str(copied / 'cli/doctor.py'))
+    monkeypatch.setattr(doctor, '_find_compiler_bin', lambda config: None)
+    report = doctor.Doctor(json_output=True)
+    doctor.check_import_matrix(report, None)
+    assert report.results[0]['status'] == 'ok', report.results
+
+
+def test_deploy_only_skips_compiler_and_training_checks(ran, monkeypatch):
+    _as(monkeypatch, HOST)
+    monkeypatch.setattr(doctor, 'check_host', lambda doc, host_side: pytest.fail('training checks') if host_side else None)
+    monkeypatch.setattr(doctor, 'check_import_matrix', lambda doc, config, **kw: pytest.fail('compiler imports') if kw.get('include_compiler', True) else None)
+    assert doctor.run(['--deploy-only', '--no-devkit']) == 0
+    assert not any(name in ran for name in HOST_SECTIONS)

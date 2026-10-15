@@ -14,6 +14,7 @@ guarantee:
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 
@@ -21,7 +22,6 @@ import pytest
 
 from polima import role
 from polima.cli import main as cli_main
-from polima.cli.entry import _split_globals
 
 #: Everything the board must be able to import with numpy alone.
 CORE_MODULES = [
@@ -64,7 +64,7 @@ def test_core_imports_without_heavy_dependencies():
     # since numpy is a legitimate dependency. The point is a clean sys.modules,
     # not a clean sys.path.
     result = subprocess.run(
-        [sys.executable, "-I", "-c", program], capture_output=True, text=True, timeout=120
+        [sys.executable, "-I", "-c", program], capture_output=True, text=True, timeout=120, check=False
     )
     assert result.returncode == 0, result.stderr
     leaked = result.stdout.strip().removeprefix("LEAKED:").strip()
@@ -107,52 +107,93 @@ def test_wrong_machine_gives_exit_code_3(monkeypatch, capsys):
     assert "model-compiler" in message
 
 
-def test_import_legacy_is_exempt_from_the_compiler_gate(monkeypatch, tmp_path, capsys):
-    """--import-legacy only copies built ELFs, so it must run on a board too.
+def test_import_build_is_exempt_from_the_compiler_gate(monkeypatch, tmp_path, capsys):
+    """--import-build only copies built ELFs, so it must run on a DevKit too.
 
-    Gating the whole `compile` command on afe would block the one path Phase 1a
-    depends on.
+    Gating the whole `compile` command on afe would block it.
     """
     monkeypatch.setattr(role, "detect", lambda: BOARD)
     # Reaches the command (and fails on the empty dir), rather than exiting 3.
-    with pytest.raises(FileNotFoundError):
-        cli_main.main(["compile", "--import-legacy", str(tmp_path / "absent")])
+    assert cli_main.main(["compile", "--import-build", str(tmp_path / "absent")]) == 1
+    assert "no such build directory" in capsys.readouterr().err
+
+
+def test_command_errors_print_one_line_without_traceback(monkeypatch, capsys):
+    from polima.cli import doctor
+    from polima.deploy.ssh import BoardError
+
+    def fail(argv, parent=None):
+        raise BoardError("cannot reach sima@devkit.invalid")
+
+    monkeypatch.setattr(doctor, "run", fail)
+    assert cli_main.main(["doctor"]) == 1
+    err = capsys.readouterr().err
+    assert "polima doctor: error: cannot reach sima@devkit.invalid" in err
+    assert "Traceback" not in err
+
+
+def test_debug_log_level_keeps_the_full_error(monkeypatch):
+    import logging
+
+    from polima.cli import doctor
+
+    def fail(argv, parent=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(doctor, "run", fail)
+    monkeypatch.setattr(cli_main, "setup", lambda level: None)
+    root = logging.getLogger()
+    previous = root.level
+    root.setLevel(logging.DEBUG)
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            cli_main.main(["doctor"])
+    finally:
+        root.setLevel(previous)
+
+
+def test_unknown_policy_names_the_available_ones():
+    from polima.policies.registry import get_policy
+
+    with pytest.raises(ImportError, match="unknown policy 'nope'; available:"):
+        get_policy("nope")
+
+
+def test_saved_compiler_location_satisfies_the_compile_gate(monkeypatch, tmp_path):
+    compiler = tmp_path / "model-compiler" / "bin"
+    compiler.mkdir(parents=True)
+    (compiler / "python").touch()
+    config_home = tmp_path / "config"
+    (config_home / "polima").mkdir(parents=True)
+    (config_home / "polima" / "config.json").write_text(
+        json.dumps({"paths": {"model_compiler_bin": str(compiler)}}))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MODEL_COMPILER_BIN", raising=False)
+    assert role.detect().can_compile
 
 
 def test_needs_capability_refines_by_argv():
     from polima.cli import compile as compile_cli
 
     assert compile_cli.needs_capability(["--policy", "act"]) == "compile"
-    assert compile_cli.needs_capability(["--import-legacy", "/x"]) is None
-    assert compile_cli.needs_capability(["--import-legacy=/x"]) is None
-
-
-def test_umbrella_dispatch_matches_entry_points():
-    from polima.cli import entry
-
-    for command in ("compile", "deploy", "run", "robot"):
-        attribute = {"compile": "compile_", "run": "run_"}.get(command, command)
-        assert hasattr(entry, attribute), f"missing console-script entry for {command}"
-
-
-@pytest.mark.parametrize(
-    ("argv", "expected_globals", "expected_rest"),
-    [
-        (["--policy", "act"], [], ["--policy", "act"]),
-        (["--dry-run", "--policy", "act"], ["--dry-run"], ["--policy", "act"]),
-        (["--config", "x.yaml", "--policy", "act"], ["--config", "x.yaml"], ["--policy", "act"]),
-        (["--log-level", "DEBUG"], ["--log-level", "DEBUG"], []),
-        (["--config=x.yaml", "-v"], ["--config=x.yaml"], ["-v"]),
-        ([], [], []),
-    ],
-)
-def test_entry_splits_shared_flags(argv, expected_globals, expected_rest):
-    assert _split_globals(argv) == (expected_globals, expected_rest)
+    assert compile_cli.needs_capability(["--import-build", "/x"]) is None
+    assert compile_cli.needs_capability(["--import-build=/x"]) is None
 
 
 def test_split_argv_finds_the_command():
-    assert cli_main.split_argv(["list", "--graphs"]) == ([], "list", ["--graphs"])
+    assert cli_main.split_argv(["run", "--fixture"]) == ([], "run", ["--fixture"])
     assert cli_main.split_argv(["--dry-run", "deploy", "--bundle", "x"]) == (
         ["--dry-run"], "deploy", ["--bundle", "x"]
     )
     assert cli_main.split_argv(["--version"]) == (["--version"], None, [])
+
+
+@pytest.mark.parametrize('command', ['compile', 'deploy', 'run', 'robot', 'studio', 'workbench'])
+@pytest.mark.parametrize('flag', ['--help', '-h'])
+def test_help_does_not_require_runtime_capabilities(monkeypatch, capsys, command, flag):
+    monkeypatch.setattr(role, 'detect', lambda: BOARD)
+    with pytest.raises(SystemExit) as result:
+        cli_main.main([command, flag])
+    assert result.value.code == 0
+    assert 'usage: polima ' + command in capsys.readouterr().out

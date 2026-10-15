@@ -274,14 +274,25 @@ def install_bundle(tree: Path, models: Path, scratch: Path, progress: Progress,
 
 
 def validate_calibration(value: Any, existing: dict[str, Any] | None) -> dict[str, Any]:
-    """A LeRobot motor calibration: motor name -> integer register values."""
+    """Validate the six STS3215 motor calibrations used by the SO-101 follower."""
+    from polima.robot.so101 import JOINTS
+
     if not isinstance(value, dict) or not value:
         raise ValueError("calibration must be a JSON object of motors")
+    motors = {joint.removesuffix(".pos"): index for index, joint in enumerate(JOINTS, 1)}
+    if set(value) != set(motors):
+        raise ValueError("calibration must contain the six SO-101 joints: " + ", ".join(motors))
     for motor, fields in value.items():
         if not isinstance(fields, dict) or any(
             type(fields.get(name)) is not int for name in CALIBRATION_FIELDS
         ):
             raise ValueError(f"{motor}: needs integer {', '.join(CALIBRATION_FIELDS)}")
+        if fields["id"] != motors[motor]:
+            raise ValueError(f"{motor}: expected motor ID {motors[motor]}")
+        if fields["drive_mode"] not in (0, 1):
+            raise ValueError(f"{motor}: drive_mode must be 0 or 1")
+        if not 0 <= fields["range_min"] < fields["range_max"] <= 4095:
+            raise ValueError(f"{motor}: requires 0 <= range_min < range_max <= 4095")
     if existing and set(existing) != set(value):
         raise ValueError("motor names differ from this bundle's calibration (another robot?)")
     return value

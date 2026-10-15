@@ -77,7 +77,7 @@ class RobotEnv:
 def probe(python: str | Path, origin: str, timeout: float = 60.0) -> RobotEnv | None:
     """Import-probe an interpreter. Returns None if it cannot even run."""
     try:
-        result = subprocess.run([str(python), "-c", PROBE], capture_output=True,
+        result = subprocess.run([str(python), "-c", PROBE], capture_output=True, check=False,
                                 text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None

@@ -1,8 +1,7 @@
 """Wire protocol.
 
-The critical test is byte-exactness against ACT/scripts/act_som_client.py: the
-C++ server on the board is already compiled against that framing, so PoLiMa's
-spec-driven packer must produce identical bytes or Phase 1a fails on hardware.
+The critical test is byte-exactness: the C++ server on the DevKit is compiled
+against this framing, so the spec-driven packer must produce identical bytes.
 """
 
 from __future__ import annotations
@@ -15,11 +14,11 @@ import pytest
 from polima.policies.act import ACT_SPEC
 from polima.wire.protocol import Protocol, ProtocolError, coerce_image
 
-# Transcribed from act_som_client.py:13-16 -- the values PoLiMa must reproduce.
-LEGACY_MAGIC = 0x4D544341
-LEGACY_VERSION = 1
-LEGACY_HEADER = struct.Struct("<IIII")
-LEGACY_RESPONSE = struct.Struct("<IIIIfI")
+# The framing the C++ server expects.
+WIRE_MAGIC = 0x4D544341
+WIRE_VERSION = 1
+WIRE_HEADER = struct.Struct("<IIII")
+WIRE_RESPONSE = struct.Struct("<IIIIfI")
 
 
 @pytest.fixture
@@ -27,27 +26,27 @@ def protocol():
     return Protocol(ACT_SPEC.wire)
 
 
-def test_spec_constants_match_the_legacy_client():
-    assert ACT_SPEC.wire.magic == LEGACY_MAGIC
-    assert ACT_SPEC.wire.version == LEGACY_VERSION
+def test_spec_constants_match_the_wire_format():
+    assert ACT_SPEC.wire.magic == WIRE_MAGIC
+    assert ACT_SPEC.wire.version == WIRE_VERSION
     assert ACT_SPEC.wire.magic_ascii == "ACTM"
 
 
 def test_header_layouts_match(protocol):
-    assert protocol.request_header.size == LEGACY_HEADER.size == 16
-    assert protocol.response_header.size == LEGACY_RESPONSE.size == 24
+    assert protocol.request_header.size == WIRE_HEADER.size == 16
+    assert protocol.response_header.size == WIRE_RESPONSE.size == 24
 
 
 def test_packed_request_is_byte_identical_to_act_som_client(protocol):
-    """Reproduces act_som_client.py:62-63 exactly."""
+    """Header, then each tensor in spec order, as little-endian float32."""
     rng = np.random.default_rng(0)
     image0 = rng.standard_normal((480, 640, 3)).astype(np.float32)
     image1 = rng.standard_normal((480, 640, 3)).astype(np.float32)
     state = rng.standard_normal(6).astype(np.float32)
     request_id = 12345
 
-    legacy = LEGACY_HEADER.pack(LEGACY_MAGIC, LEGACY_VERSION, request_id, 0)
-    legacy += (
+    expected = WIRE_HEADER.pack(WIRE_MAGIC, WIRE_VERSION, request_id, 0)
+    expected += (
         np.ascontiguousarray(image0, dtype="<f4").tobytes()
         + np.ascontiguousarray(image1, dtype="<f4").tobytes()
         + np.ascontiguousarray(state, dtype="<f4").tobytes()
@@ -56,18 +55,18 @@ def test_packed_request_is_byte_identical_to_act_som_client(protocol):
     ours = protocol.pack_request(
         request_id, {"image0": image0, "image1": image1, "state": state}
     )
-    assert ours == legacy
+    assert ours == expected
     # 16-byte header + 2 images + 6 joints
     assert len(ours) == 16 + 2 * 480 * 640 * 3 * 4 + 6 * 4 == protocol.request_size()
 
 
-def test_response_parsing_matches_legacy_unpack(protocol):
+def test_response_parsing_matches_the_wire_format(protocol):
     actions = np.arange(600, dtype=np.float32).reshape(100, 6)
     raw = protocol.pack_response(7, actions, latency_ms=12.5)
 
-    magic, version, request_id, status, latency, count = LEGACY_RESPONSE.unpack(raw[:24])
+    magic, version, request_id, status, latency, count = WIRE_RESPONSE.unpack(raw[:24])
     assert (magic, version, request_id, status, count) == (
-        LEGACY_MAGIC, LEGACY_VERSION, 7, 0, 600
+        WIRE_MAGIC, WIRE_VERSION, 7, 0, 600
     )
     assert latency == pytest.approx(12.5)
 
@@ -135,7 +134,7 @@ def test_coerce_image_accepts_chw_and_hwc():
 
 
 def test_coerce_image_scales_uint8_range():
-    """The `>1.0 => /255` heuristic from act_som_client.py:50-51."""
+    """The `>1.0 => /255` heuristic."""
     image = np.full((480, 640, 3), 255, np.uint8)
     assert coerce_image(image, (480, 640, 3)).max() == pytest.approx(1.0)
     small = np.full((480, 640, 3), 0.5, np.float32)

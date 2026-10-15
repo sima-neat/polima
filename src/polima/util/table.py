@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
 
 OK = "ok"
 WARN = "warn"

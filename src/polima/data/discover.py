@@ -1,8 +1,4 @@
-"""Find LeRobot datasets on disk.
-
-Replaces the `find "$DATASET_PARENT" -maxdepth 1 -type d -exec test -f
-'{}/meta/info.json'` incantation duplicated in all three train scripts.
-"""
+"""Find LeRobot datasets on disk: directories that hold meta/info.json."""
 
 from __future__ import annotations
 
@@ -42,8 +38,8 @@ def is_dataset(path: str | Path) -> bool:
 
 
 def default_repo_id(root: str | Path) -> str:
-    """The `local/<basename>` convention the legacy scripts synthesize when the
-    caller does not pass --dataset-id."""
+    """The `local/<basename>` id used when the caller does not pass
+    --dataset-id."""
     return f"local/{Path(root).resolve().name}"
 
 
@@ -82,7 +78,7 @@ def resolve_roots(
     """Accept either a bare dataset name (resolved under `parent`) or a path.
 
     `polima train --dataset rcwb_f_t` and
-    `polima train --dataset-root /ml_datasets/rcwb_f_t` both work.
+    `polima train --dataset-root /path/to/dataset` both work.
     """
     parent = Path(parent)
     roots: list[Path] = []

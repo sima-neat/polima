@@ -1,13 +1,10 @@
-"""SSH and rsync to the board, over one multiplexed connection.
+"""SSH and rsync to the DevKit, over one multiplexed connection.
 
-The legacy deploy scripts open a fresh ssh connection for every step -- mkdir,
-each rsync, each scp, the cmake configure, the build, the path rewrite, the
-launch, the health poll. That is a dozen-plus TCP handshakes and key exchanges
-per deploy.
-
-BoardSession opens one ControlMaster socket and runs everything through it. It
-also means a deploy either has a working connection or fails immediately, rather
-than dying halfway through with half the bundle transferred.
+BoardSession opens one ControlMaster socket and runs every step -- mkdir, each
+rsync, the build, the launch, the health poll -- through it, rather than paying
+a TCP handshake and key exchange per step. A deploy either has a working
+connection or fails immediately, rather than dying halfway through with half
+the bundle transferred.
 """
 
 from __future__ import annotations
@@ -18,12 +15,14 @@ import subprocess
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TypeVar
 
 from polima.config.base import BoardConfig
 from polima.util.logging import get
 from polima.util.proc import Result, run
 
 log = get("deploy.ssh")
+_Session = TypeVar("_Session", bound="BoardSession")
 
 
 class BoardError(RuntimeError):
@@ -41,7 +40,7 @@ class BoardSession:
 
     # ------------------------------------------------------------ lifecycle
 
-    def __enter__(self) -> "BoardSession":
+    def __enter__(self: _Session) -> _Session:  # noqa: PYI019
         if self.board.control_master and not self.dry_run:
             self._open_master()
         return self
@@ -64,7 +63,7 @@ class BoardSession:
                 "-o", "ControlPersist=120",
                 "-fN", self.board.host,
             ],
-            capture_output=True, text=True,
+            capture_output=True, text=True, check=False,
         )
         if result.returncode != 0:
             self._control_path = None
@@ -80,7 +79,7 @@ class BoardSession:
             subprocess.run(
                 ["ssh", "-o", f"ControlPath={self._control_path}", "-O", "exit",
                  self.board.host],
-                capture_output=True,
+                capture_output=True, check=False,
             )
             self._control_path = None
         if self._temp_dir:

@@ -1,4 +1,4 @@
-"""`polima-deploy` -- push a bundle to a Modalix board, serving only on request."""
+"""`polima deploy` -- push a bundle to a Modalix DevKit, serving only on request."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from pathlib import Path
 
 from polima.bundle.contract import spec_from_bundle
 from polima.bundle.layout import Bundle
-from polima.cli import wizard
 from polima.config.base import NO_BOARD_MESSAGE
 from polima.config.loader import load
 from polima.deploy import board as board_ops
@@ -25,25 +24,20 @@ from polima.util.paths import outputs_root
 
 
 def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
-    if wizard.bare_invocation_is_interactive(argv):
-        composed = _session(parent)
-        if composed is None:
-            return 130
-        argv = composed
-
-    parser = argparse.ArgumentParser(prog="polima-deploy")
+    parser = argparse.ArgumentParser(prog="polima deploy")
     parser.add_argument("--bundle", help="bundle id or path")
-    parser.add_argument("--board", default=None, help="user@host")
+    parser.add_argument("--devkit", "--board", dest="board", default=None, metavar="ADDRESS",
+                        help="the DevKit: user@host or a name saved in the Workbench")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--bundles-root", default=None)
-    parser.add_argument("--no-build", action="store_true", help="skip the on-board cmake build")
+    parser.add_argument("--no-build", action="store_true", help="do not build the runtime on the DevKit")
     parser.add_argument("--start", action="store_true", help="start serving after deployment")
     parser.add_argument("--no-activate", action="store_true", help="do not move `current`")
     parser.add_argument("--force", action="store_true", help="re-transfer and rebuild")
     parser.add_argument("--verbose-server", action="store_true", help="per-stage server timings")
     parser.add_argument("--json", action="store_true")
 
-    parser.add_argument("--list", action="store_true", help="list bundles on the board")
+    parser.add_argument("--list", action="store_true", help="list bundles on the DevKit")
     parser.add_argument("--status", action="store_true", help="show server status")
     parser.add_argument("--stop", action="store_true", help="stop the server")
     parser.add_argument("--logs", type=int, nargs="?", const=40, help="tail the server log")
@@ -83,10 +77,9 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
         print(f"polima deploy: {NO_BOARD_MESSAGE}", file=sys.stderr)
         return 2
     spec = spec_from_bundle(get_policy(bundle.policy), bundle)
-    # Bundles packed before device-side robot launch was completed can be
-    # upgraded in place: the id covers model arithmetic, while bundle.json's
+    # A bundle with an out-of-date robot client is upgraded in place: the id covers model arithmetic, while bundle.json's
     # sidecars make the deploy notice and transfer the added client files.
-    from polima.bundle.import_legacy import hydrate_robot_client, hydrate_runtime_metadata
+    from polima.bundle.importer import hydrate_robot_client, hydrate_runtime_metadata
 
     hydrate_runtime_metadata(bundle, spec)
     hydrate_robot_client(bundle, spec)
@@ -118,19 +111,8 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     print(f"\n  {report.duration_s:.1f}s total")
     if report.service and report.service.running:
         print(f"  serving on {board.address}:{report.port} (pid {report.service.pid})")
-        print(f"\nnext:  polima-run --bundle {report.bundle_id} --fixture")
+        print(f"\nnext:  polima run --bundle {report.bundle_id} --fixture")
     return 0 if report.ok else 1
-
-
-def _session(parent: argparse.Namespace | None) -> list[str] | None:
-    """Compose deploy flags interactively, then use the normal deploy path."""
-    config = load(config_file=getattr(parent, "config", None))
-    bundle_root = (config.paths.outputs or outputs_root()) / "bundles"
-    try:
-        return wizard.compose_deploy(config.board, bundle_root)
-    except (wizard.Cancelled, KeyboardInterrupt):
-        print("\n  cancelled")
-        return None
 
 
 def _detail(stage: str, info: dict) -> str:
@@ -169,18 +151,18 @@ def _manage(args, board, dry_run: bool) -> int:
                     policy = next(
                         (
                             candidate
-                            for candidate in ("act", "smolvla", "groot")
+                            for candidate in ("act", "groot")
                             if lowered.startswith(candidate)
                         ),
                         "-",
                     )
-                    robot = "mycobot280" if "mycobot" in lowered else "-"
+                    robot = "-"
                 rows.append(
                     [
                         name,
                         policy,
                         robot,
-                        "polima" if is_managed else "legacy",
+                        "bundle" if is_managed else "other",
                         "current" if name == current else "",
                     ]
                 )
@@ -189,7 +171,7 @@ def _manage(args, board, dry_run: bool) -> int:
                     rows,
                     headers=["name", "policy", "robot", "format", "status"],
                 )
-                or "nothing in the board's model store"
+                or "no bundles on the DevKit"
             )
             return 0
 
@@ -240,8 +222,8 @@ def _manage(args, board, dry_run: bool) -> int:
             ["listening", str(status.listening)],
         ]
         if status.bound and status.pid not in status.bound:
-            # The Phase-1a failure: a stale server answers while the recorded
-            # process is dead, so redeploys appear to work and change nothing.
+            # A stale server answering while the recorded process is dead
+            # makes redeploys appear to work while changing nothing.
             rows.append(["WARNING", f"port held by pid(s) {status.bound}, not {status.pid}"])
         print(table.render(rows))
         return 0
@@ -255,7 +237,7 @@ def _resolve_bundle(reference: str, bundles_root: str | None) -> Bundle:
     manifest = candidate / "bundle.json"
     if not manifest.is_file():
         print(
-            f"polima-deploy: no bundle at {candidate}\n"
+            f"polima deploy: no bundle at {candidate}\n"
             f"  build one with: polima compile --checkpoint <path> --build-dir <dir>",
             file=sys.stderr,
         )
@@ -267,7 +249,7 @@ def _default_port(bundle_id: str | None) -> int:
     """The wire port of the policy that owns `bundle_id`.
 
     Bundle ids lead with the policy name (`act-<dataset>-<steps>-<sha>`), which
-    is enough to find the spec without fetching bundle.json off the board.
+    is enough to find the spec without fetching bundle.json off the DevKit.
     """
     from polima.policies.registry import available
 

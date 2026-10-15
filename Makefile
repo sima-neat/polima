@@ -20,6 +20,9 @@ install:
 venv:
 	@test -n "$(LEROBOT_SOURCE)" || { echo "set LEROBOT_SOURCE=/path/to/your/lerobot checkout" >&2; exit 2; }
 	@test -x .venv/bin/python || $(VENV_PYTHON) -m venv .venv
+	@.venv/bin/python -c 'import sys; sys.exit(sys.version_info[:2] != (3, 12))' || { \
+		echo ".venv uses Python $$(.venv/bin/python -c 'import platform; print(platform.python_version())'); compiling needs Python 3.12." >&2; \
+		echo "Remove .venv and rerun with Python 3.12 installed (or VENV_PYTHON=/path/to/python3.12)." >&2; exit 2; }
 	.venv/bin/python -m pip install --upgrade pip
 	.venv/bin/python -m pip install --index-url https://download.pytorch.org/whl/cpu \
 		'torch==2.3.1+cpu' 'torchvision==0.18.1+cpu'
@@ -35,7 +38,7 @@ test:
 
 .PHONY: doctor
 doctor:
-	./bin/polima doctor
+	.venv/bin/polima doctor
 
 .PHONY: lint
 lint:

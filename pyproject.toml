@@ -4,33 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "polima"
-version = "0.2.0"
+version = "0.3.0"
 description = "PoLiMa - unified compile/deploy/control framework for robot policies on SiMa.ai Modalix"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 
-# HARD FLOOR: numpy only.
-#
-# PoLiMa spans two machines, and the base install is what the BOARD gets:
-#
-#   HOST  (x86_64)                        BOARD (Modalix SoM, aarch64)
-#   polima-compile  export: torch+lerobot polima        numpy only
-#                   compile: afe+onnx     polima-run    numpy only
-#   polima-deploy   ssh + rsync           polima-robot  flask + cv2 + lerobot 0.4.4
-#
-# PoLiMa does not train. Training stays with lerobot-train in the model stacks;
-# PoLiMa starts from a checkpoint and covers compile, deploy and robot control.
-#
-# Both halves share one core -- polima.policies, polima.wire, polima.bundle,
-# polima.config, polima.util -- because that core IS the contract between them:
-# the host writes bundle.json + plan.json, the board reads them. So the core must
-# import with stdlib + numpy alone, in all three interpreters (PoLiMa's host
-# venv, the model-compiler venv which has afe but no torch, and the board's
-# py3.11). Heavy imports happen lazily inside functions.
-#
-# `polima doctor --imports` proves this by importing the core in each
-# interpreter; do not add a dependency here without re-running it.
+# Keep the core usable in compiler and DevKit environments.
 dependencies = ["numpy"]
 
 [project.optional-dependencies]
@@ -43,37 +23,27 @@ compile = ["onnx", "onnxsim", "onnxruntime", "pyyaml"]
 deploy  = ["pyyaml"]
 data    = ["pyarrow"]
 host    = ["polima[data,export,compile,deploy]"]
-# Board-side. Deliberately excludes torch/afe: the board never compiles.
+# DevKit runtime dependencies; model export runs on the compiler host.
 robot   = ["flask", "waitress", "opencv-python-headless", "pillow"]
 board   = ["polima[robot]"]
 dev     = ["pytest", "ruff"]
 
 [project.scripts]
-# Umbrella, installed everywhere. `polima compile ...` == `polima-compile ...`.
 polima = "polima.cli.main:main"
-# Host stages -- mirrors llima-compile / llima-deploy.
-polima-compile = "polima.cli.entry:compile_"
-polima-deploy = "polima.cli.entry:deploy"
-# Board stages -- mirrors llima-run.
-polima-run = "polima.cli.entry:run_"
-polima-robot = "polima.cli.entry:robot"
-polima-studio = "polima.cli.entry:studio"
-# Works on both; the first thing to run after any install.
-polima-doctor = "polima.cli.entry:doctor"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-polima = ["robot/templates/*.html", "robot/assets/mycobot/*", "robot/assets/so101/*", "patches/*.patch", "studio/static/*.html", "studio/static/assets/*", "workbench/static/*"]
+polima = ["robot/assets/so101/*", "studio/static/*.html", "studio/static/assets/*", "workbench/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]
-markers = ["hardware: requires a Modalix board or an SO-101 arm (opt-in)"]
+markers = ["hardware: requires a Modalix DevKit or an SO-101 arm (opt-in)"]
 # So `pytest` works from a bare interpreter without `pip install -e .` first.
-# The unit tests are stdlib+numpy only by design (see tests/unit/test_imports.py),
-# which means there is no reason to require an install to run them -- and the
-# three environments this repo targets cannot all install the same package.
+# The unit tests are stdlib+numpy only by design, which means there is no
+# reason to require an install to run them -- and the three environments this
+# repo targets cannot all install the same package.
 pythonpath = ["src"]
 
 [tool.ruff]

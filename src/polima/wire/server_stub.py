@@ -1,6 +1,6 @@
 """A pure-Python implementation of the plan interpreter.
 
-Mirrors native/src/plan.cpp opcode for opcode. It exists for three reasons:
+Mirrors runtime/src/plan.cpp opcode for opcode. It exists for three reasons:
 
   * the host-side opcodes (pack, gather_strided, slice, scale, ...) can be
     verified against the real per-stage golden .f32 files *without an MLA*, so
@@ -96,7 +96,7 @@ class StubPlan:
                 raise PlanError(f"step {index} ({step['op']} -> {step['out']}): {exc}") from exc
         return state[self.result]
 
-    # -- opcodes; keep in lockstep with native/src/plan.cpp ------------------
+    # -- opcodes; keep in lockstep with runtime/src/plan.cpp ------------------
 
     def _run_step(self, step, state, graph_fn, request_flags: int) -> None:
         op = step["op"]
@@ -219,8 +219,8 @@ class StubPlan:
         elif op == "gather_strided":
             # Scatter as well as gather: dst_stride defaults to `take` (ACT's
             # contiguous case) and a source stride of 0 broadcasts one span into
-            # every block, which is how SmolVLA's shared time embedding reaches
-            # all 50 action tokens.
+            # every block, which is how one shared span (e.g. a time embedding)
+            # reaches every action token.
             stride, take, count = args["stride"], args["take"], args["count"]
             dst_stride = args.get("dst_stride") or take
             dst_offset = args.get("dst_offset", 0)
@@ -371,7 +371,7 @@ def golden_graph_fn(stages_dir: str | Path) -> Callable[[str, np.ndarray], np.nd
 
 
 def euler_reference(x: np.ndarray, velocity: np.ndarray, dt: float) -> np.ndarray:
-    """Kept beside the opcode so SmolVLA's integration can be unit-tested."""
+    """Kept beside the opcode so the Euler integration can be unit-tested."""
     return (x - np.float32(dt) * velocity).astype(np.float32)
 
 

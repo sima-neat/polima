@@ -1,18 +1,13 @@
 """Explode a SiMa model pack (*_mpk.tar.gz) into the direct model layout.
 
-Ported from SmolVLA/scripts/unpack_sima_mpk.py, which is the only place in the
-legacy tree that does this. Two behaviour changes, both deliberate:
+  * An archive with only an ELF is allowed: PoLiMa's direct-MLA runtime needs
+    only the ELF, and ACT ships with no etc/ at all. `require_json` requires an
+    etc/*.json as well, for the NEAT ModelPack runtime.
+  * `rewrite_paths` is idempotent and reports what it changed, so a re-run on
+    the DevKit is verifiable.
 
-  * the ELF-only case is allowed. The legacy script raises unless the archive
-    yields BOTH an etc/*.json and a share/*.elf, because it was written for the
-    NEAT ModelPack runtime. PoLiMa's direct-MLA runtime needs only the ELF --
-    act_llima.cpp proves this, and ACT ships with no etc/ at all. `require_json`
-    keeps the strict behaviour available for the NEAT path.
-  * `rewrite_paths` is idempotent and reports what it changed, so the on-board
-    re-run (`--rewrite-only` in the legacy flow) is verifiable.
-
-Path traversal is refused the same way the original does: absolute member names
-and `..` components are skipped.
+Path traversal is refused: absolute member names and `..` components are
+skipped.
 """
 
 from __future__ import annotations
@@ -104,7 +99,7 @@ def rewrite_paths(root: str | Path) -> list[str]:
 
     The compiler bakes build-machine paths into `simaai__params.model_path` and
     `model_info.path`; they must be rewritten wherever the model actually lands.
-    That is why the legacy deploy re-runs this ON the board after rsync.
+    So this re-runs on the DevKit after the model is copied there.
 
     Returns the list of files changed, so a no-op re-run is visible.
     """
@@ -131,8 +126,8 @@ def rewrite_paths(root: str | Path) -> list[str]:
 
         after = _dumps(config)
         if after != before:
-            # indent=4 matches the legacy writer, so re-running the old script
-            # over a PoLiMa tree produces no spurious diff.
+            # Written only on change and in one stable format (indent=4), so a
+            # re-run produces no spurious diff.
             config_path.write_text(after, encoding="utf-8")
             changed.append(config_path.name)
     return changed
@@ -152,7 +147,7 @@ def find_mpk(build_dir: str | Path, graph: str) -> Path | None:
 
 
 def mpk_has_elf(archive: str | Path) -> bool:
-    """Cheap validity probe -- the resume check both legacy controllers make."""
+    """Cheap validity probe, used to decide whether a build can resume."""
     try:
         with tarfile.open(archive, "r:gz") as tar:
             return any(

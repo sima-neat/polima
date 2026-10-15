@@ -26,8 +26,8 @@ PLAN = {"buffers": {"x": 1}, "steps": [{"op": "run_elf", "out": "x"}], "result":
 
 
 def base_id(**overrides):
-    kwargs = dict(policy="act", dataset="rcwb_f_t", steps=100000,
-                  graph_digests=DIGESTS, plan=PLAN)
+    kwargs = {"policy": "act", "dataset": "rcwb_f_t", "steps": 100000,
+              "graph_digests": DIGESTS, "plan": PLAN}
     kwargs.update(overrides)
     return compute_bundle_id(**kwargs)
 

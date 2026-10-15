@@ -1,9 +1,9 @@
-"""Install a self-contained LeRobot wheel with the proven export stack.
+"""Install a self-contained LeRobot wheel with the pinned export stack.
 
 The local checkout contains the policy code used by the checkpoints, but its
-metadata now requires newer Torch/Transformers versions whose SmolVLA prefix
-packing is numerically different. Build from an isolated copy and relax only
-those metadata ranges; never modify the training checkout itself.
+metadata requires newer Torch/Transformers versions than the pinned export
+stack. Build from an isolated copy and relax only those metadata ranges; never
+modify the training checkout itself.
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ def main() -> int:
         # Parent package initializers run before explicit submodule imports.
         # Upstream's policy initializer imports EO1/GR00T/Evo1, while its
         # dataset initializer imports aggregation and depth tooling. Neither is
-        # part of PoLiMa's explicit ACT/SmolVLA export path.
+        # part of PoLiMa's explicit export path.
         patch_staged_copy(staged)
 
         return subprocess.call([

@@ -752,15 +752,11 @@ def derive_bundle(source: Path, output_root: Path, levels: Iterable[str], *,
             version=identity.get("version"), precision=identity["precision"] + label_suffix)
     else:
         new["bundle_id"] = compute_bundle_id(
-            policy=manifest["policy"], dataset=f"{identity['dataset']}-{label_suffix}",
+            policy=manifest["policy"], dataset="-".join(filter(None, (identity["dataset"], label_suffix))),
             steps=identity["steps"], graph_digests=digests, plan=new_plan)
-    new["derived_from"] = {
+    new["derived_from"] = {  # what this bundle is, not how it was reached
         "bundle_id": manifest["bundle_id"],
         "optimization": "on-device activation chaining (run_device_chain); ELFs unchanged",
-        "levels": levels,
-        "source_plan_sha256": _digest(source / "plan.json"),
-        "reference_equivalence": report,
-        "previous": manifest.get("derived_from"),
     }
     out = output_root / new["bundle_id"]
     if out.exists():

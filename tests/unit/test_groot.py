@@ -1,15 +1,14 @@
-"""GR00T's spec and execution plan, pinned against the DevKit sources.
+"""GR00T's spec and execution plan.
 
-GR00T is the first policy PoLiMa cuts into more graphs than a person can check
-by eye -- forty-five -- and the first whose pipeline is two device-resident
-chains with host arithmetic between them. Both facts make the interesting
-failures silent: a transposed channel fold, a mask fed to the wrong half of the
-blocks, or an Euler update with the wrong sign all produce finite, plausible,
-wrong actions.
+GR00T is cut into more graphs than a person can check by eye -- forty-five --
+and its pipeline is two device-resident chains with host arithmetic between
+them. Both facts make the interesting failures silent: a transposed channel
+fold, a mask fed to the wrong half of the blocks, or an Euler update with the
+wrong sign all produce finite, plausible, wrong actions.
 
-So the geometry is verified against the C++ that currently runs this policy on
-the board (`GR00T-N1.6/devkit/*.cpp`) rather than restated here, and the host
-arithmetic is verified by replaying the plan with the MLA stubbed.
+So the geometry is checked against the reference DevKit C++ sources when they
+are present, rather than restated here, and the host arithmetic by replaying the
+plan with the MLA stubbed.
 """
 
 from __future__ import annotations
@@ -94,10 +93,8 @@ def test_qwen_pairs_take_the_task_attention_mask():
 
 
 def test_unchained_outputs_download_as_plain_bf16():
-    # Measured on Modalix (MyCobot and SO-101 fixtures): these ELFs return
-    # ordinary contiguous BF16. Decoding them as HWC16 byte planes produced
-    # non-finite values; plain decoding matched ONNX. Every SO-101 bundle that
-    # ran on the arm on 2026-10-05 declares them plain.
+    # On Modalix these ELFs return ordinary contiguous BF16. Decoding them as
+    # HWC16 byte planes produces non-finite values; plain decoding matches ONNX.
     for name in ("eagle_vision_connector", "state_project", "action_project",
                  "action_tail", *rt.block_names()):
         output = GROOT_SPEC.graph(name).outputs[0]
@@ -108,15 +105,6 @@ def test_unchained_outputs_download_as_plain_bf16():
 def test_wire_magic_is_grut():
     assert GROOT_SPEC.wire.magic_ascii == "GRUT"
     assert GROOT_SPEC.wire.default_port == 8093
-
-
-def test_dataset_needs_the_v2_1_downgrade_in_its_own_environment():
-    converter = GROOT_SPEC.dataset.converter
-    assert converter is not None
-    assert converter.target_codebase_version == "v2.1"
-    # The converter and the trainer need incompatible lerobot versions, which is
-    # why this is a second env and not a function call.
-    assert converter.conda_env != GROOT_SPEC.train.conda_env
 
 
 # ---------------------------------------------------------------- geometry
@@ -206,7 +194,7 @@ def test_denoise_loop_is_unrolled_not_looped():
 
 
 def test_blocks_alternate_text_and_image_masks_by_pair_parity():
-    # export_groot_modalix_action.py picks `text if start % 4 == 0 else image`
+    # The action head picks `text if start % 4 == 0 else image`
     # over block starts, which is pair parity. One mask everywhere still runs.
     seen = {}
     for step in plan_dict()["steps"]:
@@ -526,3 +514,194 @@ def test_validator_flags_a_checkpoint_with_no_statistics(tmp_path):
     (checkpoint / "statistics.json").unlink()
     problems = graphs.validate_checkpoint(checkpoint)
     assert len(problems) == 1 and "statistics.json" in problems[0]
+
+
+def test_n17_processor_uses_local_assets_without_hub(tmp_path, monkeypatch):
+    import sys
+
+    from polima.policies.groot.n17 import processor_config
+    monkeypatch.setitem(sys.modules, 'huggingface_hub', None)
+    (tmp_path / 'preprocessor_config.json').write_text('{"patch_size":16}')
+    assert processor_config(str(tmp_path)) == {'patch_size':16}
+    with pytest.raises(FileNotFoundError, match='Restore the backbone'):
+        processor_config(str(tmp_path / 'missing'))
+
+
+def test_n17_processor_resolves_hub_id_offline(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from polima.policies.groot.n17 import processor_config
+    config = tmp_path / 'preprocessor_config.json'
+    config.write_text('{"patch_size":16}')
+    def download(repo, filename, *, local_files_only):
+        assert repo == 'nvidia/Cosmos-Reason2-2B'
+        assert filename == 'preprocessor_config.json' and local_files_only is True
+        return str(config)
+    monkeypatch.setitem(sys.modules, 'huggingface_hub', SimpleNamespace(hf_hub_download=download))
+    assert processor_config('nvidia/Cosmos-Reason2-2B') == {'patch_size':16}
+    def missing(*args, **kwargs):
+        raise FileNotFoundError('not cached')
+    monkeypatch.setattr(sys.modules['huggingface_hub'], 'hf_hub_download', missing)
+    with pytest.raises(FileNotFoundError, match='same Hugging Face cache'):
+        processor_config('nvidia/Cosmos-Reason2-2B')
+
+
+@pytest.mark.parametrize('nested', [False, True])
+def test_n17_backbone_override_preserves_checkpoint(tmp_path, monkeypatch, nested):
+    import json
+
+    from polima.policies.groot.n17 import checkpoint_assets
+    checkpoint = tmp_path / 'checkpoint'
+    checkpoint.mkdir()
+    (checkpoint / 'config.json').write_text('{"model_name":"/training/backbone","hidden_size":64}')
+    processor = checkpoint / 'processor' if nested else checkpoint
+    processor.mkdir(exist_ok=True)
+    (processor / 'processor_config.json').write_text('{"processor_kwargs":{"model_name":"/training/backbone","crop_fraction":0.9}}')
+    (checkpoint / 'model.safetensors').write_bytes(b'weights')
+    originals = {p: p.read_bytes() for p in checkpoint.rglob('*') if p.is_file()}
+    monkeypatch.setenv('POLIMA_GROOT17_BACKBONE', 'nvidia/Cosmos-Reason2-2B')
+    with checkpoint_assets(checkpoint) as view:
+        assert view != checkpoint
+        config = json.loads((view / 'config.json').read_text())
+        assert config == {'model_name':'nvidia/Cosmos-Reason2-2B', 'hidden_size':64}
+        relative = 'processor/processor_config.json' if nested else 'processor_config.json'
+        config = json.loads((view / relative).read_text())['processor_kwargs']
+        assert config == {'model_name':'nvidia/Cosmos-Reason2-2B', 'crop_fraction':0.9}
+        assert (view / 'model.safetensors').samefile(checkpoint / 'model.safetensors')
+    assert not view.exists()
+    assert all(p.read_bytes() == data for p, data in originals.items())
+
+
+def test_n17_missing_backbone_has_portable_resolution(tmp_path, monkeypatch):
+    from polima.policies.groot.n17 import checkpoint_assets
+    monkeypatch.delenv('POLIMA_GROOT17_BACKBONE', raising=False)
+    (tmp_path / 'config.json').write_text('{"model_name":"/unavailable/training/backbone"}')
+    with pytest.raises(FileNotFoundError, match='POLIMA_GROOT17_BACKBONE'), checkpoint_assets(tmp_path):
+        pytest.fail('Missing training-host backbone must not reach policy loading')
+
+
+def test_n17_processor_honors_backbone_override(tmp_path, monkeypatch):
+    from polima.policies.groot.n17 import processor_config
+    monkeypatch.setenv('POLIMA_GROOT17_BACKBONE', str(tmp_path))
+    (tmp_path / 'preprocessor_config.json').write_text('{"patch_size":16}')
+    assert processor_config('/unavailable/training/backbone') == {'patch_size':16}
+
+
+def test_n17_no_override_keeps_checkpoint_location(tmp_path, monkeypatch):
+    from polima.policies.groot.n17 import checkpoint_assets
+    monkeypatch.delenv('POLIMA_GROOT17_BACKBONE', raising=False)
+    (tmp_path / 'config.json').write_text('{"model_name":"nvidia/Cosmos-Reason2-2B"}')
+    with checkpoint_assets(tmp_path) as view:
+        assert view == tmp_path
+    assert tmp_path.exists()
+
+
+def test_n17_missing_backbone_override_is_rejected(tmp_path, monkeypatch):
+    from polima.policies.groot.n17 import checkpoint_assets
+    monkeypatch.setenv('POLIMA_GROOT17_BACKBONE', str(tmp_path / 'missing'))
+    with pytest.raises(FileNotFoundError, match='POLIMA_GROOT17_BACKBONE directory not found'), checkpoint_assets(tmp_path):
+        pytest.fail('Missing override directory must not reach policy loading')
+
+
+@pytest.mark.parametrize('named', [False, True])
+def test_n17_local_backbone_preserves_upstream_architecture_dispatch(tmp_path, monkeypatch, named):
+    import json
+
+    from polima.policies.groot.n17 import checkpoint_assets
+    assets = tmp_path / 'snapshot-hash'
+    assets.mkdir()
+    (assets / 'config.json').write_text('{"model_type":"qwen3_vl"}')
+    location = assets
+    if named:
+        location = tmp_path / 'nvidia/Cosmos-Reason2-2B'
+        location.parent.mkdir()
+        location.symlink_to(assets, target_is_directory=True)
+    checkpoint = tmp_path / 'checkpoint'
+    checkpoint.mkdir()
+    (checkpoint / 'config.json').write_text('{"model_name":"nvidia/Cosmos-Reason2-2B"}')
+    (checkpoint / 'processor_config.json').write_text('{"processor_kwargs":{}}')
+    monkeypatch.setenv('POLIMA_GROOT17_BACKBONE', str(location))
+    with checkpoint_assets(checkpoint) as view:
+        name = json.loads((view / 'config.json').read_text())['model_name']
+        # Isaac-GR00T chooses its backbone class from these model-name substrings.
+        assert 'nvidia/Cosmos-Reason2' in name or 'Qwen/Qwen3-VL' in name
+        assert Path(name).samefile(assets)
+        if named:
+            assert name == str(location)
+        assert json.loads((view / 'processor_config.json').read_text())['processor_kwargs']['model_name'] == name
+    assert assets.is_dir() and location.is_dir()
+
+
+@pytest.mark.parametrize("expected,passed", [
+    ([2., 4.], True), ([2.012, 4.012], True),
+    ([2.02, 4.02], False), ([2., 8.], False),
+])
+def test_n17_full_chain_verification(tmp_path, monkeypatch, expected, passed):
+    import sys
+    from types import SimpleNamespace
+
+    from polima.policies.groot.n17 import verify_export
+
+    root = tmp_path / "runtime"
+    (root / "fixtures/inputs").mkdir(parents=True)
+    (root / "fixtures/expected").mkdir()
+    context = {
+        "n17_plan": {"buffers": {"state": 2, "result": 2}, "result": "result",
+                     "steps": [{"op": "run_elf", "out": "result",
+                                "args": {"graph": "double", "in": ["state"]}}]},
+        "n17_graphs": [{"name": "double", "file": "onnx/double.onnx",
+                        "inputs": {"x": [1, 2]}, "input_order": ["x"]}],
+        "n17_request_tensors": [{"name": "state"}],
+    }
+    (root / "profile.json").write_text(json.dumps({"runtime_context": context}))
+    np.array([1., 2.], dtype="<f4").tofile(root / "fixtures/inputs/state.f32")
+    np.array(expected, dtype="<f4").tofile(root / "fixtures/expected/normalized_actions.f32")
+    np.savez(root / "normalization_stats.npz", action_mean=np.zeros((1, 2)), action_std=np.ones((1, 2)))
+    session = SimpleNamespace(run=lambda _, feeds: [feeds["x"] * 2])
+    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(
+        SessionOptions=SimpleNamespace, InferenceSession=lambda *a, **k: session))
+    report = verify_export(tmp_path)
+    assert report["ok"] is passed
+    assert report["cosine_min"] == 0.98
+    assert report["mean_abs_max"] == 0.015
+    assert report["graph_calls"] == 1
+    assert report["metric_space"] == "normalized actions"
+    assert json.loads((tmp_path / "onnx_verification_report.json").read_text()) == report
+
+
+@pytest.mark.parametrize("passed", [True, False])
+def test_n17_export_keeps_numerical_validation_result(tmp_path, monkeypatch, capsys, passed):
+    import sys
+    from types import SimpleNamespace
+
+    from polima.policies.groot import n17, profile
+
+    dataset, out = tmp_path / "dataset", tmp_path / "export"
+    (dataset / "meta").mkdir(parents=True)
+    for name in ("data", "videos"):
+        (dataset / name).mkdir()
+    monkeypatch.setattr(profile, "checkpoint_metadata", lambda *a, **k: {
+        "embodiment_tag": "test", "embodiment_id": 0, "actions_per_chunk": 40})
+    policy = SimpleNamespace(get_modality_config=lambda: {"video": SimpleNamespace(delta_indices=[0])})
+    monkeypatch.setattr(n17, "load_policy", lambda *a: policy)
+    monkeypatch.setitem(sys.modules, "gr00t.data.dataset.lerobot_episode_loader", SimpleNamespace(
+        LeRobotEpisodeLoader=lambda *a, **k: object()))
+    monkeypatch.setattr(n17, "_samples", lambda *a: list(range(32)))
+    monkeypatch.setattr(n17, "_capture_reference", lambda *a: {})
+    monkeypatch.setattr(n17, "_export_partitions", lambda *a: [])
+    monkeypatch.setattr(n17, "_capture_calibration", lambda *a, **k: None)
+    monkeypatch.setattr(n17, "write_runtime", lambda *a: None)
+    report = {"ok": passed, "cosine": 0.99 if passed else 0.97,
+              "mean_abs": 0.012, "cosine_min": 0.98, "mean_abs_max": 0.015}
+
+    def verify(path):
+        (path / "onnx_verification_report.json").write_text(json.dumps(report))
+        return report
+
+    monkeypatch.setattr(n17, "verify_export", verify)
+    n17.export_build(tmp_path / "checkpoint", dataset, out, source=tmp_path, smooth=False)
+    assert json.loads((out / "onnx_verification_report.json").read_text()) == report
+    output = capsys.readouterr().out
+    assert f"ONNX validation: {'PASS' if passed else 'FAIL'}" in output
+    assert ("Compilation will continue" in output) is (not passed)

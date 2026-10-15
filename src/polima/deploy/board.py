@@ -98,12 +98,11 @@ def ensure_layout(session: BoardSession, board: BoardConfig) -> None:
 
 
 def assert_no_archives(session: BoardSession, remote_dir: str) -> None:
-    """Refuse to leave a .tar.gz on the SoM.
+    """Refuse to leave a .tar.gz on the DevKit.
 
-    Both legacy deploy scripts carry this guard. The direct-MLA runtime never
-    opens an archive, so one arriving means something shipped the compiler's
-    output instead of the extracted ELF -- which would silently waste gigabytes
-    and, worse, suggest the wrong artifact was selected.
+    The direct-MLA runtime never opens an archive, so one arriving means
+    something shipped the compiler's output instead of the extracted ELF -- which
+    would silently waste gigabytes and suggests the wrong artifact was selected.
     """
     found = session.capture(
         f"find {shlex.quote(remote_dir)} -name '*.tar.gz' -print 2>/dev/null | head -5"
@@ -180,13 +179,9 @@ def bundle_identity(
 ) -> tuple[str, str]:
     """Return the policy and robot recorded by one deployed bundle.
 
-    ``polima deploy --list`` used to call every managed bundle's *kind*
-    ``polima``. That described its storage format, but operators reasonably
-    read the column as the policy kind. Read the two small manifests so the
-    list distinguishes ACT/SmolVLA/GR00T and SO-101/MyCobot explicitly.
-
-    Older bundles may lack one of these fields, so retain conservative name
-    fallbacks rather than making a listing command fail on historical data.
+    Reads the two small manifests so ``polima deploy --list`` names each
+    bundle's policy and robot. A bundle may lack one of these fields, so
+    conservative name fallbacks keep the listing from failing.
     """
     root = f"{board.bundles_dir}/{bundle_id}"
 
@@ -211,11 +206,11 @@ def bundle_identity(
     lowered = bundle_id.lower()
     if not policy:
         policy = next(
-            (name for name in ("act", "smolvla", "groot") if lowered.startswith(name)),
+            (name for name in ("act", "groot") if lowered.startswith(name)),
             "-",
         )
     if not robot:
-        robot = "mycobot280" if "mycobot" in lowered else "-"
+        robot = "-"
     return policy, robot
 
 

@@ -97,3 +97,29 @@ def test_management_has_no_studio_dependency() -> None:
     assert studio.needs_capability(["status"]) is None
     assert studio.needs_capability(["serve"]) == "studio"
     assert studio.needs_capability(["--port", "9000"]) == "studio"
+
+
+def test_service_url_uses_ssh_device_address(monkeypatch):
+    monkeypatch.delenv("POLIMA_STUDIO_PUBLIC_URL", raising=False)
+    monkeypatch.setenv("POLIMA_STUDIO_HOST", "0.0.0.0")
+    monkeypatch.setenv("POLIMA_STUDIO_PORT", "8080")
+    monkeypatch.setenv("SSH_CONNECTION", "192.0.2.2 50000 192.0.2.10 22")
+    assert studio._service_url() == "http://192.0.2.10:8080"
+    monkeypatch.setenv("SSH_CONNECTION", "2001:db8::2 50000 2001:db8::10 22")
+    assert studio._service_url() == "http://[2001:db8::10]:8080"
+    monkeypatch.setenv("POLIMA_STUDIO_HOST", "127.0.0.1")
+    assert studio._service_url() == "http://127.0.0.1:8080"
+    monkeypatch.setenv("POLIMA_STUDIO_PUBLIC_URL", "https://studio.example/")
+    assert studio._service_url() == "https://studio.example"
+
+
+def test_lan_address_falls_back_to_route_without_dns(monkeypatch):
+    from polima.util import net
+    monkeypatch.setenv("SSH_CONNECTION", "invalid")
+    probe = Mock()
+    probe.getsockname.return_value = ("192.0.2.20", 45000)
+    monkeypatch.setattr(net.socket, "socket", lambda *a: probe)
+    assert net.lan_address() == "192.0.2.20"
+    probe.close.assert_called_once()
+    probe.connect.side_effect = OSError("no route")
+    assert net.lan_address() == "127.0.0.1"

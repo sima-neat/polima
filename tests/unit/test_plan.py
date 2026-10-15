@@ -11,7 +11,7 @@ built on the board. If they hold, a wrong result on hardware is the MLA's or the
 ELF's doing, not the plan's.
 
 Tests that need the golden files skip cleanly when no imported bundle is present,
-so the suite still runs on a machine without the legacy tree.
+so the suite still runs on a machine without one.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def find_bundle() -> Path | None:
 
 bundle_required = pytest.mark.skipif(
     find_bundle() is None,
-    reason="no imported bundle; run: polima-compile --import-legacy <build_dir>",
+    reason="no imported bundle; run: polima-compile --import-build <build_dir>",
 )
 
 
@@ -193,17 +193,14 @@ def test_pack_reproduces_the_recorded_stem_input():
     np.testing.assert_allclose(packed, expected, atol=0, rtol=0)
 
 
-#: The ONNX-vs-PyTorch gap the legacy pipeline measured and accepted, from
-#: ACT/outputs/modalix_rcwb_f_t_act_100000_llima/onnx_verification_report.json.
-#: The recorded goldens have different provenance -- `<graph>_output.f32` files
+#: The ONNX-vs-PyTorch gap recorded in the bundle (`onnx_max_abs`). The
+#: recorded goldens have different provenance -- `<graph>_output.f32` files
 #: are onnxruntime outputs, `expected_normalized_actions.f32` is the torch
 #: reference -- so replaying the ONNX chain must land exactly this far away, no
 #: nearer and no further.
 #:
 #: The value is per bundle, not a constant: it is that checkpoint's recorded
-#: onnx-vs-torch gap (1.43e-06 for rcwb_f_t, 2.04e-06 for gewb_2_final). Reading
-#: it from the bundle is the point -- hardcoding one made the test fail the
-#: moment a second bundle existed, which said nothing about the plan.
+#: onnx-vs-torch gap, so the test holds for every bundle.
 def recorded_onnx_gap(bundle: Path) -> float:
     from polima.util.jsonio import read_json
 
@@ -236,8 +233,8 @@ def test_gather_strided_reproduces_the_expected_actions():
     np.testing.assert_allclose(
         gathered, expected, atol=ACT_SPEC.compile.verify_atol, rtol=ACT_SPEC.compile.verify_rtol
     )
-    # ...and bit-identical to what the legacy pipeline recorded, which pins the
-    # unpad stride/take and proves no extra arithmetic crept in.
+    # ...and bit-identical to the recorded gap, which pins the unpad
+    # stride/take and proves no extra arithmetic crept in.
     difference = np.abs(gathered - expected)
     assert float(difference.max()) == recorded_onnx_gap(bundle)
 
@@ -311,7 +308,7 @@ def test_unknown_input_is_rejected(tmp_path):
         plan.run({"nope": np.zeros(1, np.float32)})
 
 
-# -- GR00T SO-101 opcodes; native/src/plan.cpp implements the same ------------
+# -- GR00T SO-101 opcodes; runtime/src/plan.cpp implements the same ------------
 
 
 def _single_step(op: str, args: dict, sizes: dict[str, int], out: str = "y") -> StubPlan:
@@ -341,7 +338,7 @@ def test_pixel_unshuffle_handles_a_non_square_grid():
     plan = _single_step("pixel_unshuffle", {"src": "x", "height": height, "width": width,
                                             "channels": channels, "factor": factor},
                         {"x": source.size, "y": source.size})
-    # The index arithmetic of native/src/plan.cpp, transliterated.
+    # The index arithmetic of runtime/src/plan.cpp, transliterated.
     expected = np.zeros_like(source)
     out_channels, columns = channels * factor * factor, width // factor
     for row in range(height // factor):

@@ -1,7 +1,5 @@
 """Find and unpack SiMa model packs (`*_mpk.tar.gz`).
 
-Replaces `SmolVLA/scripts/unpack_sima_mpk.py`, which GR00T also depends on.
-
 An mpk is the compiler's shippable artifact: a gzipped tar holding the MLA ELF,
 its `.so` helpers, and json config that points at both by whatever path the
 compile host happened to use. Unpacking is therefore not just extraction -- the
@@ -9,7 +7,7 @@ json has to be rewritten to the new location or the runtime looks for the model
 where the build machine kept it.
 
 The layout produced (`etc/`, `lib/`, `share/`) is what the on-device loader
-expects, and matches `models_uncompressed/<graph>/` in the legacy build trees.
+expects, and matches `models_uncompressed/<graph>/` in a compiler build tree.
 """
 
 from __future__ import annotations
@@ -38,9 +36,8 @@ def has_elf(archive: str | Path) -> bool:
     """Whether an mpk actually contains an ELF.
 
     A compile can exit 0 and still produce an mpk with no ELF when the graph
-    fell back to the APU. Both the ACT and GR00T controllers check this before
-    accepting a compile, because the failure is otherwise invisible until the
-    board cannot load the model.
+    fell back to the APU. A compile is accepted only after this check, because
+    the failure is otherwise invisible until the DevKit cannot load the model.
     """
     try:
         with tarfile.open(archive, "r:gz") as handle:

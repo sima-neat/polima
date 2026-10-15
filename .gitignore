@@ -16,6 +16,7 @@ outputs/
 *.f32
 *.npz
 *_mpk.tar.gz
+/models/
 
 # Local site config (board address etc.); .polima.yaml.example is tracked.
 .polima.yaml
@@ -23,4 +24,7 @@ outputs/
 
 # PoLiMa Studio host-side frontend dependencies; production assets are built
 # into src/polima/studio/static and shipped in the board wheel.
-studio-ui/node_modules/
+src/polima/studio/ui/node_modules/
+
+# Local release notes
+/CHANGELOG.md
