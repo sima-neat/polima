@@ -15,6 +15,10 @@ are managed automatically; normal setup needs no environment variables or
 manual JSON configuration. For a server accessed from a laptop, follow
 [remote access](../../../docs/install.md#remote-workbench).
 
+![Workbench navigation: overview, model imports, compile settings and DevKits](../../../docs/images/workbench.gif)
+
+This preview uses example data; it does not show measured performance.
+
 1. **Import.** Upload a checkpoint folder and its representative dataset from
    your browser. Files are stored on the Workbench host. The upload limit is
    64 GiB per folder. Keep checkpoint configuration and weights together.

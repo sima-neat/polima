@@ -16,6 +16,10 @@ leaves it stopped. `polima studio serve --port 8080` runs in the foreground.
 shows service logs. Installing the Python package alone does not register the
 system service.
 
+![Studio navigation: robot setup, bundle transfer, runtime and benchmarks](../../../docs/images/studio.gif)
+
+This preview uses example data; it does not show a hardware run.
+
 ## Use Studio
 
 1. Upload a compiled bundle folder or tar archive in **Bundles & files**.
