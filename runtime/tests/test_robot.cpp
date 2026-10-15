@@ -2,11 +2,13 @@
 // Built and run on the host by tests/unit/test_native_robot.py.
 #include "polima/robot.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -19,8 +21,15 @@ static void expect(bool ok, const std::string& what) {
   }
 }
 
+// One folder per run, named by start time and process id, so runs by different
+// users on a shared host never reuse each other's files.
+static const fs::path run_dir = fs::temp_directory_path() /
+    ("polima-test-robot-" +
+     std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "-" +
+     std::to_string(getpid()));
+
 static fs::path bundle(const std::string& name, const std::string& robot) {
-  const fs::path root = fs::temp_directory_path() / ("polima-test-robot-" + name);
+  const fs::path root = run_dir / name;
   fs::create_directories(root);
   std::ofstream(root / "plan.json") << R"({"robot": )" << robot << "}";
   return root;
@@ -73,6 +82,8 @@ int main() {
   std::ofstream(python) << "#!/bin/sh\n[ \"$1\" = -m ] && [ \"$2\" = polima.robot.preview ]\n";
   expect(polima::run_camera_preview(root, assigned, "MJPG", 8081, root / "venv") == 0,
          "preview uses installed module instead of legacy bundle script");
+  std::error_code ignored;
+  fs::remove_all(run_dir, ignored);
   if (!failures) std::cout << "robot tests passed\n";
   return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }
