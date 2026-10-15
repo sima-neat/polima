@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 from polima.studio.transfer import Uploads
+from polima.workbench.hub import HubDownloads, dataset_format, locate
 
 
 def workspace() -> Path:
@@ -20,6 +21,7 @@ class Inputs:
     def __init__(self, root: Path | None = None):
         self.root = root or workspace()
         self.uploads = Uploads(self.root / 'imports')
+        self.hub = HubDownloads(self.root / 'imports')
 
     def create(self, kind: str, files: list) -> dict:
         if not isinstance(files, list) or not files or not all(isinstance(f, dict) for f in files):
@@ -42,12 +44,7 @@ class Inputs:
         base = self.uploads.path(upload_id)
         tree = base / 'files'
         kind = (base / 'kind').read_text()
-        if kind == 'checkpoint':
-            from polima.workbench.app import checkpoint
-            found = [p.parent for p in tree.rglob('config.json') if checkpoint(p.parent)]
-        else:
-            found = [p.parent.parent for p in tree.rglob('meta/info.json')
-                     if (p.parent.parent / 'data').is_dir()]
+        found = locate(kind, tree)
         if len(found) != 1:
             raise ValueError('Select one complete checkpoint folder.' if kind == 'checkpoint'
                              else 'Select one LeRobot dataset with meta/info.json and data/.')
@@ -61,6 +58,8 @@ class Inputs:
             try:
                 item = json.loads(path.read_text())
                 if isinstance(item, dict) and item.get('kind') in ('checkpoint', 'dataset') and isinstance(item.get('path'), str):
+                    if item['kind'] == 'dataset' and 'format' not in item:
+                        item['format'] = dataset_format(Path(item['path']))
                     result.append(item)
             except (OSError, ValueError):
                 continue
