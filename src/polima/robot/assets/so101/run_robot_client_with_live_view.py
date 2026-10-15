@@ -30,6 +30,7 @@ from lerobot.async_inference.robot_client import RobotClient, async_client
 from lerobot.cameras.opencv.camera_opencv import OpenCVCamera
 from lerobot.utils.import_utils import register_third_party_plugins
 
+from polima.robot import camera_guard
 from polima.robot.so101 import SO101PolicyClient as ACTSOMClient
 from polima.robot.so101 import record
 
@@ -286,7 +287,16 @@ def _action_tensor_to_dict_with_rest_snap(self: RobotClient, action_tensor):
 
 def _init_with_reset_position(self: RobotClient, config) -> None:
     global _active_client
+    cameras = getattr(config.robot, "cameras", {}) or {}
+    missing = camera_guard.missing_devices(
+        {role: getattr(camera, "index_or_path", None) for role, camera in cameras.items()})
+    if missing:
+        message = "Camera not enumerated before start: " + ", ".join(
+            f"{role} ({cameras[role].index_or_path})" for role in missing)
+        record("camera_fault", message=message, cameras=missing)
+        raise ConnectionError(message)
     _original_init(self, config)
+    self.camera_watch = camera_guard.CameraWatch()
     self.reset_position = _load_dataset_rest_position()
     self.reset_completed = False
     self.rest_snap_tolerance = float(
@@ -382,7 +392,7 @@ def _return_to_reset_position(
         self.shutdown_event.set()
     self.logger.info("Returning robot to reset position before shutdown...")
     try:
-        current_observation = self.robot.get_observation()
+        current_observation = camera_guard.joint_positions(self.robot)
         current_position = {
             key: value
             for key, value in current_observation.items()
@@ -427,7 +437,7 @@ def _return_to_reset_position(
 
         settle_deadline = time.monotonic() + settle_timeout_s
         while True:
-            current_observation = self.robot.get_observation()
+            current_observation = camera_guard.joint_positions(self.robot)
             errors = {
                 key: abs(float(current_observation[key]) - target)
                 for key, target in self.reset_position.items()
@@ -611,6 +621,38 @@ def _control_loop_action_with_completion(
     return performed_action
 
 
+def _recover_from_camera_fault(self: RobotClient, fault: camera_guard.CameraFault) -> None:
+    """Stop inference, release any object, return to rest, close the gripper, then exit."""
+    record("camera_fault", message=str(fault), camera=fault.role)
+    self.logger.error("Camera fault: %s; stopping inference and returning to rest", fault)
+    self.shutdown_event.set()
+    with self.action_queue_lock:
+        self.action_queue.queue.clear()
+    rested = camera_guard.release_and_rest(
+        self.robot, self.reset_position,
+        lambda: _return_to_reset_position(self, stop_inference=False, force=True),
+        self.logger,
+    )
+    if rested:
+        self.logger.error("Camera recovery complete; the arm is at rest. Check the %s camera "
+                          "and start the client again.", fault.role)
+    else:
+        record("error", message="Camera recovery did not reach rest")
+
+
+def _guarded_control_loop_observation(self: RobotClient, task: str, verbose: bool = False):
+    """LeRobot logs and swallows camera errors; check the cameras first and recover instead."""
+    if not self.running:
+        return None
+    fault = self.camera_watch.check(getattr(self.robot, "cameras", {}) or {})
+    if fault is not None:
+        _recover_from_camera_fault(self, fault)
+        return None
+    if self.camera_watch.count:
+        return None
+    return _original_control_loop_observation(self, task, verbose)
+
+
 def _control_loop_observation_with_web_view(
     self: RobotClient,
     task: str,
@@ -620,7 +662,7 @@ def _control_loop_observation_with_web_view(
 
     if not self.running:
         return None
-    observation = _original_control_loop_observation(self, task, verbose)
+    observation = _guarded_control_loop_observation(self, task, verbose)
     if observation is None:
         return None
     now = time.monotonic()
@@ -733,7 +775,7 @@ RobotClient.__init__ = _som_init if _direct_som else _init_with_reset_position
 RobotClient.start = _som_start if _direct_som else _start_after_reset
 RobotClient.stop = _stop_after_reset
 RobotClient.control_loop_action = _control_loop_action_with_completion
-RobotClient.control_loop_observation = _original_control_loop_observation if _direct_som else _control_loop_observation_with_web_view
+RobotClient.control_loop_observation = _guarded_control_loop_observation if _direct_som else _control_loop_observation_with_web_view
 RobotClient._aggregate_action_queues = _aggregate_action_queues_with_latency
 RobotClient._action_tensor_to_action_dict = _action_tensor_to_dict_with_rest_snap
 if _direct_som:
