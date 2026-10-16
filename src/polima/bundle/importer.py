@@ -436,7 +436,7 @@ def collect_robot_files(
     `source` is the build being packed (its dataset gives ACT its rest pose) or the
     tree that already holds ``robot_client/robot_rest_position.json`` (GR00T).
     """
-    if not _is_so101(spec) or spec.name not in ("act", "groot"):
+    if not _is_so101(spec) or spec.name not in ("act", "groot", "pi05"):
         return {}
     build = source if isinstance(source, BuildTree) else None
     asset_root = build.root if build is not None else source
@@ -451,9 +451,9 @@ def collect_robot_files(
         files["robot_rest_position.json"] = write_rest_pose(
             Path(build.dataset_root), build.root / "robot_rest_position.json",
             spec.robot.joint_names, spec.robot.calibration_id)
-    elif spec.name == "groot":
-        raise FileNotFoundError("an SO-101 GR00T bundle needs robot_client/robot_rest_position.json "
-                                "from its training dataset")
+    elif spec.name in ("groot", "pi05"):
+        raise FileNotFoundError(f"an SO-101 {spec.display_name} bundle needs "
+                                "robot_client/robot_rest_position.json from its training dataset")
     else:
         log.warning("no training dataset recorded; the bundle needs a rest pose "
                     "(robot_client/robot_rest_position.json) before it can drive the arm")
