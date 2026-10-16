@@ -29,6 +29,7 @@ from typing import Any
 from polima.config import devkits
 from polima.config.base import BoardConfig
 from polima.util.hashing import sha256_file
+from polima.workbench.hub import hub_dataset
 from polima.workbench.inputs import Inputs, prerequisites, workspace
 from polima.workbench.jobs import WorkflowJobs, compile_command
 
@@ -80,7 +81,7 @@ def checkpoint(folder: Path) -> dict[str, Any] | None:
     step = next((int(m.group(1)) for n in names[:3]
                  if (m := re.fullmatch(r"(?:checkpoint-)?(\d+)", n))), None)
     return {"policy": POLICIES[kind], "run": run, "step": step if step is not None else "final",
-            "path": str(folder), "modified": folder.stat().st_mtime}
+            "path": str(folder), "modified": folder.stat().st_mtime, "hub_dataset": hub_dataset(folder)}
 
 
 def policy_label(manifest: dict, plan: dict) -> str:
@@ -530,6 +531,7 @@ class Workbench:
             "generated": self.scanned,
             "workflow": self.jobs.snapshot(),
             "inputs": self.inputs.items(),
+            "hub": self.inputs.hub.status(),
             "devkits": [{"name": d["name"], "host": d["host"]} for d in devkits.load()],
         }
 
@@ -635,6 +637,13 @@ def serve(workbench: Workbench, host: str = "127.0.0.1", port: int = 8686) -> Th
                 elif path == "/api/v1/imports/cancel":
                     workbench.inputs.uploads.discard(body.get("id", ""))
                     reply = {"ok": True}
+                elif path == "/api/v1/hub/download":
+                    reply = workbench.inputs.hub.start(str(body.get("kind", "")), str(body.get("repo_id", "")),
+                                                       str(body.get("revision", "")))
+                elif path == "/api/v1/hub/status":
+                    reply = workbench.inputs.hub.status() or {}
+                    if reply.get("status") == "completed":
+                        workbench.scanned = 0
                 elif path == "/api/v1/workflow":
                     reply = workbench.start_job(body)
                 elif path == "/api/v1/devkits":

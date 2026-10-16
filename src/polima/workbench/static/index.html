@@ -289,6 +289,16 @@ tbody tr:hover { background:color-mix(in srgb,var(--accent) 4%,var(--surface)); 
         <progress id="upload-progress" max="100" value="0" hidden aria-label="Upload progress"></progress>
         <p id="upload-message" role="status"></p><button class="btn" id="upload-retry" hidden>Resume upload</button> <button class="btn" id="upload-discard" hidden>Discard upload</button>
         <p class="sub">Upload extracted folders, up to 64 GiB. Large files transfer in chunks. Keep this page open until the upload completes.</p>
+        <h4>From Hugging Face</h4>
+        <div class="grid2">
+          <div class="field"><label for="hub-kind">Type</label><select id="hub-kind"><option value="checkpoint">Checkpoint (model repository)</option><option value="dataset">Dataset (dataset repository)</option></select></div>
+          <div class="field"><label for="hub-repo">Repository URL or ID</label><input id="hub-repo" placeholder="https://huggingface.co/owner/name" autocomplete="off" spellcheck="false"></div>
+        </div>
+        <div class="field"><label for="hub-revision">Revision (optional)</label><input id="hub-revision" placeholder="main, a tag or a commit" autocomplete="off" spellcheck="false"></div>
+        <div><button class="btn primary" id="hub-start">Download to Workbench host</button></div>
+        <progress id="hub-progress" max="100" value="0" hidden aria-label="Hub download progress"></progress>
+        <p id="hub-message" role="status"></p>
+        <p class="sub">The Workbench host downloads the repository directly. Private and gated repositories use the token saved on the host with <code>hf auth login</code>; this page never asks for it. Starting the same repository again resumes an interrupted download.</p>
         <details><summary>Files already on the Workbench host</summary><p>Start Workbench with <code>--models /path/to/checkpoints</code>. Dataset paths can be entered on the Compile page. These paths refer to the host running Workbench.</p></details>
       </div></div>
       <div class="panel">
@@ -306,6 +316,7 @@ tbody tr:hover { background:color-mix(in srgb,var(--accent) 4%,var(--surface)); 
         <div class="panel"><div class="panel-h"><h3><span class="section-icon" aria-hidden="true">⚙️</span>Settings</h3></div><div class="panel-b form">
           <div class="field"><label for="ckpt">Checkpoint</label><select id="ckpt"></select></div>
           <div class="field"><label for="dataset">Dataset</label><input id="dataset" list="dataset-options" placeholder="Select an uploaded dataset or enter a host path"><datalist id="dataset-options"></datalist></div>
+          <p class="sub" id="dataset-hint" hidden></p>
           <p class="sub">Representative observations are required for export and validation, including BF16. No retraining. <a href="/guide#inputs" target="_blank" rel="noopener">Prepare your dataset ↗</a></p>
           <div><button class="btn" id="check-setup">Check prerequisites</button> <a href="/guide#compiler" target="_blank" rel="noopener">Compiler setup ↗</a></div>
           <ul class="checks" id="compile-checks" aria-live="polite"></ul>
@@ -700,11 +711,53 @@ function validationTable(builds) {
     } catch (e) { if (request === setupRequest) $("compile-checks").textContent = e.message; }
   }
   $("check-setup").addEventListener('click', checkSetup);
+  // The selected checkpoint's training dataset on the Hub, and the format of the chosen dataset.
+  function datasetHint() {
+    var m = (data.checkpoints || []).find(c => c.path === $("ckpt").value);
+    var chosen = (data.inputs || []).find(i => i.kind === 'dataset' && i.path === $("dataset").value);
+    var fetched = m && m.hub_dataset && (data.inputs || []).find(i => i.kind === 'dataset' && i.repo_id === m.hub_dataset);
+    var parts = [];
+    if (chosen && chosen.format) parts.push('LeRobot ' + esc(chosen.format.version) + (chosen.format.note ? ' · ' + esc(chosen.format.note) : ''));
+    if (m && m.hub_dataset && !fetched) parts.push('Trained on <code>' + esc(m.hub_dataset) + '</code> <button class="btn" id="hub-suggested">Download from Hugging Face</button>');
+    $("dataset-hint").innerHTML = parts.join('<br>');
+    $("dataset-hint").hidden = !parts.length;
+    if (fetched && !$("dataset").value) { $("dataset").value = fetched.path; }
+    var button = $("hub-suggested");
+    if (button) button.addEventListener('click', function() { hubStart('dataset', m.hub_dataset, ''); });
+  }
+  var hubTimer = null, hubCompleted = null;
+  function hubShow(state) {
+    if (!state || !state.status) return;
+    var running = state.status === 'running';
+    $("hub-start").disabled = running;
+    $("hub-progress").hidden = !running;
+    $("hub-progress").value = state.total ? 100 * state.received / state.total : 0;
+    var gb = function(b) { return (b / 1e9).toFixed(2) + ' GB'; };
+    $("hub-message").textContent = running ? 'Downloading ' + state.repo_id + ' · ' + gb(state.received) + ' of ' + gb(state.total)
+      : state.status === 'completed' ? 'Imported ' + state.item.name + (state.item.format ? ' · LeRobot ' + state.item.format.version : '') + '.'
+      : state.error;
+    if (running && !hubTimer) hubTimer = setInterval(hubPoll, 2000);
+    if (!running && hubTimer) { clearInterval(hubTimer); hubTimer = null; }
+    if (state.status === 'completed' && hubCompleted !== state.started_at) {
+      hubCompleted = state.started_at;
+      if (state.kind === 'dataset') $("dataset").value = state.item.path;
+      load(true);
+    }
+  }
+  function hubPoll() { post('/api/v1/hub/status', {}).then(hubShow).catch(function(e) { $("hub-message").textContent = e.message; }); }
+  function hubStart(kind, repo, revision) {
+    $("hub-start").disabled = true; $("hub-message").textContent = 'Checking ' + repo + ' on the Hub…';
+    post('/api/v1/hub/download', {kind:kind, repo_id:repo, revision:revision}).then(hubShow).catch(function(e) {
+      $("hub-start").disabled = false; $("hub-message").textContent = e.message;
+      if (kind === 'dataset') { $("dataset-hint").hidden = false; $("dataset-hint").textContent = e.message; }
+    });
+  }
+  $("hub-start").addEventListener('click', function() { hubStart($("hub-kind").value, $("hub-repo").value, $("hub-revision").value); });
   $("dataset").addEventListener('input', function() { setupReady=false; $("compile-start").disabled=true; });
-  $("dataset").addEventListener('change', checkSetup);
+  $("dataset").addEventListener('change', function() { datasetHint(); checkSetup(); });
   function command() {
     var m = (data.checkpoints || []).find(function(c) { return c.path === $("ckpt").value; });
-
+    datasetHint();
     checkSetup();
     $("command").textContent = m ? m.policy + ' · ' + m.path + '\nThe exact command appears here when compilation starts.' : 'Choose a checkpoint.';
   }
@@ -738,7 +791,7 @@ function validationTable(builds) {
   $("refresh").addEventListener("click", function () { load(true); });
   function load(refresh) {
     fetch("/api/v1/snapshot" + (refresh === true ? "?refresh=1" : "")).then(function (r) { return r.json(); }).then(function (d) {
-      data = d; $("error").hidden = true; render();
+      data = d; $("error").hidden = true; render(); if (!hubTimer) hubShow(d.hub);
     }, function () { $("error").hidden = false; $("error").textContent = "The Workbench server is not answering. Is `polima workbench` still running?"; });
   }
   load();
