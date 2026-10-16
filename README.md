@@ -93,12 +93,24 @@ Every command has `--help`.
 
 ## Performance
 
-Reference measurements on a Modalix DevKit, mixed precision, one 32-move plan:
+Reference measurements on a Modalix DevKit with two cameras:
 
-| Model | Model time on the DevKit | Camera picture to plan |
-|---|---|---|
-| GR00T N1.6 | 317 ms | 364 ms |
-| GR00T N1.7 | 233 ms | 285 ms |
+<!-- TODO(#14): measure camera picture to plan for ACT and SmolVLA on the SO-101 arm. -->
+
+| Model | Quantization | Moves per plan | Model time on the DevKit | Camera picture to plan |
+|---|---|---|---|---|
+| ACT | BF16 | 100 | 28.0 ms | pending |
+| SmolVLA | Mixed: denoising expert INT8 weights, rest BF16 | 50 | 302.8 ms | pending |
+| GR00T N1.6 | Mixed: transformer blocks INT8 weights, rest BF16 | 32 | 317 ms | 364 ms |
+| GR00T N1.7 | Mixed: transformer blocks INT8 weights, rest BF16 | 32 | 233 ms | 285 ms |
+
+**Quantization.** BF16 is 16-bit floating point throughout. Mixed bundles store
+the weights of the largest graphs as 8-bit integers (per output channel) and
+keep every other graph in BF16. Activations are BF16 between layers; the
+accelerator converts a layer's input to 8 bits on the fly when that layer has
+8-bit weights. GR00T's INT8 graphs are its vision, language-model and action
+(DiT) transformer blocks. SmolVLA's is its action expert, which runs once per
+denoising step (10 steps).
 
 These measurements describe the reference setup, not a guaranteed latency for
 every checkpoint or release bundle. Use the model card for artifact-specific
