@@ -51,16 +51,16 @@ of 961 demonstrations of placing the grey eraser in the white basket.
 | Test | 96 | 26,535 |
 | Total | 961 | 272,853 |
 
-The split uses seed 42. N1.6 and N1.7 use model-specific preparations of the
-same training demonstrations, with overhead and wrist RGB video at 30 frames/s.
-These are split counts, not a claim of task success on the held-out data.
-The original recordings are available as
-[Thomison/grey_eraser_961_final](https://huggingface.co/datasets/Thomison/grey_eraser_961_final).
-Training used prepared views of this collection: LeRobot v3 data converted to
-v2.1, camera roles aligned, and the episode split above applied. The original
-collection is not a ready-to-use copy of those model-specific training views.
-The compiled-model release does not include the prepared dataset; running a
-compiled bundle does not require it.
+The split uses seed 42. These are split counts, not a claim of task success on
+the held-out data.
+
+Download the dataset from
+[Priyakarna/SO101-GreyEraser-PickPlace](https://huggingface.co/datasets/Priyakarna/SO101-GreyEraser-PickPlace):
+LeRobot format v3.0, overhead and wrist RGB video at 30 frames/s, with the
+split above in its `splits.json`. ACT trains on it directly. For GR00T, convert
+it to v2.1 and add a `meta/modality.json` (see
+[Preparing your dataset](../../docs/groot.md#preparing-your-dataset)).
+Running a compiled bundle does not require the dataset.
 
 Use an SO-101 with matching geometry, joint order and action units. Calibrating
 a different robot design does not make it compatible with this policy.
