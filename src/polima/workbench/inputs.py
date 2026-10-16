@@ -86,6 +86,27 @@ def prerequisites(policy: str, dataset: str = '') -> list[dict]:
         rows.append({'label': 'Representative dataset',
                      'ok': bool(root and isinstance(info, dict) and (root / 'data').is_dir()),
                      'help': 'Select an uploaded LeRobot dataset with meta/info.json, data/ and referenced videos. ACT export uses sample observations for calibration and validation; no retraining.'})
+    if policy == 'Pi0.5':
+        python = getattr(config.paths, 'pi05_python', None)
+        path = Path(python).expanduser() if python else None
+        ready = bool(path and path.is_file() and os.access(path, os.X_OK))
+        rows.append({'label': 'Pi0.5 export environment', 'ok': ready,
+                     'help': 'Save paths.pi05_python (an interpreter with torch, transformers 5 and LeRobot[pi]) '
+                             'in your user configuration. See Compiler setup.'})
+        if ready:
+            try:
+                probe = subprocess.run([str(path), '-c', 'from lerobot.policies.pi05.modeling_pi05 import PI05Policy'],
+                                       capture_output=True, text=True, timeout=60, check=False)
+                ready, detail = probe.returncode == 0, (probe.stderr.strip().splitlines() or [''])[-1][:240]
+            except (OSError, subprocess.TimeoutExpired):
+                ready, detail = False, 'The export environment could not complete its dependency check.'
+            rows.append({'label': 'Pi0.5 export dependencies', 'ok': ready,
+                         'help': 'Install LeRobot with the [pi] and [dataset] extras and transformers 5. ' + detail})
+        root = Path(dataset).expanduser() if dataset else None
+        rows.append({'label': 'Calibration dataset', 'ok': bool(root and (root / 'meta/info.json').is_file()
+                                                              and (root / 'data').is_dir()),
+                     'help': 'Select a LeRobot dataset recorded with the checkpoint\'s cameras: export calibrates '
+                             'INT8 weights on its observations and builds the fixture from one of them.'})
     if policy.startswith('GR00T'):
         tag = '16' if policy == 'GR00T N1.6' else '17'
         paths = {}

@@ -36,7 +36,7 @@ from polima.workbench.jobs import WorkflowJobs, compile_command
 STATIC = Path(__file__).with_name("static")
 LOGO = Path(__file__).resolve().parents[1] / "studio/static/assets/neat-mark.svg"
 SKIP = {".git", ".venv", "node_modules", "__pycache__", "datasets", "wandb", "models", "fixtures"}
-POLICIES = {"act": "ACT", "Gr00tN1d6": "GR00T N1.6", "Gr00tN1d7": "GR00T N1.7"}
+POLICIES = {"act": "ACT", "Gr00tN1d6": "GR00T N1.6", "Gr00tN1d7": "GR00T N1.7", "pi05": "Pi0.5"}
 
 
 def walk(roots: list[Path], marker: str, depth: int = 8, limit: int = 400) -> list[Path]:
