@@ -292,7 +292,7 @@ tbody tr:hover { background:color-mix(in srgb,var(--accent) 4%,var(--surface)); 
         <h4>From Hugging Face</h4>
         <div class="grid2">
           <div class="field"><label for="hub-kind">Type</label><select id="hub-kind"><option value="checkpoint">Checkpoint (model repository)</option><option value="dataset">Dataset (dataset repository)</option></select></div>
-          <div class="field"><label for="hub-repo">Repository id</label><input id="hub-repo" placeholder="owner/name" autocomplete="off" spellcheck="false"></div>
+          <div class="field"><label for="hub-repo">Repository URL or ID</label><input id="hub-repo" placeholder="https://huggingface.co/owner/name" autocomplete="off" spellcheck="false"></div>
         </div>
         <div class="field"><label for="hub-revision">Revision (optional)</label><input id="hub-revision" placeholder="main, a tag or a commit" autocomplete="off" spellcheck="false"></div>
         <div><button class="btn primary" id="hub-start">Download to Workbench host</button></div>
@@ -725,7 +725,7 @@ function validationTable(builds) {
     var button = $("hub-suggested");
     if (button) button.addEventListener('click', function() { hubStart('dataset', m.hub_dataset, ''); });
   }
-  var hubTimer = null;
+  var hubTimer = null, hubCompleted = null;
   function hubShow(state) {
     if (!state || !state.status) return;
     var running = state.status === 'running';
@@ -737,12 +737,11 @@ function validationTable(builds) {
       : state.status === 'completed' ? 'Imported ' + state.item.name + (state.item.format ? ' · LeRobot ' + state.item.format.version : '') + '.'
       : state.error;
     if (running && !hubTimer) hubTimer = setInterval(hubPoll, 2000);
-    if (!running && hubTimer) {
-      clearInterval(hubTimer); hubTimer = null;
-      if (state.status === 'completed') {
-        if (state.kind === 'dataset') $("dataset").value = state.item.path;
-        load(true);
-      }
+    if (!running && hubTimer) { clearInterval(hubTimer); hubTimer = null; }
+    if (state.status === 'completed' && hubCompleted !== state.started_at) {
+      hubCompleted = state.started_at;
+      if (state.kind === 'dataset') $("dataset").value = state.item.path;
+      load(true);
     }
   }
   function hubPoll() { post('/api/v1/hub/status', {}).then(hubShow).catch(function(e) { $("hub-message").textContent = e.message; }); }

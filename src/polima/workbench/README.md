@@ -42,3 +42,5 @@ while uploaded files come from your browser's computer.
 unavailable until validation or benchmarking runs. Output agreement with
 PyTorch measures numerical fidelity; robot task success requires robot trials.
 Compare builds using matching inputs, tasks, hardware and run settings.
+
+Hub imports resolve the selected revision to an exact commit. A failed download leaves the previous import available; retrying the same commit resumes its download. Older downloaded versions remain on disk so existing compile jobs keep their original inputs.

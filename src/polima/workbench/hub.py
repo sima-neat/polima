@@ -15,6 +15,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 REPO_ID = re.compile(r"[A-Za-z0-9][\w.-]{0,95}/[\w.-]{1,96}")
 REVISION = re.compile(r"[\w.\-/]{1,128}")
@@ -22,11 +23,29 @@ KINDS = {"checkpoint": "model", "dataset": "dataset"}
 MARGIN = 1 << 30  # keep 1 GiB free beyond the repository's size
 
 
+def repository_id(kind: str, value: str) -> str:
+    value = value.strip()
+    if "://" not in value:
+        return value
+    url = urlsplit(value)
+    if url.scheme != "https" or url.netloc != "huggingface.co":
+        raise ValueError("Use a https://huggingface.co repository URL or owner/name.")
+    parts = url.path.strip("/").split("/")
+    dataset = parts[0] == "datasets"
+    if dataset != (kind == "dataset"):
+        raise ValueError("Choose Dataset for dataset URLs or Checkpoint for model URLs.")
+    if dataset:
+        parts = parts[1:]
+    if len(parts) != 2:
+        raise ValueError("Paste the repository's main URL; enter its revision separately.")
+    return "/".join(parts)
+
+
 def validate(kind: str, repo_id: str, revision: str) -> None:
     if kind not in KINDS:
         raise ValueError("Choose a checkpoint or dataset repository.")
     if not REPO_ID.fullmatch(repo_id) or ".." in repo_id:
-        raise ValueError("Enter a repository id like owner/name.")
+        raise ValueError("Enter a Hugging Face repository URL or owner/name.")
     if revision and (not REVISION.fullmatch(revision) or ".." in revision):
         raise ValueError("The revision may contain letters, digits, '.', '-', '_' and '/'.")
 
@@ -96,6 +115,7 @@ class HubDownloads:
         self.root = root  # the workspace's imports/ folder
         self._api, self._download = api, download
         self.lock = threading.Lock()
+        self.start_lock = threading.Lock()
         self.current: dict[str, Any] | None = None
 
     def _hub(self):
@@ -114,7 +134,15 @@ class HubDownloads:
         return self.root / f"hub-{key}"
 
     def start(self, kind: str, repo_id: str, revision: str = "") -> dict[str, Any]:
-        repo_id, revision = repo_id.strip(), revision.strip()
+        if not self.start_lock.acquire(blocking=False):
+            raise ValueError("A Hub download is already running. Wait for it to finish.")
+        try:
+            return self._start(kind, repo_id, revision)
+        finally:
+            self.start_lock.release()
+
+    def _start(self, kind: str, repo_id: str, revision: str) -> dict[str, Any]:
+        repo_id, revision = repository_id(kind, repo_id), revision.strip()
         validate(kind, repo_id, revision)
         with self.lock:
             if self.current and self.current["status"] == "running":
@@ -128,7 +156,10 @@ class HubDownloads:
             raise ValueError(explain(error)) from error
         total = sum(getattr(f, "size", 0) or 0 for f in getattr(info, "siblings", None) or [])
         base = self.folder(kind, repo_id, revision)
-        tree = base / repo_id.split("/")[1]  # the run name the checkpoint list shows
+        commit = str(info.sha)
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise ValueError("The Hub did not return a valid commit for this revision.")
+        tree = base / "snapshots" / commit / repo_id.split("/")[1]
         tree.mkdir(parents=True, exist_ok=True)
         have = tree_bytes(tree)
         free = shutil.disk_usage(base).free
@@ -137,16 +168,31 @@ class HubDownloads:
                              f"{(total - have) / 1e9:.1f} GB more and {free / 1e9:.1f} GB is free.")
         (base / "kind").write_text(kind)
         state = {"kind": kind, "repo_id": repo_id, "revision": revision, "status": "running",
-                 "total": total, "started_at": time.time(), "path": str(tree), "tree": str(tree)}
+                 "total": total, "started_at": time.time(), "path": str(tree), "tree": str(tree),
+                 "commit": commit}
         with self.lock:
             self.current = state
-        threading.Thread(target=self._run, args=(download, base, state), daemon=True).start()
+        try:
+            threading.Thread(target=self._run, args=(download, base, state), daemon=True).start()
+        except Exception:
+            with self.lock:
+                state.update(status="failed", error="Could not start the download worker.")
+            raise
         return self.status()
 
     def _run(self, download, base: Path, state: dict[str, Any]) -> None:
         kind, tree = state["kind"], Path(state["tree"])
         try:
-            download(state["repo_id"], repo_type=KINDS[kind], revision=state["revision"] or None,
+            published = base / "input.json"
+            try:
+                previous = json.loads(published.read_text())
+            except (OSError, ValueError):
+                previous = {}
+            if isinstance(previous, dict) and previous.get("commit") == state["commit"] and Path(previous.get("path", "")).is_dir():
+                with self.lock:
+                    state.update(status="completed", item=previous, ended_at=time.time())
+                return
+            download(state["repo_id"], repo_type=KINDS[kind], revision=state["commit"],
                      local_dir=str(tree))
             found = locate(kind, tree)
             if len(found) != 1:
@@ -155,10 +201,12 @@ class HubDownloads:
                                  "The repository is not one LeRobot dataset with meta/info.json and data/.")
             label = state["repo_id"] + (f"@{state['revision']}" if state["revision"] else "")
             item = {"kind": kind, "path": str(found[0]), "name": label, "source": "hub",
-                    "repo_id": state["repo_id"], "revision": state["revision"]}
+                    "repo_id": state["repo_id"], "revision": state["revision"], "commit": state["commit"]}
             if kind == "dataset":
                 item["format"] = dataset_format(found[0])
-            (base / "input.json").write_text(json.dumps(item))
+            pending = base / "input.json.pending"
+            pending.write_text(json.dumps(item))
+            pending.replace(published)
             update = {"status": "completed", "item": item}
         except Exception as error:  # noqa: BLE001 - reported on the page; the folder is kept for resuming
             update = {"status": "failed", "error": error.args[0] if isinstance(error, ValueError)
@@ -171,5 +219,5 @@ class HubDownloads:
             state = dict(self.current) if self.current else None
         if state:
             state["received"] = min(tree_bytes(Path(state["path"])), state["total"]) \
-                if state["status"] == "running" else state["total"]
+                if state["status"] != "completed" else state["total"]
         return state
