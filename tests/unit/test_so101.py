@@ -49,12 +49,14 @@ def control_functions():
     """Load control functions with a virtual arm, without initializing hardware."""
     source = Path(so101.__file__).with_name("assets") / "so101/run_robot_client_with_live_view.py"
     names = {"_begin_task_cycle", "_action_tensor_to_dict_with_rest_snap", "_control_loop_action_with_completion",
-             "_return_to_reset_position"}
+             "_return_to_reset_position", "_recover_from_camera_fault",
+             "_guarded_control_loop_observation"}
     nodes = [node for node in ast.parse(source.read_text()).body
              if isinstance(node, ast.FunctionDef) and node.name in names]
     clock = SimpleNamespace(now=0.0, monotonic=lambda: clock.now,
                             sleep=lambda seconds: setattr(clock, "now", clock.now + seconds))
-    namespace = {"RobotClient": object, "time": clock,
+    from polima.robot import camera_guard
+    namespace = {"RobotClient": object, "time": clock, "camera_guard": camera_guard,
                  "_original_action_tensor_to_dict": lambda _, value: dict(value),
                  "_original_control_loop_action": lambda self, _: dict(self.action),
                  "record": lambda *args, **kwargs: None}
@@ -153,6 +155,46 @@ def test_return_to_rest_preserves_rates_limits_and_final_pose(ease):
     assert sent[-1] == client.reset_position
     for previous, action in pairwise(sent):
         assert max(abs(action[key] - previous[key]) for key in action) < 12.
+
+
+def test_lost_camera_releases_rests_closes_and_stops(monkeypatch):
+    from polima.robot import camera_guard
+
+    monkeypatch.setattr(camera_guard.time, "sleep", lambda _s: None)
+    functions, _ = control_functions()
+    client = virtual_client()
+    pose = dict.fromkeys(so101.JOINTS, 30.)
+    pose["gripper.pos"] = 5.
+    sent, rests = [], []
+
+    def send(action):
+        sent.append(dict(action))
+        pose.update(action)
+
+    def rest(self, **kwargs):
+        rests.append((kwargs, pose["gripper.pos"]))
+        pose.update({k: v for k, v in self.reset_position.items() if k != "gripper.pos"})
+        return True
+
+    class Lost:
+        is_connected = True
+
+        def read_latest(self):
+            raise TimeoutError("latest frame is too old")
+
+    client.robot = SimpleNamespace(get_observation=lambda: dict(pose), send_action=send,
+                                   cameras={"wrist": Lost()})
+    client.camera_watch = camera_guard.CameraWatch(limit=2)
+    client.running = True
+    client.action_queue.put("stale")
+    functions["_return_to_reset_position"] = rest
+    functions["_original_control_loop_observation"] = lambda *a: pytest.fail("observed a dead camera")
+    observe = functions["_guarded_control_loop_observation"]
+    assert observe(client, "task") is None and not client.shutdown_event.is_set()
+    assert observe(client, "task") is None
+    assert client.shutdown_event.is_set() and client.action_queue.empty()
+    assert rests == [({"stop_inference": False, "force": True}, 40.)]
+    assert sent[-1]["gripper.pos"] == client.reset_position["gripper.pos"]
 
 
 def test_telemetry_storage_failure_does_not_change_robot_flow(monkeypatch):
