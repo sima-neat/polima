@@ -582,7 +582,20 @@ def import_build(
             source_dir=str(build.root),
             tool_versions=tool_versions,
             precisions=build.precisions,
+            plan_rewrite=_device_chain_rewrite(spec),
         ),
         output_root,
     )
     return bundle
+
+
+def _device_chain_rewrite(spec: PolicySpec):
+    """The spec's `device_chain` levels as a pack-time plan rewrite, or None."""
+    if not spec.device_chain:
+        return None
+    from polima.bundle.device_chain import rewrite
+
+    graphs = [{"name": g.name, "input_elements": sum(t.elements for t in g.inputs),
+               "output_elements": sum(t.elements for t in g.outputs),
+               "dram_layout": g.outputs[0].dram_layout} for g in spec.compile.graphs]
+    return lambda plan: rewrite(plan, graphs, spec.device_chain)

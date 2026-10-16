@@ -323,6 +323,9 @@ ACT_SPEC = PolicySpec(
     runtime_plan_builder="polima.policies.act.runtime:build_plan",
     checkpoint_validator="polima.policies.act.graphs:validate_checkpoint",
     profile_entry="polima.policies.act:specialize_spec",
+    # Both cameras, the stem, the encoder and the decoder as one device program:
+    # 19.0 -> 15.8 ms on Modalix, outputs byte-identical to the per-graph plan.
+    device_chain=("act",),
 )
 
 register_policy(ACT_SPEC)
