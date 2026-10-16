@@ -99,10 +99,15 @@ Reference measurements on a Modalix DevKit with two cameras:
 
 | Model | Quantization | Moves per plan | Model time on the DevKit | Camera picture to plan |
 |---|---|---|---|---|
-| ACT | BF16 | 100 | 28.0 ms | pending |
-| SmolVLA | Mixed: denoising expert INT8 weights, rest BF16 | 50 | 302.8 ms | pending |
+| ACT | BF16 | 100 | 17.3 ms | pending |
+| SmolVLA | Mixed: denoising expert INT8 weights, rest BF16 | 50 | 248.3 ms | pending |
 | GR00T N1.6 | Mixed: transformer blocks INT8 weights, rest BF16 | 32 | 317 ms | 364 ms |
 | GR00T N1.7 | Mixed: transformer blocks INT8 weights, rest BF16 | 32 | 233 ms | 285 ms |
+
+ACT and SmolVLA model times are medians measured with the runtime in this
+repository (`polima_cli` built from `main`, 3718bce). The DevKit's older August
+runtime is about 1.2–1.6× slower on the same bundles (ACT 28.9 ms,
+SmolVLA 301.9 ms). The GR00T rows are the earlier reference measurements on the arm.
 
 **Quantization.** BF16 is 16-bit floating point throughout. Mixed bundles store
 the weights of the largest graphs as 8-bit integers (per output channel) and
