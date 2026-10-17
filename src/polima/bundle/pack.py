@@ -234,6 +234,8 @@ def _plan_dict(plan: RuntimePlan, wire: PolicySpec | None = None) -> dict:
         "sidecars": list(plan.sidecars),
         "loops": dict(plan.loops),
     }
+    if plan.device_buffers:
+        data["device_buffers"] = dict(plan.device_buffers)
     if wire is not None:
         # Host-visible graph output layout is executable behavior, not merely
         # descriptive metadata. Include it in plan.json and therefore in the

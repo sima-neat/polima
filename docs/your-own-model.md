@@ -4,7 +4,7 @@ From demonstrations to your model driving the arm:
 
 ```
 record ──▶ train ──▶ polima compile ──▶ check ──▶ polima deploy ──▶ polima robot run
-(LeRobot)  (LeRobot / GR00T)  (your PC)  (DevKit)   (your PC)          (DevKit)
+(LeRobot)  (LeRobot / GR00T / Pi0.5)  (your PC)  (DevKit)   (your PC)          (DevKit)
 ```
 
 This guide uses an SO-101 arm with two cameras, an overhead camera and a wrist
@@ -170,7 +170,8 @@ from pathlib import Path
 path = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "polima/config.json"
 config = json.loads(path.read_text()) if path.exists() else {}
 paths = config.setdefault("paths", {})
-for key in ("groot16_python", "groot16_source", "groot17_python", "groot17_source", "groot17_backbone"):
+for key in ("groot16_python", "groot16_source", "groot17_python", "groot17_source", "groot17_backbone",
+            "pi05_python"):
     value = os.environ.get("POLIMA_" + key.upper())
     if value:
         paths[key] = value
@@ -220,6 +221,36 @@ computes in 16-bit floating point: the tested choice. `--precision bf16` is
 16-bit floating point. Compare numerical fidelity and measured latency for
 your checkpoint before selecting a precision.
 
+### Pi0.5
+
+Pi0.5 checkpoints are LeRobot `pi05` policies: [`lerobot/pi05_base`](https://huggingface.co/lerobot/pi05_base)
+or a model fine-tuned from it with `lerobot-train`. The export runs in its own
+interpreter with PyTorch, Transformers 5 and LeRobot (0.6.1 tested) with the
+`[pi]` and `[dataset]` extras; the ModelSDK needs LLiMa (`sima_lmm`, 0.4.0 tested).
+Save the interpreter once:
+
+```bash
+python3 -m venv ~/.venvs/polima-pi05
+~/.venvs/polima-pi05/bin/pip install "lerobot[pi,dataset]==0.6.1" "transformers>=5,<5.6" onnx onnxruntime
+export POLIMA_PI05_PYTHON=~/.venvs/polima-pi05/bin/python
+```
+
+With the variable set, the configuration snippet above saves it as
+`paths.pi05_python`. `polima doctor` checks it. Then compile:
+
+```bash
+polima compile --policy pi05 \
+    --checkpoint /path/to/pretrained_model \
+    --dataset /path/to/your/dataset \
+    --task "Place the grey eraser in the white basket" \
+    --output ~/polima-builds/my-pi05 --check-devkit <devkit>
+```
+
+The dataset must have the checkpoint's cameras (`--camera-map CKPT_CAM=DATASET_CAM`
+when the names differ). A build takes one to two hours, most of it in LLiMa.
+The default `--precision w8a16` stores weights as 8-bit integers; `bf16` is
+slower and more accurate. Reference latencies and options: [pi05.md](pi05.md).
+
 ## 4. Check
 
 Every bundle carries a test input and the answer the original PyTorch model
@@ -232,7 +263,7 @@ polima run --bundle <bundle-id> --fixture --repeat 20
 
 It reports numerical agreement with PyTorch, inference latency and PASS or
 FAIL against the bundle's thresholds. This check does not measure robot task
-success. For GR00T, add
+success. For GR00T and Pi0.5, add
 `--check-devkit <devkit-address or name>` to `polima compile` to run this check as
 the last compile step; the DevKit's model server must be stopped for it
 (`polima server stop`).
