@@ -326,7 +326,7 @@ int repl(const fs::path& store, const std::string& preselect, bool verbose) {
     const fs::path directory = fs::path(store) / loaded / "fixtures" / "inputs";
     try {
       for (const auto& [name, elements] : plan->wire().request_tensors)
-        staging[name] = read_f32(directory / (name + ".f32"), elements);
+        staging[name] = read_wire_input(directory, name, elements, plan->wire());
       return true;
     } catch (const std::exception& error) {
       staging.clear();

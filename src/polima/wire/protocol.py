@@ -18,6 +18,32 @@ from polima.policies.base import WireSpec
 #: Little-endian float32 -- what both the C++ server and the .f32 fixtures use.
 DTYPE = "<f4"
 
+#: Wire encodings by TensorSpec.dtype. Camera frames may travel as raw uint8
+#: (4x smaller than float32); the server decodes them with `decode_tensor`'s
+#: arithmetic, so the graphs see the bytes a client-side normalization produced.
+WIRE_DTYPES = {"float32": np.dtype(DTYPE), "uint8": np.dtype("u1")}
+
+
+def wire_dtype(tensor) -> np.dtype:
+    try:
+        return WIRE_DTYPES[tensor.dtype]
+    except KeyError:
+        raise ProtocolError(f"{tensor.name}: unsupported wire dtype {tensor.dtype!r}") from None
+
+
+def decode_tensor(values: np.ndarray, decode: Mapping) -> np.ndarray:
+    """A uint8 request tensor as the server decodes it, in float32.
+
+    ``(x / scale - mean[c]) / std[c]`` over the last axis -- the same float32
+    operations, in the same order, as the client-side normalization it replaces
+    (`coerce_image` then `(x - mean) / std`), so the results are bit-identical.
+    """
+    mean = np.asarray(decode["mean"], dtype=np.float32)
+    std = np.asarray(decode["std"], dtype=np.float32)
+    flat = np.asarray(values, dtype=np.uint8).reshape(-1, mean.size)
+    scaled = flat.astype(np.float32) / np.float32(decode["scale"])
+    return ((scaled - mean) / std).reshape(np.shape(values)).astype(np.float32, copy=False)
+
 
 @dataclass(frozen=True)
 class ResponseHeader:
@@ -76,13 +102,17 @@ class Protocol:
             )
         )
         for tensor in self.spec.request_tensors:
-            array = np.asarray(tensors[tensor.name], dtype=np.float32)
+            dtype = wire_dtype(tensor)
+            array = np.asarray(tensors[tensor.name])
+            if dtype == np.uint8 and array.dtype != np.uint8:
+                # Casting would silently truncate a normalized float image.
+                raise ProtocolError(f"{tensor.name}: expected uint8 values, got {array.dtype}")
             if array.size != tensor.elements:
                 raise ProtocolError(
                     f"{tensor.name}: expected {tensor.elements} elements "
                     f"{tensor.shape}, got {array.size} {array.shape}"
                 )
-            payload += np.ascontiguousarray(array.reshape(-1), dtype=DTYPE).tobytes()
+            payload += np.ascontiguousarray(array.reshape(-1), dtype=dtype).tobytes()
         return bytes(payload)
 
     def parse_response_header(self, raw: bytes) -> ResponseHeader:
@@ -137,16 +167,58 @@ class Protocol:
         cursor = self.request_header.size
         tensors: dict[str, np.ndarray] = {}
         for tensor in self.spec.request_tensors:
-            width = tensor.elements * 4
+            dtype = wire_dtype(tensor)
+            width = tensor.elements * dtype.itemsize
             chunk = raw[cursor: cursor + width]
             if len(chunk) != width:
                 raise ProtocolError(f"{tensor.name}: truncated payload")
-            tensors[tensor.name] = np.frombuffer(chunk, dtype=DTYPE).reshape(tensor.shape)
+            tensors[tensor.name] = np.frombuffer(chunk, dtype=dtype).reshape(tensor.shape)
             cursor += width
         return request_id, tensors
 
     def request_size(self) -> int:
-        return self.request_header.size + sum(t.elements * 4 for t in self.spec.request_tensors)
+        return self.request_header.size + sum(
+            t.elements * wire_dtype(t).itemsize for t in self.spec.request_tensors)
+
+
+def frame_from_normalized(normalized: np.ndarray, decode: Mapping) -> np.ndarray:
+    """The uint8 frame whose `decode_tensor` is exactly ``normalized``.
+
+    Fixtures recorded before uint8 transport hold the normalized float32 image;
+    a uint8 bundle's check must send the raw frame instead. Refuses unless the
+    round trip reproduces every float32 bit, so a check never runs on an input
+    that only approximates the recorded one.
+    """
+    values = np.asarray(normalized, dtype=np.float32)
+    mean = np.asarray(decode["mean"], dtype=np.float32)
+    std = np.asarray(decode["std"], dtype=np.float32)
+    raw = (values.reshape(-1, mean.size) * std + mean) * np.float32(decode["scale"])
+    frame = np.clip(np.rint(raw), 0, 255).astype(np.uint8).reshape(values.shape)
+    if decode_tensor(frame, decode).tobytes() != values.tobytes():
+        raise ProtocolError("normalized image is not an exact uint8 frame; "
+                            "re-export the fixture with raw frames")
+    return frame
+
+
+def coerce_frame(image: np.ndarray, shape: tuple[int, int, int]) -> np.ndarray:
+    """Accept a CHW or HWC camera frame, return HWC uint8 for a uint8 wire tensor.
+
+    uint8 frames pass through untouched. A float frame is taken as 0..1 when its
+    maximum is at most 1.0 and as 0..255 otherwise, matching `coerce_image`.
+    """
+    array = np.asarray(image)
+    height, width, channels = shape
+    if array.shape == (channels, height, width):
+        array = array.transpose(1, 2, 0)
+    if array.shape != (height, width, channels):
+        raise ProtocolError(f"expected a {height}x{width} image with {channels} channels, "
+                            f"got {array.shape}")
+    if array.dtype == np.uint8:
+        return np.ascontiguousarray(array)
+    values = np.asarray(array, dtype=np.float32)
+    if values.max(initial=0) <= 1.0:
+        values = values * 255.0
+    return np.ascontiguousarray(np.clip(np.rint(values), 0, 255).astype(np.uint8))
 
 
 def coerce_image(image: np.ndarray, shape: tuple[int, int, int]) -> np.ndarray:

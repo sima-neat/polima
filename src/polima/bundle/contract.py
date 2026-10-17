@@ -31,7 +31,8 @@ def spec_from_bundle(spec: PolicySpec, bundle: Bundle) -> PolicySpec:
     wire = plan.get("wire") or {}
     if wire:
         request_tensors = tuple(
-            TensorSpec(item["name"], tuple(int(value) for value in item["shape"]))
+            TensorSpec(item["name"], tuple(int(value) for value in item["shape"]),
+                       dtype=item.get("dtype", "float32"))
             for item in wire.get("request_tensors", ())
         )
         spec = replace(

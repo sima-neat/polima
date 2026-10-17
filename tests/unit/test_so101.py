@@ -197,11 +197,13 @@ def test_act_request_preserves_checkpoint_camera_order(tmp_path, monkeypatch, ro
 
     monkeypatch.setattr(PolimaSOMClient, "predict_raw", reply)
     client = so101.SO101PolicyClient("127.0.0.1:8093")
-    images = {"overhead": np.full((480, 640, 3), .25, dtype=np.float32),
-              "wrist": np.full((480, 640, 3), .75, dtype=np.float32)}
+    images = {"overhead": np.full((480, 640, 3), 64, dtype=np.uint8),
+              "wrist": np.full((480, 640, 3), 191, dtype=np.uint8)}
     client.predict(images["overhead"], images["wrist"], np.zeros(6))
+    # Raw frames in checkpoint camera order; the server applies camera<i>'s stats.
+    assert captured["image0"].dtype == np.uint8
     np.testing.assert_array_equal(captured["image0"], images[roles[0]])
-    np.testing.assert_allclose(captured["image1"], (images[roles[1]] - .1) / 2.)
+    np.testing.assert_array_equal(captured["image1"], images[roles[1]])
 
 
 def test_policy_rest_starts_a_fresh_grasp_cycle():
