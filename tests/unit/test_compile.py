@@ -950,3 +950,26 @@ def test_failed_compile_explains_reusing_finished_graphs(monkeypatch, tmp_path, 
     error = capsys.readouterr().err
     assert "decoder_action_tail" in error
     assert ("add --reuse" in error) == bool(finished)
+
+
+def test_prepare_without_simplify_keeps_the_graph_and_infers_shapes(tmp_path):
+    onnx = pytest.importorskip("onnx")
+    from onnx import TensorProto, helper, numpy_helper
+
+    from polima.compile.tensor import prepare
+
+    ones = numpy_helper.from_array(np.ones(4, np.float32), "ones")
+    graph = helper.make_graph(
+        [helper.make_node("Mul", ["x", "ones"], ["y"])], "g",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, ["n", 4])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, None)], [ones])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    model.ir_version = 9
+    path = tmp_path / "m.onnx"
+    onnx.save(model, path)
+
+    prepared = onnx.load(prepare(path, ["x"], [(1, 4)], infer_shapes=True, simplify=False))
+    assert [node.op_type for node in prepared.graph.node] == ["Mul"]  # onnxsim would drop Mul(ones)
+    assert [d.dim_value for d in prepared.graph.input[0].type.tensor_type.shape.dim] == [1, 4]
+    assert [d.dim_value for d in prepared.graph.output[0].type.tensor_type.shape.dim] == [1, 4]
+    assert prepared.ir_version == 8

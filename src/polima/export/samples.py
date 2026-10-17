@@ -90,13 +90,15 @@ def _load_pretrained_processors(policy, checkpoint: str | Path):
     """Restore a supported policy's saved pipelines without the global factory.
 
     LeRobot's factory imports configuration modules for unrelated optional
-    policies at module load time. ACT checkpoints already serialize their
-    complete processor pipelines, so restoring those pipelines directly is both
+    policies at module load time. ACT and SmolVLA checkpoints already serialize
+    their complete processor pipelines, so restoring those pipelines directly is both
     narrower and more faithful to training.
     """
     policy_type = getattr(policy.config, "type", None)
-    if policy_type != "act":
-        raise ValueError(f"shared LeRobot sample loading supports ACT, got {policy_type!r}")
+    if policy_type not in {"act", "smolvla"}:
+        raise ValueError(
+            f"shared LeRobot sample loading supports ACT and SmolVLA, got {policy_type!r}"
+        )
 
     from lerobot.processor import (
         AbsoluteActionsProcessorStep,

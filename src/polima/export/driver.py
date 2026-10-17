@@ -137,7 +137,7 @@ def export(spec, checkpoint: str | Path, build_dir: str | Path, *,
             **normalization_kwargs,
         )
 
-    if spec.name == "groot" and spec.robot.calibration_id == "so-arm101":
+    if spec.name in ("groot", "smolvla") and spec.robot.calibration_id == "so-arm101":
         from polima.export.robot import write_so101_rest_pose
 
         write_so101_rest_pose(
