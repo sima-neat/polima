@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from polima.policies.base import PolicySpec
-from polima.wire.protocol import DTYPE, Protocol, ProtocolError, coerce_image
+from polima.wire.protocol import DTYPE, Protocol, ProtocolError, coerce_frame, coerce_image
 
 
 @dataclass
@@ -140,6 +140,10 @@ class PolimaSOMClient:
             )
 
         for index, (tensor, image) in enumerate(zip(image_specs, images)):
+            if tensor.dtype == "uint8":
+                # Raw frame: the server normalizes it (WireSpec decode in plan.json).
+                tensors[tensor.name] = coerce_frame(image, tensor.shape)  # type: ignore[arg-type]
+                continue
             prepared = coerce_image(image, tensor.shape)  # type: ignore[arg-type]
             if self.normalization is not None:
                 prepared = (

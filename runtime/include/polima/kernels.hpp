@@ -290,6 +290,23 @@ inline void f32_to_bf16(const float* source, uint16_t* destination, size_t count
   });
 }
 
+// ---------------------------------------------------------------------------
+// uint8 camera frames
+// ---------------------------------------------------------------------------
+
+// destination[i] = table[c * 256 + source[i]], c = i % channels: a uint8 frame
+// decoded through a per-channel table (see WireDecode in plan.hpp).
+inline void u8_lookup(const uint8_t* source, float* destination, size_t count,
+                      const float* table, size_t channels) {
+  parallel_chunks(count, [&](size_t begin, size_t end) {
+    size_t channel = begin % channels;
+    for (size_t i = begin; i < end; ++i) {
+      destination[i] = table[channel * 256 + source[i]];
+      if (++channel == channels) channel = 0;
+    }
+  });
+}
+
 // bf16 -> float (exact widening) and, in the same pass, the index of the first
 // value whose exponent is all ones -- precisely the values that decode to a
 // non-finite float. Returns `count` when every value is finite.

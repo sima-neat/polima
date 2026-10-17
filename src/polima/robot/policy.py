@@ -415,7 +415,8 @@ def with_plan(spec: PolicySpec, plan: dict) -> PolicySpec:
         magic=int(wire.get("magic", spec.wire.magic)),
         version=int(wire.get("version", spec.wire.version)),
         default_port=int(wire.get("default_port", spec.wire.default_port)),
-        request_tensors=tuple(TensorSpec(item["name"], tuple(item["shape"]))
+        request_tensors=tuple(TensorSpec(item["name"], tuple(item["shape"]),
+                                         dtype=item.get("dtype", "float32"))
                               for item in wire.get("request_tensors", ())) or spec.wire.request_tensors,
         response_shape=tuple(wire.get("response_shape", spec.wire.response_shape)),
     ))
