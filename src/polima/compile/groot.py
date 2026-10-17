@@ -278,7 +278,11 @@ def start_compiler(cmd: list[str], env: dict, log) -> int:
 
     limit = int(os.environ.get("POLIMA_COMPILE_HOST_LIMIT", "10"))
     lock = Path(os.environ.get("POLIMA_COMPILE_SLOT_LOCK", "/tmp/polima-compile-slot.lock"))
-    with lock.open("a") as handle:
+    try:
+        handle = lock.open("a")
+    except PermissionError:  # another user's lock file: a read-only handle locks just as well
+        handle = lock.open("r")
+    with handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             while host_compilers() + 1 > limit:

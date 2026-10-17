@@ -61,8 +61,12 @@ def detect_io(path: str | Path) -> tuple[list[str], list[Shape], list[str]]:
 
 
 def prepare(path: str | Path, names: Sequence[str], shapes: Sequence[Shape],
-            infer_shapes: bool = False) -> Path:
+            infer_shapes: bool = False, simplify: bool = True) -> Path:
     """Simplify to a static graph and write `<stem>_tensor_prepared.onnx`.
+
+    With `simplify=False` the graph is kept as exported (onnxsim would rewrite
+    patterns the compiler fuses, such as RMSNorm's Mul(weight)) and only the
+    input dims, shape inference and IR version below apply.
 
     `infer_shapes` runs `onnx.shape_inference` after simplification. Shape
     inference rewrites the proto's `value_info`, so turning it on
@@ -76,14 +80,18 @@ def prepare(path: str | Path, names: Sequence[str], shapes: Sequence[Shape],
     message that does not mention the shape.
     """
     import onnx
-    from onnxsim import simplify
 
     path = Path(path)
     shape_map = {name: list(shape) for name, shape in zip(names, shapes, strict=True)}
-    proto, ok = simplify(str(path), overwrite_input_shapes=shape_map,
-                         dynamic_input_shape=False)
-    if not ok:
-        raise RuntimeError(f"onnxsim validation failed for {path}")
+    if simplify:
+        from onnxsim import simplify as onnxsim_simplify
+
+        proto, ok = onnxsim_simplify(str(path), overwrite_input_shapes=shape_map,
+                                     dynamic_input_shape=False)
+        if not ok:
+            raise RuntimeError(f"onnxsim validation failed for {path}")
+    else:
+        proto = onnx.load(str(path))
 
     for tensor in proto.graph.input:
         if tensor.name not in shape_map:
@@ -419,9 +427,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     calibration_shapes = list(shapes)
     original_shapes = dict(zip(names, shapes, strict=True))
+    # --no-simplify alone hands afe the exported file untouched; with
+    # --infer-shapes it still gets static input dims and shape inference.
     model_path = (
-        args.model_path if args.no_simplify
-        else prepare(args.model_path, names, shapes, infer_shapes=args.infer_shapes)
+        args.model_path if args.no_simplify and not args.infer_shapes
+        else prepare(args.model_path, names, shapes, infer_shapes=args.infer_shapes,
+                     simplify=not args.no_simplify)
     )
     if args.promote_rank3_hwc:
         if args.external_dram_layout == "compiler":

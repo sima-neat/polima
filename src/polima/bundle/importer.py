@@ -279,7 +279,7 @@ def collect_fixtures(build: BuildTree, spec: PolicySpec) -> dict[str, Path]:
         normalization: dict[str, np.ndarray] = {}
         raw_state = None
         stats_path = build.root / "normalization_stats.npz"
-        if spec.name == "groot" and stats_path.is_file():
+        if spec.name in ("smolvla", "groot") and stats_path.is_file():
             with np.load(stats_path, allow_pickle=False) as stats:
                 normalization = {
                     name: np.asarray(stats[name], dtype="<f4").copy()
@@ -293,9 +293,20 @@ def collect_fixtures(build: BuildTree, spec: PolicySpec) -> dict[str, Path]:
                 if tensor.name not in archive:
                     raise ValueError(f"{fixture_archive.name} has no wire tensor {tensor.name!r}")
                 values = np.asarray(archive[tensor.name], dtype="<f4")
-                # GR00T normalizes state inside the server plan; the exporter records
-                # the normalized model input, so send the raw wire value instead.
-                if spec.name == "groot" and tensor.name == "state":
+                # SmolVLA's ONNX vision graph is NCHW, while its client sends
+                # prepared camera frames as HWC. Fixtures exercise the wire
+                # contract, so mirror the client.
+                if (
+                    spec.name == "smolvla"
+                    and tensor.name.startswith("image")
+                    and values.ndim == 4
+                    and values.shape[:2] == (1, 3)
+                ):
+                    values = values[0].transpose(1, 2, 0)
+                # SmolVLA and GR00T normalize state inside the server plan; the
+                # exporter records the normalized model input, so send the raw
+                # wire value instead.
+                if spec.name in ("smolvla", "groot") and tensor.name == "state":
                     if not normalization:
                         raise FileNotFoundError(
                             f"{stats_path} is required to materialize raw {spec.name} state"
@@ -322,7 +333,9 @@ def collect_fixtures(build: BuildTree, spec: PolicySpec) -> dict[str, Path]:
                 fixtures[f"inputs/{tensor.name}.f32"] = destination
 
             expected_names = (
-                ("final_action", "normalized_actions", "normalized_action")
+                ("action", "normalized_actions", "normalized_action")
+                if spec.name == "smolvla"
+                else ("final_action", "normalized_actions", "normalized_action")
                 if spec.name == "groot"
                 else ("normalized_actions", "normalized_action")
             )
@@ -345,6 +358,16 @@ def collect_fixtures(build: BuildTree, spec: PolicySpec) -> dict[str, Path]:
                     if relative_dim:
                         expected[:, :relative_dim] += raw_state[:relative_dim]
                     expected = expected.reshape(-1)
+                elif spec.name == "smolvla" and expected_key != "action":
+                    # The SmolVLA plan denormalizes on the board; compare raw actions.
+                    if not normalization:
+                        raise FileNotFoundError(
+                            f"{stats_path} is required to materialize raw SmolVLA actions"
+                        )
+                    expected = (
+                        expected.reshape(-1, spec.dataset.action_dim) * normalization["action_std"]
+                        + normalization["action_mean"]
+                    ).reshape(-1)
                 if expected.size != spec.wire.response_elements:
                     raise ValueError(
                         f"{fixture_archive.name}:{expected_key} holds {expected.size} "

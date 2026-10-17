@@ -47,6 +47,12 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
         from polima.compile.groot import main as groot_main
 
         return groot_main(argv, load(config_file=getattr(parent, "config", None)))
+    if _staged_build(argv, "smolvla"):
+        # Checkpoint + dataset -> the optimized device-program bundle (polima.compile.smolvla);
+        # --build-dir/--import-build keep the per-graph path below.
+        from polima.compile.smolvla import main as smolvla_main
+
+        return smolvla_main(argv, load(config_file=getattr(parent, "config", None)))
 
     parser = argparse.ArgumentParser(prog="polima compile")
     parser.add_argument("--policy", default="act")
@@ -121,10 +127,15 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
 
 def _groot_build(argv: list[str]) -> bool:
     """`--policy groot` without --build-dir/--import-build: checkpoint-to-bundle build."""
+    return _staged_build(argv, "groot")
+
+
+def _staged_build(argv: list[str], name: str) -> bool:
+    """`--policy NAME` without --build-dir/--import-build: that policy's staged builder."""
     policy = next((argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--policy"),
                   next((a.split("=", 1)[1] for a in argv if a.startswith("--policy=")), None))
     paths = ("--build-dir", "--import-build")
-    return policy == "groot" and not any(a.split("=", 1)[0] in paths for a in argv)
+    return policy == name and not any(a.split("=", 1)[0] in paths for a in argv)
 
 
 # ------------------------------------------------------------------- compile
