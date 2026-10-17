@@ -118,14 +118,16 @@ def stage_llima(build: Build) -> None:
 def graph_jobs(build: Build) -> list[dict]:
     from polima.policies.registry import get_policy
 
-    export, device = build.path("export"), build.path("export", "device")
+    device = build.path("export", "device")
     prefix = get_policy("smolvla").graph("prefix")
     flags = ["--external-dram-layout", prefix.external_dram_layout, *prefix.llima_args]
     return [
-        {"name": "prefix", "onnx": export / "onnx/prefix.onnx", "activation": "bf16", "weights": "bf16",
+        {"name": "prefix", "onnx": device / "prefix.onnx", "activation": "bf16", "weights": "bf16",
          "calibration": None, "flags": flags, "persistent": False},
+        # One strided convolution over the token grid: NCHW, with external HWC boundaries.
         {"name": "connector", "onnx": device / "connector.onnx", "activation": "bf16", "weights": "bf16",
-         "calibration": None, "flags": ["--external-dram-layout", "HWC", "--infer-shapes"], "persistent": False},
+         "calibration": None, "flags": ["--external-dram-layout", "HWC", "--infer-shapes"], "persistent": False,
+         "layout": "NCHW"},
         {"name": "denoise_step", "onnx": device / "denoise_step.onnx", "activation": "bf16", "weights": "int8",
          "calibration": device / "denoise_step.calib.npz", "flags": ["--no-simplify", "--infer-shapes"],
          "persistent": True},
@@ -146,7 +148,7 @@ def stage_compile(build: Build) -> None:
     def key(job) -> dict:
         return {"onnx": _sha(job["onnx"]), "calibration": _sha(job["calibration"]) if job["calibration"] else None,
                 "activation": job["activation"], "weights": job["weights"], "flags": job["flags"],
-                "persistent": job["persistent"]}
+                "persistent": job["persistent"], "layout": job.get("layout", "NHWC")}
 
     def one(job) -> dict:
         wanted, name, work = key(job), job["name"], out / job["name"]
@@ -156,7 +158,7 @@ def stage_compile(build: Build) -> None:
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
         common = [sdk, "-u", shim, "--model-path", str(job["onnx"]), "--build-dir", str(work / "compiled"),
-                  "--model-layout", "NHWC", "--precision", "bf16", "--activation-precision", job["activation"],
+                  "--model-layout", job.get("layout", "NHWC"), "--precision", "bf16", "--activation-precision", job["activation"],
                   "--weight-precision", job["weights"], *job["flags"]]
         if job["calibration"]:
             common += ["--calibration-npz", str(job["calibration"])]

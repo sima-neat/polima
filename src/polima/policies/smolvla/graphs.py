@@ -197,12 +197,23 @@ def fusible_rms(norm: nn.Module, x: torch.Tensor) -> torch.Tensor:
 
 
 class PrefixCache(nn.Module):
-    """Static 16-layer VLM prefill producing 32 packed K/V buffers."""
+    """Static 16-layer VLM prefill producing 32 packed K/V buffers.
 
-    def __init__(self, model, language_tokens: int = 10):
+    With `project_cross`, the K/V of the layers whose expert layer cross-attends (the expert
+    projects the VLM's K/V with its own k_proj/v_proj, identically at every denoising step)
+    are emitted already projected, so the expert's step graph (DenoiseCore with
+    `cross_projected`) skips those projections. Same size and layout: 5 heads x 64."""
+
+    def __init__(self, model, language_tokens: int = 10, project_cross: bool = False):
         super().__init__()
         owner = model.vlm_with_expert
         self.layers = owner.get_vlm_model().text_model.layers
+        self.cross = {}
+        if project_cross:
+            every = owner.self_attn_every_n_layers
+            self.cross = {index: layer.self_attn for index, layer in enumerate(owner.lm_expert.layers)
+                          if not (every > 0 and index % every == 0)}
+            self.cross_modules = nn.ModuleList(self.cross.values())
         self.num_heads = owner.num_attention_heads
         self.num_kv_heads = owner.num_key_value_heads
         self.head_dim = owner.config.text_config.head_dim
@@ -261,15 +272,23 @@ class PrefixCache(nn.Module):
     def forward(self, prefix_embeddings: torch.Tensor) -> torch.Tensor:
         hidden = prefix_embeddings.reshape(1, PREFIX_TOKENS, HIDDEN)
         caches = []
-        for layer in self.layers:
+        for index, layer in enumerate(self.layers):
             normed = fusible_rms(layer.input_layernorm, hidden).to(layer.self_attn.q_proj.weight.dtype)
             query = layer.self_attn.q_proj(normed).view(1, PREFIX_TOKENS, -1, self.head_dim)
             key = layer.self_attn.k_proj(normed).view(1, PREFIX_TOKENS, -1, self.head_dim)
             value = layer.self_attn.v_proj(normed).view(1, PREFIX_TOKENS, -1, self.head_dim)
             query, key = self.rope(query), self.rope(key)
+            stored_key, stored_value = key, value
+            if index in self.cross:  # the expert's cross-attention K/V of this layer
+                expert = self.cross[index]
+                stored_key = expert.k_proj(key.reshape(1, PREFIX_TOKENS, -1)).view(1, PREFIX_TOKENS, -1, self.head_dim)
+                stored_value = expert.v_proj(value.reshape(1, PREFIX_TOKENS, -1)).view(
+                    1, PREFIX_TOKENS, -1, self.head_dim)
+                if stored_key.shape != key.shape:
+                    raise ValueError("projected cross-attention K/V must keep the cache layout")
             caches.extend([
-                key.transpose(1, 2).reshape(1, -1),
-                value.transpose(1, 2).reshape(1, -1),
+                stored_key.transpose(1, 2).reshape(1, -1),
+                stored_value.transpose(1, 2).reshape(1, -1),
             ])
             attended = self.attention(query, key, value).to(layer.self_attn.o_proj.weight.dtype)
             residual = layer.self_attn.o_proj(attended) + hidden.to(attended.dtype)
@@ -292,12 +311,16 @@ class SuffixProjection(nn.Module):
 
 
 class DenoiseCore(nn.Module):
-    """The 16-layer action expert with explicit prefix-cache tensors."""
+    """The 16-layer action expert with explicit prefix-cache tensors.
 
-    def __init__(self, model, language_tokens: int = 10):
+    `cross_projected`: the cross-attention layers' cache entries already hold the expert's
+    projected K/V (PrefixCache with `project_cross`), so they are used as they are."""
+
+    def __init__(self, model, language_tokens: int = 10, cross_projected: bool = False):
         super().__init__()
         owner = model.vlm_with_expert
         self.expert = owner.lm_expert
+        self.cross_projected = cross_projected
         self.self_every = owner.self_attn_every_n_layers
         self.num_heads = owner.num_attention_heads
         self.num_kv_heads = owner.num_key_value_heads
@@ -367,10 +390,13 @@ class DenoiseCore(nn.Module):
                 key, value = torch.cat([cache_k, key], 1), torch.cat([cache_v, value], 1)
                 attended = self._attention(self.self_attention_bias, query, key, value)
             else:
-                flat_k = cache_k.to(layer.self_attn.k_proj.weight.dtype).reshape(1, PREFIX_TOKENS, -1)
-                flat_v = cache_v.to(layer.self_attn.v_proj.weight.dtype).reshape(1, PREFIX_TOKENS, -1)
-                key = layer.self_attn.k_proj(flat_k).view(1, PREFIX_TOKENS, -1, self.head_dim)
-                value = layer.self_attn.v_proj(flat_v).view(1, PREFIX_TOKENS, -1, self.head_dim)
+                if self.cross_projected:
+                    key, value = cache_k, cache_v
+                else:
+                    flat_k = cache_k.to(layer.self_attn.k_proj.weight.dtype).reshape(1, PREFIX_TOKENS, -1)
+                    flat_v = cache_v.to(layer.self_attn.v_proj.weight.dtype).reshape(1, PREFIX_TOKENS, -1)
+                    key = layer.self_attn.k_proj(flat_k).view(1, PREFIX_TOKENS, -1, self.head_dim)
+                    value = layer.self_attn.v_proj(flat_v).view(1, PREFIX_TOKENS, -1, self.head_dim)
                 attended = self._attention(
                     self.cross_attention_bias, self._rope(query, "cross"), key, value
                 )
@@ -398,18 +424,38 @@ class DenoiseExpert(nn.Module):
 
 
 class VisionConnector(nn.Module):
-    """SmolVLM's connector on SigLIP's output tokens, with the prefix's image scale folded in:
-    tokens [1,1,1024,768] (post_layernorm) -> pixel shuffle x4 -> projection -> x sqrt(960)
-    -> [1,1,64,960]. Pairs with a vision tower compiled without its connector (LLiMa)."""
+    """SmolVLM's connector on SigLIP's output tokens, with the prefix's image scale folded in,
+    as one strided convolution: tokens as an NCHW grid [1,768,32,32] (post_layernorm) ->
+    [1,960,8,8], i.e. the camera's 64 prefix rows x sqrt(960).
+
+    Pixel shuffle (factor s) gathers the s x s block of tokens at rows s*h+i, columns s*w+j into
+    channel (i*s + j)*768 + c of token (h, w); the projection that follows is therefore a
+    kernel-s, stride-s convolution with weight[o, c, i, j] = W[o, (i*s + j)*768 + c]. With
+    external HWC boundaries its input bytes are the vision tower's 1024 x 768 tokens and its
+    output bytes the 64 x 960 prefix rows. Pairs with a tower compiled without its connector."""
 
     def __init__(self, model):
         super().__init__()
-        self.connector = model.vlm_with_expert.get_vlm_model().connector
+        connector = model.vlm_with_expert.get_vlm_model().connector
+        weight = connector.modality_projection.proj.weight.detach().float()  # [960, 768 * s * s]
+        s = connector.scale_factor
+        out, width = weight.shape[0], weight.shape[1] // (s * s)
+        self.conv = nn.Conv2d(width, out, kernel_size=s, stride=s, bias=False)
+        self.conv.weight.data = (weight.reshape(out, s, s, width).permute(0, 3, 1, 2) * IMAGE_SCALE).contiguous()
 
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
-        width = tokens.shape[-1]
-        hidden = self.connector(tokens.reshape(1, -1, width))
-        return (hidden * IMAGE_SCALE).reshape(1, 1, -1, HIDDEN)
+        return self.conv(tokens)
+
+    @staticmethod
+    def grid(tokens: torch.Tensor) -> torch.Tensor:
+        """[1, N, C] or [1, 1, N, C] tokens (row-major square grid) -> the NCHW input [1, C, H, W]."""
+        side = round(tokens.shape[-2] ** 0.5)
+        return tokens.reshape(1, side, side, tokens.shape[-1]).permute(0, 3, 1, 2)
+
+    @staticmethod
+    def rows(output: torch.Tensor) -> torch.Tensor:
+        """The NCHW output [1, 960, 8, 8] -> the prefix rows [1, 64, 960]."""
+        return output.flatten(2).transpose(1, 2)
 
 
 #: Rows of the device-resident K/V cache as the denoise step reads it: the prefix's

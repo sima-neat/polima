@@ -460,4 +460,23 @@ def test_staged_builder_compiles_the_prefix_with_the_spec_flags(tmp_path):
     assert set(jobs) == {"prefix", "connector", "denoise_step"}
     assert {"--no-simplify", "--infer-shapes"} <= set(jobs["prefix"]["flags"])
     assert jobs["denoise_step"]["persistent"] and jobs["denoise_step"]["weights"] == "int8"
-    assert jobs["connector"]["weights"] == "bf16"
+    assert jobs["connector"]["weights"] == "bf16" and jobs["connector"]["layout"] == "NCHW"
+
+
+def test_vision_connector_conv_equals_pixel_shuffle_and_projection():
+    torch = pytest.importorskip("torch")
+    smolvlm = pytest.importorskip("transformers.models.smolvlm.modeling_smolvlm")
+    from transformers.models.smolvlm.configuration_smolvlm import SmolVLMConfig
+
+    from polima.policies.smolvla import graphs
+
+    config = SmolVLMConfig(vision_config={"hidden_size": 12}, text_config={"hidden_size": 10}, scale_factor=2)
+    connector = smolvlm.SmolVLMConnector(config).eval()
+    model = type("M", (), {})()
+    model.vlm_with_expert = type("V", (), {"get_vlm_model": lambda self: type("L", (), {"connector": connector})()})()
+    conv = graphs.VisionConnector(model).eval()
+    tokens = torch.randn(1, 64, 12)  # an 8 x 8 grid
+    with torch.no_grad():
+        expected = connector(tokens) * graphs.IMAGE_SCALE
+        got = conv.rows(conv(conv.grid(tokens)))
+    torch.testing.assert_close(got, expected, rtol=1e-5, atol=1e-4)

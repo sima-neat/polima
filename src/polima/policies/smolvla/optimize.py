@@ -3,10 +3,13 @@
 Next to the generic export (onnx/{vision,prefix,suffix,denoise}.onnx, calibration, the fixture,
 constants), this writes what the device-program bundle runs instead of the per-graph plan:
 
+  device/prefix.onnx                graphs.PrefixCache emitting the expert's cross-attention K/V
+                                    already projected (project_cross)
   device/denoise_step.onnx          graphs.DenoiseStep: suffix + expert + Euler, cache as an input
   device/denoise_step.calib.npz     its inputs over real denoising trajectories
   device/constants/tbias_XX         the step's time-MLP constant (graphs.step_time_bias)
-  device/connector.onnx             graphs.VisionConnector: pixel shuffle + projection + image scale
+  device/connector.onnx             graphs.VisionConnector: pixel shuffle + projection + image scale as one
+                                    strided convolution (NCHW, external HWC)
   device/llima_vision/              the SigLIP tower as an HF PaliGemma folder for llima-compile,
                                     SmoothQuant folded in (smooth_vision), identity projector
   device/samples/sNN/               held-out observations: wire inputs and LeRobot's raw actions
@@ -191,13 +194,17 @@ def export_device_graphs(checkpoint: Path, dataset: Path, out: Path, *, calibrat
         tbias[k].numpy().astype("<f4").tofile(out / "constants" / f"tbias_{k:02d}")
 
     rows: dict[str, list] = {"x": [], "tbias": [], "cache": []}
-    images, step, worst = [], None, 0.0
+    images, prefix, step, worst = [], None, None, 0.0
     for sample in calibrate:
         traced = graphs.trace(modules, sample, image_keys)  # specializes prefix/denoise to the task
         images += [image.float() for image in traced["prepared_images"]]
-        if step is None:
-            step = graphs.DenoiseStep(model, modules["denoise"].core).eval()
-        cache = traced["cache"].reshape(1, 1, graphs.CACHE_ROWS, -1)
+        if step is None:  # the device build's prefix emits the expert's cross-attention K/V
+            language = int(sample["observation.language.attention_mask"].sum())
+            prefix = graphs.PrefixCache(model, language, project_cross=True).eval()
+            step = graphs.DenoiseStep(model, graphs.DenoiseCore(model, language, cross_projected=True)).eval()
+            prefix_example = traced["prefix"].unsqueeze(1)
+        with torch.inference_mode():
+            cache = prefix(traced["prefix"].unsqueeze(1)).reshape(1, 1, graphs.CACHE_ROWS, -1)
         x = traced["noise"].reshape(1, 1, 50, 32)
         with torch.inference_mode():
             for k in range(DENOISE_STEPS):
@@ -212,18 +219,19 @@ def export_device_graphs(checkpoint: Path, dataset: Path, out: Path, *, calibrat
         raise ValueError(f"DenoiseStep chain differs from the exported graphs by {worst:.2e}")
     examples = tuple(torch.from_numpy(rows[k][0][0]) for k in ("x", "tbias", "cache"))
     _onnx(step, examples, out / "denoise_step.onnx", ["x", "tbias", "cache"], ["x_next"])
+    graphs._export_graph(prefix, prefix_example, out / "prefix.onnx", "prefix_embeddings", "cache")
     np.savez(out / "denoise_step.calib.npz", **{k: np.concatenate(v[: 4 * DENOISE_STEPS]) for k, v in rows.items()})
 
     connector = graphs.VisionConnector(model).eval()
     tower = modules["vision"]
     with torch.inference_mode():
         tokens = siglip_tokens(tower, images[0])
-        gap = float((connector(tokens.reshape(1, 1, *tokens.shape[1:])).reshape(-1)
+        grid = connector.grid(tokens)
+        gap = float((connector.rows(connector(grid)).reshape(-1)
                      - (tower(images[0]) * graphs.IMAGE_SCALE).reshape(-1)).abs().max())
     if gap > 1e-3:
         raise ValueError(f"SigLIP + connector differs from the vision graph by {gap:.2e}")
-    _onnx(connector, (tokens.reshape(1, 1, *tokens.shape[1:]),), out / "connector.onnx", ["tokens"],
-          ["image_tokens"])
+    _onnx(connector, (grid.contiguous(),), out / "connector.onnx", ["tokens"], ["image_tokens"])
 
     smooth_vision(tower, images, alpha)
     with torch.inference_mode():
