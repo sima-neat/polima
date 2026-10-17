@@ -506,6 +506,10 @@ class PolicySpec:
     #: because the default is ACT's, and ACT is a small all-BF16 graph whose
     #: MLA output tracks PyTorch far more closely than a quantized VLA's does.
     smoke: SmokeSpec = field(default_factory=SmokeSpec)
+    #: `polima.bundle.device_chain` levels applied to the runtime plan when the
+    #: bundle is packed, so graph-to-graph activations stay on the MLA. The
+    #: per-graph plan from `runtime_plan_builder` stays the source of truth.
+    device_chain: tuple[str, ...] = ()
 
     def graph(self, name: str) -> GraphSpec:
         return self.compile.graph(name)

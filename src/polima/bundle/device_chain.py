@@ -57,7 +57,11 @@ N17_VISION = ["vision_patch", "vision_00_01", "vision_02_03", "vision_04_05", "d
               "vision_06_07", "vision_08_09", "vision_10_11", "deepstack_merge_1",
               "vision_12_13", "vision_14_15", "vision_16_17", "deepstack_merge_2",
               "vision_18_19", "vision_20_21", "vision_22_23", "vision_merge"]
-LEVELS = ("vision", "lm", "connector", "dit", "denoise")
+ACT_VISION = "vision_backbone"
+ACT_STEM = "encoder_layer_00_stem"
+ACT_LAYERS = ["encoder_layer_01", "encoder_layer_02", "encoder_layer_03"]
+ACT_DECODER = "decoder_action_tail"
+LEVELS = ("vision", "lm", "connector", "dit", "denoise", "act")
 
 
 class RewriteError(ValueError):
@@ -75,7 +79,9 @@ def family(graph_names: Iterable[str]) -> str:
         return "n1.6"
     if set(N17_LANGUAGE) <= names and set(N17_VL) <= names:
         return "n1.7"
-    raise RewriteError("bundle is neither a GR00T N1.6 nor an N1.7 plan")
+    if {ACT_VISION, ACT_STEM, ACT_DECODER, *ACT_LAYERS} == names:
+        return "act"
+    raise RewriteError("bundle is neither a GR00T N1.6, N1.7 nor an ACT plan")
 
 
 class _Program:
@@ -455,6 +461,98 @@ def rewrite_n16(plan: dict, graphs: dict, levels: set[str]) -> dict:
     return _drop_dead_sidecar_packs(result, {s["out"] for s in steps if s["op"] == "pack"} & fed)
 
 
+# ------------------------------------------------------------------- ACT
+
+
+def rewrite_act(plan: dict, graphs: dict, levels: set[str]) -> dict:
+    """ACT's whole network as one device program.
+
+    Both cameras' vision outputs are written straight into their token slots of
+    the stem's packed input, and the stem, three encoder layers and decoder
+    ping-pong between two hidden buffers. The host still packs token 0 (the
+    state, zero-padded to the hidden width), uploads it with the two images,
+    and strides the padded action head after the single download.
+    """
+    _require(levels == {"act"}, "an ACT plan takes only the act level")
+    steps, sizes = plan["steps"], plan["buffers"]
+    vision = _find(steps, "run_elf", graph=ACT_VISION)
+    _require(len(vision) == 2, "ACT runs the vision backbone once per camera")
+    pack = _one(steps, "pack", out=steps[_one(steps, "run_elf", graph=ACT_STEM)]["args"]["in"][0])
+    stem = _one(steps, "run_elf", graph=ACT_STEM)
+    layers = [_one(steps, "run_elf", graph=name) for name in ACT_LAYERS]
+    decoder = _one(steps, "run_elf", graph=ACT_DECODER)
+    order = [*vision, pack, stem, *layers, decoder]
+    _require(order == sorted(order) and order == list(range(order[0], order[0] + len(order))),
+             "ACT network steps are not one contiguous run")
+
+    packed = steps[pack]["out"]
+    stem_in = graphs[ACT_STEM]["input_elements"]
+    hidden = graphs[ACT_STEM]["output_elements"]
+    _require(sizes[packed] == stem_in and steps[pack]["args"]["size"] == stem_in, "stem input size")
+    camera = {steps[i]["out"]: steps[i]["args"]["in"] for i in vision}
+    parts = steps[pack]["args"]["parts"]
+    cameras = [p for p in parts if p["src"] in camera]
+    host = [p for p in parts if p["src"] not in camera]
+    _require(len(cameras) == 2 and all(not p.get("sidecar") and not p.get("src_offset")
+                                       and p["count"] == graphs[ACT_VISION]["output_elements"]
+                                       for p in cameras), "camera slots are not whole vision outputs")
+    for name in camera:
+        readers = [i for i, s in enumerate(steps) if name in _reads(s)]
+        _require(readers == [pack], f"{name} has readers besides the stem pack")
+    # The host keeps everything ahead of the first camera slot: the state token.
+    head = min(p["dst_offset"] for p in cameras)
+    _require(all(not p.get("sidecar") and p["dst_offset"] + p["count"] <= head for p in host),
+             "host-packed parts must precede the camera slots")
+    covered = sorted([(0, head)] + [(p["dst_offset"], p["count"]) for p in cameras])
+    _require(not _complement(stem_in, [(o, c) for o, c in covered if c]),
+             "stem input is not fully covered by the state token and camera slots")
+
+    previous = steps[stem]["out"]
+    for index in layers:
+        _require(steps[index]["args"]["in"] == [previous], "encoder layers are not chained")
+        _require(graphs[steps[index]["args"]["graph"]]["input_elements"] == hidden
+                 == graphs[steps[index]["args"]["graph"]]["output_elements"], "encoder geometry")
+        previous = steps[index]["out"]
+    _require(steps[decoder]["args"]["in"] == [previous], "decoder does not follow the encoder")
+    _require(graphs[ACT_DECODER]["input_elements"] == hidden, "decoder geometry")
+    result = steps[decoder]["out"]
+    actions = graphs[ACT_DECODER]["output_elements"]
+    _require(sizes[result] == actions, "decoder output size")
+
+    token = f"{packed}_head"
+    device = {"act_image_0": graphs[ACT_VISION]["input_elements"],
+              "act_image_1": graphs[ACT_VISION]["input_elements"],
+              "act_stem": stem_in, "act_hidden_a": hidden, "act_hidden_b": hidden,
+              "act_actions": actions}
+    program = _Program("act", result)
+    for number, part in enumerate(sorted(cameras, key=lambda p: p["dst_offset"])):
+        (image,) = camera[part["src"]]
+        buffer = f"act_image_{number}"
+        _require(sizes[image] == device[buffer], f"{image} is not one whole camera image")
+        program.upload_host(buffer, 0, device[buffer], image)
+        program.call(ACT_VISION, [[buffer]], ["act_stem", part["dst_offset"], part["count"]])
+    program.upload_host("act_stem", 0, head, token)
+    program.call(ACT_STEM, [["act_stem"]], ["act_hidden_a"])
+    source, target = "act_hidden_a", "act_hidden_b"
+    for name in ACT_LAYERS:
+        program.call(name, [[source]], [target])
+        source, target = target, source
+    program.call(ACT_DECODER, [[source]], ["act_actions"])
+    program.download("act_actions", 0, actions, result)
+
+    new = copy.deepcopy(plan)
+    replaced = set(order)
+    head_pack = {"op": "pack", "out": token, "args": {"size": head, "parts": copy.deepcopy(host)}}
+    new["steps"] = (steps[:order[0]] + [head_pack, program.step()]
+                    + [s for i, s in enumerate(steps) if i > order[-1] and i not in replaced])
+    dead = set(camera) | {packed} | {steps[i]["out"] for i in (stem, *layers)}
+    live = set().union(*(_reads(s) | _writes(s) | {s["out"]} for s in new["steps"]))
+    new["buffers"] = {k: v for k, v in sizes.items() if k not in dead or k in live}
+    new["buffers"][token] = head
+    new["device_buffers"] = device
+    return new
+
+
 # ------------------------------------------------------------------ N1.7
 
 
@@ -626,7 +724,9 @@ def rewrite(plan: dict, graphs: list[dict], levels: Iterable[str]) -> dict:
         _require("int8_inputs" not in graph or graph["name"] not in _chained_names(levels),
                  f"{graph['name']} is INT8")
     kind = family(by_name)
-    if kind == "n1.6":
+    if kind == "act":
+        new = rewrite_act(plan, by_name, levels)
+    elif kind == "n1.6":
         _require("vision" not in levels, "N1.6 vision is already a run_elf_chain")
         new = rewrite_n16(plan, by_name, levels)
     else:
@@ -654,6 +754,8 @@ def _chained_names(levels: set[str]) -> set[str]:
         names |= set(N16_DIT)
     if "denoise" in levels:
         names |= {"state_project", "action_project", "action_tail"}
+    if "act" in levels:
+        names |= {ACT_VISION, ACT_STEM, ACT_DECODER, *ACT_LAYERS}
     return names
 
 
