@@ -390,8 +390,9 @@ def _uint8_frame_fixtures(build: BuildTree, spec: PolicySpec, direct: Path) -> d
         if not (normalized.is_file() and stats_path.is_file()):
             continue
         with np.load(stats_path, allow_pickle=False) as stats:
+            eps = np.float32(stats["eps"]) if "eps" in stats.files else np.float32(1e-8)
             decode = {"scale": 255.0, "mean": stats[f"camera{index}_mean"].reshape(-1),
-                      "std": stats[f"camera{index}_std"].reshape(-1)}
+                      "std": stats[f"camera{index}_std"].reshape(-1).astype(np.float32) + eps}
         frame = frame_from_normalized(np.fromfile(normalized, dtype="<f4"), decode)
         materialized.mkdir(parents=True, exist_ok=True)
         destination = materialized / f"{tensor.name}.u8"

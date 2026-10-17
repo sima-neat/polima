@@ -108,6 +108,9 @@ def test_act_plan_wire_carries_each_cameras_decode(tmp_path):
         assert tensors[name]["dtype"] == "uint8"
         np.testing.assert_array_equal(np.float32(tensors[name]["decode"]["mean"]),
                                       np.float32(DECODES[index]["mean"]))
+        # LeRobot's MEAN_STD divides by std + eps, summed in float32.
+        np.testing.assert_array_equal(np.float32(tensors[name]["decode"]["std"]),
+                                      np.float32(DECODES[index]["std"]) + np.float32(1e-8))
     assert "dtype" not in tensors["state"] and "decode" not in tensors["state"]
 
 
@@ -134,7 +137,9 @@ def test_act_fixture_frames_are_recovered_exactly(tmp_path):
     rng = np.random.default_rng(9)
     frames = [rng.integers(0, 256, (480, 640, 3), dtype=np.uint8) for _ in range(2)]
     for index, frame in enumerate(frames):
-        decode_tensor(frame, DECODES[index]).astype("<f4").tofile(direct / f"vision_input_{index}.f32")
+        # What LeRobot's preprocessor (and so the export) writes: (x/255 - mean) / (std + eps).
+        lerobot = dict(DECODES[index], std=np.float32(DECODES[index]["std"]) + np.float32(1e-8))
+        decode_tensor(frame, lerobot).astype("<f4").tofile(direct / f"vision_input_{index}.f32")
     fixtures = _uint8_frame_fixtures(SimpleNamespace(root=root), ACT_SPEC, direct)
     assert sorted(fixtures) == ["inputs/image0.u8", "inputs/image1.u8"]
     for index, name in enumerate(("image0", "image1")):

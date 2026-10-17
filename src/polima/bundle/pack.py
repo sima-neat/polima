@@ -226,8 +226,10 @@ def _attach_wire_decode(plan_data: dict, spec: PolicySpec, fixtures: dict[str, P
     """Give each uint8 camera tensor the server-side normalization of its camera.
 
     The server decodes ``(x / scale - mean[c]) / std[c]`` in float32
-    (`polima.wire.protocol.decode_tensor`) from the checkpoint's own camera
-    statistics -- the values a client-side normalization would have used.
+    (`polima.wire.protocol.decode_tensor`). ``std`` here is the float32 sum
+    ``std + eps`` LeRobot's NormalizerProcessor divides by, so the decoded frame
+    is bit-identical to the checkpoint's own preprocessing (and to the export's
+    PyTorch reference fixtures), not merely within a float32 ulp of it.
     """
     frames = [item for item in plan_data.get("wire", {}).get("request_tensors", [])
               if item.get("dtype") == "uint8"]
@@ -240,10 +242,11 @@ def _attach_wire_decode(plan_data: dict, spec: PolicySpec, fixtures: dict[str, P
 
     images = [t.name for t in spec.wire.request_tensors if t.name.startswith("image")]
     with np.load(stats_path, allow_pickle=False) as stats:
+        eps = np.float32(stats["eps"]) if "eps" in stats.files else np.float32(1e-8)
         for item in frames:
             index = images.index(item["name"])
             mean = np.asarray(stats[f"camera{index}_mean"], dtype=np.float32).reshape(-1)
-            std = np.asarray(stats[f"camera{index}_std"], dtype=np.float32).reshape(-1)
+            std = np.asarray(stats[f"camera{index}_std"], dtype=np.float32).reshape(-1) + eps
             if mean.size != item["shape"][-1] or std.size != mean.size:
                 raise ValueError(f"{item['name']}: camera{index} stats do not match "
                                  f"{item['shape'][-1]} channels")
