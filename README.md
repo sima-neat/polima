@@ -114,6 +114,7 @@ The arm keeps moving while the next plan is computed.
 | `runtime/` | The C++ model server that runs on the DevKit ([README](runtime/README.md)). |
 | `examples/so101/` | Our SO-101 setup, and arm and teleoperation tools. |
 | `docs/` | Reference guides: [install](docs/install.md), [your own model](docs/your-own-model.md), [GR00T](docs/groot.md), [deploy](docs/deploy.md), [robot](docs/robot.md). |
+| `skills/` | Coding-agent skills; [`sima-add-polima-policy`](skills/sima-add-polima-policy/SKILL.md) brings a new robot policy into PoLiMa. See [AGENTS.md](AGENTS.md). |
 
 ## Licence
 
