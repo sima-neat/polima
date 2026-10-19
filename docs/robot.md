@@ -42,6 +42,11 @@ polima robot run
 
 It asks for the arm's serial port and for each camera, asks for confirmation,
 moves the arm to its rest pose, then hands over to the active bundle's model.
+Every return to rest, at startup, after a pick and on Ctrl-C, lifts the arm
+clear, moves it to the rest pose, then waits until each joint is within 2°.
+A large move takes about 6.5 s. A shorter one takes only as long as its
+distance needs at the same speed (at least 0.5 s per stage), and an arm
+already at rest doesn't move. The lift is skipped within 10° of rest.
 **Ctrl-C** stops the run and returns the arm to rest. The model server keeps
 running until `polima server stop`.
 
@@ -97,6 +102,26 @@ by setting it in the same terminal before `polima robot run`:
 | `POLIMA_RESET_EASE` | `smoothstep`: ease into and out of the return to rest. |
 | `POLIMA_GROOT_NOISE` | `zero`: start every plan from the same noise, so the same view gives the same plan; `random` otherwise. |
 
+## Startup timeline
+
+Each run prints, and records in its run log, how long it took to reach each
+startup phase, measured from the client's start. For example:
+
+```
+[startup] imports done at 7.8 s (+7.8 s)
+[startup] arm and cameras connected at 10.9 s (+3.1 s)
+[startup] rest reached at 11.6 s (+0.7 s)
+[startup] server connected at 11.6 s (+0.0 s)
+[startup] first action at 11.8 s (+0.2 s)
+```
+
+To start quickly, the client skips libraries it never uses: LeRobot's
+policies, dataset loading, torchvision, Hugging Face `datasets`, accelerate
+and diffusers. It also skips the help text LeRobot's configuration parser
+would build. Set `POLIMA_ROBOT_FULL_IMPORTS=1` to load everything, for
+example if a newer LeRobot reports that something "is not loaded in the
+PoLiMa robot client".
+
 ## Troubleshooting
 
 | What you see | What to do |
@@ -106,3 +131,4 @@ by setting it in the same terminal before `polima robot run`:
 | The arm misses by the same amount every time | Recalibrate (see above). |
 | The run stops before moving and asks for `polima robot calibrate` | The arm has no calibration on this DevKit yet; calibrate it once. |
 | The model server does not start | `polima server status`; on `MLA_LOAD_FAILED`, see [deploy.md](deploy.md#accelerator-reset-and-sudo). |
+| "… is not loaded in the PoLiMa robot client (fast imports)" | The installed LeRobot uses a library the client normally skips. Run with `POLIMA_ROBOT_FULL_IMPORTS=1` and report it. |
