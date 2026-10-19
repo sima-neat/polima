@@ -1,0 +1,4 @@
+interface:
+  display_name: "Assess, Add, or Optimize a PoLiMa Policy"
+  short_description: "Bring a VLA or robot policy into PoLiMa on Modalix"
+  default_prompt: "Use $sima-add-polima-policy to assess this robot policy for PoLiMa on Modalix and add only the support that is actually missing."
