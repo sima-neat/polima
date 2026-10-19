@@ -131,12 +131,19 @@ def test_calibration_is_customer_owned(tmp_path):
 
 
 @pytest.mark.parametrize("ease", ["linear", "smoothstep"])
-def test_return_to_rest_preserves_rates_limits_and_final_pose(ease):
+@pytest.mark.parametrize(("away", "lift_steps", "return_steps"), [
+    (100., 75, 250),  # a large move takes as long as the fixed 1.5 s lift + 5 s return always did
+    (30., 75, 75),    # lift 20 degrees at 13.3 deg/s, return 30 degrees at 20 deg/s
+    (6., 0, 25),      # within 10 degrees of rest: no lift; the return lasts at least 0.5 s
+    (1., 0, 0),       # within the 2-degree settle tolerance: no motion, only the hold at rest
+])
+def test_return_to_rest_scales_with_distance_without_exceeding_large_move_speed(ease, away, lift_steps,
+                                                                                 return_steps):
     from polima.robot import reset_ease
 
     functions, clock = control_functions()
     client = virtual_client()
-    pose = dict.fromkeys(so101.JOINTS, 30.)
+    pose = dict.fromkeys(so101.JOINTS, away)
     sent = []
 
     def send(action):
@@ -148,12 +155,17 @@ def test_return_to_rest_preserves_rates_limits_and_final_pose(ease):
     if ease != "linear":
         reset = reset_ease.eased(reset, ease)
     assert reset(client)
-    assert len(sent) == 326 and clock.now == pytest.approx(6.5)
-    assert all(action["shoulder_pan.pos"] == pytest.approx(30.) for action in sent[:75])
-    assert sent[74]["shoulder_lift.pos"] == 10.
-    assert sent[-1] == client.reset_position
+    assert len(sent) == lift_steps + return_steps + 1  # + the final hold at rest
+    assert clock.now == pytest.approx((lift_steps + return_steps) / 50)
+    if lift_steps:
+        assert all(action["shoulder_pan.pos"] == pytest.approx(away) for action in sent[:lift_steps])
+        assert sent[lift_steps - 1]["shoulder_lift.pos"] == pytest.approx(away - 20.)
+    assert sent[-1] == client.reset_position and client.reset_completed
     for previous, action in pairwise(sent):
         assert max(abs(action[key] - previous[key]) for key in action) < 12.
+    if ease == "linear" and return_steps:  # never faster than the large-move speed (20 deg/s at 50 Hz)
+        stage = sent[lift_steps:lift_steps + return_steps]
+        assert max(abs(b[k] - a[k]) for a, b in pairwise(stage) for k in a) <= 20. / 50 + 1e-9
 
 
 def test_telemetry_storage_failure_does_not_change_robot_flow(monkeypatch):
