@@ -15,6 +15,10 @@ import time
 from collections.abc import Iterator
 from queue import Empty, Full, Queue
 
+from polima.robot import fast_imports, startup
+
+fast_imports.install()  # before LeRobot: see polima.robot.fast_imports
+
 import cv2
 import numpy as np
 import torch
@@ -32,6 +36,11 @@ from lerobot.utils.import_utils import register_third_party_plugins
 
 from polima.robot.so101 import SO101PolicyClient as ACTSOMClient
 from polima.robot.so101 import record
+
+startup.mark("imports_done")
+if fast_imports.active():
+    print(f"Fast imports: {len(fast_imports.active())} unused modules stubbed "
+          f"(set {fast_imports.ENV}=1 to load them)", flush=True)
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -100,6 +109,7 @@ def _som_start(self: RobotClient) -> bool:
         self.logger.error("Client startup aborted because the robot did not reach rest")
         _original_stop(self)
         return False
+    startup.mark("rest_reached")
     self.reset_completed = False
     self.shutdown_event.clear()
     try:
@@ -110,6 +120,7 @@ def _som_start(self: RobotClient) -> bool:
         self.logger.error("Cannot reach Modalix server: %s", error)
         return False
     self.logger.info("Connected to Modalix server")
+    startup.mark("server_connected")
     return True
 
 
@@ -287,6 +298,7 @@ def _action_tensor_to_dict_with_rest_snap(self: RobotClient, action_tensor):
 def _init_with_reset_position(self: RobotClient, config) -> None:
     global _active_client
     _original_init(self, config)
+    startup.mark("arm_and_cameras_connected")
     self.reset_position = _load_dataset_rest_position()
     self.reset_completed = False
     self.rest_snap_tolerance = float(
@@ -474,9 +486,13 @@ def _start_after_reset(self: RobotClient) -> bool:
         _original_stop(self)
         return False
 
+    startup.mark("rest_reached")
     self.reset_completed = False
     self.logger.info("Startup reset complete; connecting to the policy server")
-    return _original_start(self)
+    started = _original_start(self)
+    if started:
+        startup.mark("server_connected")
+    return started
 
 
 def _request_graceful_shutdown(signum: int, _frame) -> None:
@@ -516,6 +532,8 @@ def _control_loop_action_with_completion(
 ) -> dict[str, float]:
     performed_action = _original_control_loop_action(self, verbose)
     record("action_sent", positions=performed_action)
+    if performed_action:
+        startup.mark("first_action")
     if not self.auto_complete_enabled or self._auto_complete_triggered:
         return performed_action
 
@@ -743,6 +761,7 @@ OpenCVCamera._configure_capture_settings = _configure_camera_with_perspective_au
 
 
 if __name__ == "__main__":
+    fast_imports.skip_config_docstrings()  # draccus help text: 7 s of source parsing per launch
     register_third_party_plugins()
     signal.signal(signal.SIGINT, _request_graceful_shutdown)
     signal.signal(signal.SIGTERM, _request_graceful_shutdown)

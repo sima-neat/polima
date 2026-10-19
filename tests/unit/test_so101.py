@@ -57,7 +57,8 @@ def control_functions():
     namespace = {"RobotClient": object, "time": clock,
                  "_original_action_tensor_to_dict": lambda _, value: dict(value),
                  "_original_control_loop_action": lambda self, _: dict(self.action),
-                 "record": lambda *args, **kwargs: None}
+                 "record": lambda *args, **kwargs: None,
+                 "startup": SimpleNamespace(mark=lambda phase: None)}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), "exec"), namespace)  # noqa: S102 - isolated control replay
     return namespace, clock
 
