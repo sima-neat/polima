@@ -346,6 +346,10 @@ def main(argv=None):
             os.environ[f"ACT_{name}"] = os.environ[f"POLIMA_{name}"]
     if os.environ.get("POLIMA_NO_AUTO_COMPLETE"):
         os.environ["ACT_AUTO_COMPLETE"] = "0"
+    # Before LeRobot is first imported (just below): skip the libraries the client never uses.
+    from polima.robot import fast_imports
+
+    fast_imports.install()
     smooth_moves = smoothing.moves_from_env()
     substep_count = substeps.substeps_from_env()
     ease = reset_ease.ease_from_env()

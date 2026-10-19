@@ -15,6 +15,10 @@ import time
 from collections.abc import Iterator
 from queue import Empty, Full, Queue
 
+from polima.robot import fast_imports, startup
+
+fast_imports.install()  # before LeRobot: see polima.robot.fast_imports
+
 import cv2
 import numpy as np
 import torch
@@ -32,6 +36,11 @@ from lerobot.utils.import_utils import register_third_party_plugins
 
 from polima.robot.so101 import SO101PolicyClient as ACTSOMClient
 from polima.robot.so101 import record
+
+startup.mark("imports_done")
+if fast_imports.active():
+    print(f"Fast imports: {len(fast_imports.active())} unused modules stubbed "
+          f"(set {fast_imports.ENV}=1 to load them)", flush=True)
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -100,6 +109,7 @@ def _som_start(self: RobotClient) -> bool:
         self.logger.error("Client startup aborted because the robot did not reach rest")
         _original_stop(self)
         return False
+    startup.mark("rest_reached")
     self.reset_completed = False
     self.shutdown_event.clear()
     try:
@@ -110,6 +120,7 @@ def _som_start(self: RobotClient) -> bool:
         self.logger.error("Cannot reach Modalix server: %s", error)
         return False
     self.logger.info("Connected to Modalix server")
+    startup.mark("server_connected")
     return True
 
 
@@ -287,6 +298,7 @@ def _action_tensor_to_dict_with_rest_snap(self: RobotClient, action_tensor):
 def _init_with_reset_position(self: RobotClient, config) -> None:
     global _active_client
     _original_init(self, config)
+    startup.mark("arm_and_cameras_connected")
     self.reset_position = _load_dataset_rest_position()
     self.reset_completed = False
     self.rest_snap_tolerance = float(
@@ -370,10 +382,22 @@ def _return_to_reset_position(
     fps: int = 50,
     tolerance_degrees: float = 2.0,
     settle_timeout_s: float = 5.0,
+    return_speed_dps: float = 20.0,
+    lift_clearance_degrees: float = 10.0,
+    min_segment_s: float = 0.5,
     *,
     stop_inference: bool = True,
     force: bool = False,
 ) -> bool:
+    """Lift clear, return to the dataset rest pose, then settle within `tolerance_degrees`.
+
+    Each stage lasts as long as its distance needs at the speed of a large move
+    (`return_speed_dps`; the lift at `lift_degrees / lift_duration_s`), never longer
+    than the fixed durations and never shorter than `min_segment_s`: a large move
+    takes as long as it always did, a small one finishes sooner. Within
+    `lift_clearance_degrees` of rest there is nothing to clear and the lift is
+    skipped; within `tolerance_degrees` the arm is already at rest and only settles.
+    """
     if (self.reset_completed and not force) or not self.reset_position:
         return True
 
@@ -388,21 +412,47 @@ def _return_to_reset_position(
             for key, value in current_observation.items()
             if key in self.reset_position
         }
+        farthest = max(
+            (abs(float(current_position[key]) - float(self.reset_position[key])) for key in current_position),
+            default=0.0,
+        )
 
         lift_position = dict(current_position)
-        for key in ("shoulder_lift.pos", "wrist_flex.pos"):
-            if key not in lift_position:
-                continue
-            current = float(lift_position[key])
-            target = float(self.reset_position[key])
-            delta = max(-lift_degrees, min(lift_degrees, target - current))
-            lift_position[key] = current + delta
+        if farthest > lift_clearance_degrees:
+            for key in ("shoulder_lift.pos", "wrist_flex.pos"):
+                if key not in lift_position:
+                    continue
+                current = float(lift_position[key])
+                target = float(self.reset_position[key])
+                delta = max(-lift_degrees, min(lift_degrees, target - current))
+                lift_position[key] = current + delta
 
-        self.logger.info(
-            "Reset stage 1/2: lifting clear of the basket with shoulder pan held at %.2f",
-            float(current_position.get("shoulder_pan.pos", 0.0)),
+        def segment_steps(distance: float, longest_s: float, speed_dps: float) -> int:
+            if farthest <= tolerance_degrees or distance <= 0:
+                return 0
+            seconds = max(min(distance / speed_dps, longest_s), min_segment_s)
+            return max(int(seconds * fps), 1)
+
+        lift_steps = segment_steps(
+            max((abs(float(lift_position[key]) - float(current_position[key])) for key in lift_position),
+                default=0.0),
+            lift_duration_s, lift_degrees / lift_duration_s,
         )
-        lift_steps = max(int(lift_duration_s * fps), 1)
+        steps = segment_steps(
+            max((abs(float(self.reset_position[key]) - float(lift_position[key])) for key in lift_position),
+                default=0.0),
+            duration_s, return_speed_dps,
+        )
+        self.logger.info(
+            "Return to rest: %.1f degrees away; lift %.2f s, return %.2f s",
+            farthest, lift_steps / fps, steps / fps,
+        )
+
+        if lift_steps:
+            self.logger.info(
+                "Reset stage 1/2: lifting clear of the basket with shoulder pan held at %.2f",
+                float(current_position.get("shoulder_pan.pos", 0.0)),
+            )
         for step in range(1, lift_steps + 1):
             ratio = step / lift_steps
             action = {
@@ -413,8 +463,8 @@ def _return_to_reset_position(
             self.robot.send_action(action)
             time.sleep(1 / fps)
 
-        self.logger.info("Reset stage 2/2: returning to the resting position")
-        steps = max(int(duration_s * fps), 1)
+        if steps:
+            self.logger.info("Reset stage 2/2: returning to the resting position")
         for step in range(1, steps + 1):
             ratio = step / steps
             action = {
@@ -474,9 +524,13 @@ def _start_after_reset(self: RobotClient) -> bool:
         _original_stop(self)
         return False
 
+    startup.mark("rest_reached")
     self.reset_completed = False
     self.logger.info("Startup reset complete; connecting to the policy server")
-    return _original_start(self)
+    started = _original_start(self)
+    if started:
+        startup.mark("server_connected")
+    return started
 
 
 def _request_graceful_shutdown(signum: int, _frame) -> None:
@@ -516,6 +570,8 @@ def _control_loop_action_with_completion(
 ) -> dict[str, float]:
     performed_action = _original_control_loop_action(self, verbose)
     record("action_sent", positions=performed_action)
+    if performed_action:
+        startup.mark("first_action")
     if not self.auto_complete_enabled or self._auto_complete_triggered:
         return performed_action
 
@@ -743,6 +799,7 @@ OpenCVCamera._configure_capture_settings = _configure_camera_with_perspective_au
 
 
 if __name__ == "__main__":
+    fast_imports.skip_config_docstrings()  # draccus help text: 7 s of source parsing per launch
     register_third_party_plugins()
     signal.signal(signal.SIGINT, _request_graceful_shutdown)
     signal.signal(signal.SIGTERM, _request_graceful_shutdown)
