@@ -192,6 +192,13 @@ class StudioRuntime:
             "--robot-port", config.robot_port, "--overhead-camera", config.overhead_camera,
             "--wrist-camera", config.wrist_camera,
         ]
+        # The robot client selects its task from --task (default 0); POLIMA_TASK below only
+        # serves older start.sh launchers.
+        task_index = self._task_index(config)
+        if task_index == -1:
+            raise ValueError(f"the bundle was not compiled for the task {config.task!r}")
+        if task_index is not None:
+            args += ["--task", str(task_index)]
         policy = self._policy_of(config.bundle)
         enabled = config.autocomplete if config.autocomplete is not None else policy != "groot"
         autocomplete = "1" if enabled else "0"
@@ -401,8 +408,27 @@ class StudioRuntime:
             ("wrist camera", Path(config.wrist_camera).exists()),
             ("follower-arm calibration", calibrated),
             ("native control binary", self.command.exists() and os.access(self.command, os.X_OK)),
+            ("task is one the bundle was compiled for", self._task_index(config) != -1),
         ]
         return [{"name": name, "ok": ok} for name, ok in checks]
+
+    def _compiled_tasks(self, bundle: str) -> list[str]:
+        """The bundle's compiled task catalog (``bundle.json`` ``tasks``): what the robot
+        client resolves ``--task`` against. Empty when the policy has none (ACT)."""
+        try:
+            manifest = json.loads((Path(self._bundle_path(bundle)) / "bundle.json").read_text())
+        except (OSError, ValueError):
+            return []
+        tasks = manifest.get("tasks") or []
+        return [str(task) for task in (tasks if isinstance(tasks, list) else [tasks])]
+
+    def _task_index(self, config: RunConfig) -> int | None:
+        """The catalog index of the chosen task; None when the bundle has no catalog (the
+        text is only a label), -1 when the bundle cannot run this instruction."""
+        tasks = self._compiled_tasks(config.bundle)
+        if not tasks:
+            return None
+        return tasks.index(config.task) if config.task in tasks else -1
 
     def _calibration_path(self, bundle: str) -> Path:
         """The per-bundle follower calibration Studio passes to LeRobot.
