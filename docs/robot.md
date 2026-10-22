@@ -97,6 +97,18 @@ by setting it in the same terminal before `polima robot run`:
 | `POLIMA_RESET_EASE` | `smoothstep`: ease into and out of the return to rest. |
 | `POLIMA_GROOT_NOISE` | `zero`: start every plan from the same noise, so the same view gives the same plan; `random` otherwise. |
 
+## Camera recovery
+
+If a camera drops out during a run, the client stops inference, opens the gripper,
+returns to the bundle's rest pose, and closes the gripper. After that client has
+shut down, it waits up to 60 seconds for both cameras to reconnect and provide
+frames, then starts a fresh client. Old action queues are discarded. There are
+at most three automatic restarts per run.
+
+Ctrl-C or Studio's Graceful Stop cancels pending retries. A failed return to rest,
+a motor error, or failed cleanup stops the run rather than restarting it.
+Recovery cannot resume with a missing camera and does not repair USB faults.
+
 ## Troubleshooting
 
 | What you see | What to do |
@@ -106,3 +118,31 @@ by setting it in the same terminal before `polima robot run`:
 | The arm misses by the same amount every time | Recalibrate (see above). |
 | The run stops before moving and asks for `polima robot calibrate` | The arm has no calibration on this DevKit yet; calibrate it once. |
 | The model server does not start | `polima server status`; on `MLA_LOAD_FAILED`, see [deploy.md](deploy.md#accelerator-reset-and-sudo). |
+
+Run summaries stream the event log rather than loading it into RAM. Counts and
+maximum latency are exact. For more than 4,096 valid latency measurements per
+metric, p50/p95 use a deterministic reservoir sample and the summary marks them
+with `percentiles_approximate: true` and `sample_size`.
+
+If motor communication fails during shutdown, PoLiMa still attempts to close
+all camera and transport handles and disables automatic retry for that client.
+It reports the motor torque state as unconfirmed; losing the motor connection
+can prevent both returning to rest and disabling torque.
+
+### Logging for normal runs
+
+Normal SO-101 runs do not record per-action or per-inference histories. Warnings
+and errors are saved to `$POLIMA_ROOT/var/log/robot-errors.log`, with two rotated
+backups (2 MiB each; approximately 6 MiB total). Terminal status remains available.
+The optional queue-size plot keeps only the latest 900 samples in memory.
+
+For a diagnostic run, explicitly enable detailed recording:
+
+```bash
+POLIMA_RECORD_RUN=1 polima robot run
+```
+
+Each detailed event log is capped at 8 MiB, plus its truncation notice and final
+status. Once capped, counts and timing summaries cover only the recorded portion.
+Normal runs do not add entries to Studio's recorded run history. Existing logs
+are preserved; enabling diagnostics repeatedly creates separate run folders.

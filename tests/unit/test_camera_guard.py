@@ -89,7 +89,8 @@ def test_recovery_opens_then_rests_then_closes():
     robot, order = Robot(), []
     rest = {"shoulder_pan.pos": 0.0, "gripper.pos": 2.0}
 
-    def move_to_rest():
+    def move_to_rest(opened):
+        assert opened == 40.0
         order.append(("rest", robot.position["gripper.pos"]))
         robot.position = {**robot.position, "shoulder_pan.pos": 0.0}
         return True
@@ -104,7 +105,7 @@ def test_recovery_opens_then_rests_then_closes():
 
 def test_recovery_stops_if_rest_is_not_reached():
     robot = Robot()
-    assert not release_and_rest(robot, {"gripper.pos": 2.0}, lambda: False,
+    assert not release_and_rest(robot, {"gripper.pos": 2.0}, lambda _: False,
                                 logging.getLogger(), open_position=40.0)
     assert robot.sent[-1]["gripper.pos"] == 40.0
 
@@ -112,4 +113,122 @@ def test_recovery_stops_if_rest_is_not_reached():
 def test_recovery_never_raises_when_the_arm_fails():
     robot = Robot()
     robot.bus.sync_read = lambda _r: (_ for _ in ()).throw(OSError("serial bus gone"))
-    assert not release_and_rest(robot, {}, lambda: True, logging.getLogger(), open_position=40.0)
+    assert not release_and_rest(robot, {"gripper.pos": 2.0}, lambda _: True, logging.getLogger(), open_position=40.0)
+
+
+@pytest.mark.parametrize("pose, value", [({}, "40"), ({"gripper.pos": 2.}, "invalid")])
+def test_invalid_recovery_settings_do_not_move(pose, value, monkeypatch):
+    monkeypatch.setenv(camera_guard.ENV_GRIPPER_OPEN, value)
+    robot = Robot()
+    assert not release_and_rest(robot, pose, lambda _: pytest.fail("must not return"), logging.getLogger())
+    assert robot.sent == []
+
+
+@pytest.mark.parametrize("healthy", [True, False])
+def test_reconnect_checks_frames_and_closes_cameras(healthy):
+    from threading import Event
+    class ReconnectCamera(Camera):
+        def connect(self):
+            self.is_connected = True
+        def disconnect(self):
+            self.is_connected = False
+    camera = ReconnectCamera(connected=False, error=None if healthy else TimeoutError("no frames"))
+    assert camera_guard.wait_for_cameras(
+        {"wrist": camera}, Event(), logging.getLogger(), timeout_s=.03, interval_s=.01,
+        stable_s=0) is healthy
+    assert not camera.is_connected
+
+
+def test_reconnect_cancelled_never_opens_camera():
+    from threading import Event
+    stopped = Event()
+    stopped.set()
+    assert not camera_guard.wait_for_cameras({"wrist": object()}, stopped, logging.getLogger())
+
+
+def test_reconnect_cleans_partial_open_and_aborts_if_cleanup_fails():
+    from threading import Event
+    closed = []
+    class Partial(Camera):
+        def connect(self):
+            self.is_connected = True
+            raise RuntimeError("settings failed after opening")
+        def disconnect(self):
+            closed.append(True)
+            raise RuntimeError("cannot close")
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        camera_guard.wait_for_cameras({"wrist": Partial(connected=False)}, Event(), logging.getLogger())
+    assert closed == [True]
+
+
+def test_reconnect_cancellation_closes_open_cameras():
+    from threading import Event
+    stop = Event()
+    class Cancel(Camera):
+        def connect(self):
+            self.is_connected = True
+            stop.set()
+        def disconnect(self):
+            self.is_connected = False
+    camera = Cancel(connected=False)
+    assert not camera_guard.wait_for_cameras({"wrist": camera}, stop, logging.getLogger())
+    assert not camera.is_connected
+
+
+def test_reconnect_retries_after_transient_open_failure():
+    from threading import Event
+    class Transient(Camera):
+        attempts = 0
+        def connect(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise ConnectionError("USB not ready")
+            self.is_connected = True
+        def disconnect(self):
+            self.is_connected = False
+    camera = Transient(connected=False)
+    assert camera_guard.wait_for_cameras({"wrist": camera}, Event(), logging.getLogger(),
+                                         timeout_s=1, interval_s=.001, stable_s=.01)
+    assert camera.attempts == 2 and not camera.is_connected
+
+
+
+@pytest.mark.parametrize("lag_joint", ["gripper.pos", "shoulder_pan.pos"])
+def test_recovery_waits_for_mechanical_settling(monkeypatch, lag_joint):
+    robot = Robot()
+    rest = {"shoulder_pan.pos": 0., "gripper.pos": 0.}
+    clock = SimpleNamespace(now=0.)
+    monkeypatch.setattr(camera_guard.time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(camera_guard.time, "sleep", lambda s: setattr(clock, "now", clock.now+s))
+    closed_at = None
+    def send(action):
+        nonlocal closed_at
+        robot.position = dict(action)
+        robot.sent.append(dict(action))
+        if action["gripper.pos"] <= .001:
+            if closed_at is None:
+                closed_at = clock.now
+            if clock.now - closed_at < .3:
+                robot.position[lag_joint] += 3.
+    robot.send_action = send
+    def rest_arm(opened):
+        robot.position.update(rest)
+        robot.position["gripper.pos"] = opened
+        return True
+    assert release_and_rest(robot, rest, rest_arm, logging.getLogger())
+    assert clock.now - closed_at >= .3
+    assert robot.position == rest
+
+
+def test_recovery_settle_failure_reports_joint_error(monkeypatch, caplog):
+    robot = Robot()
+    clock = SimpleNamespace(now=0.)
+    monkeypatch.setattr(camera_guard.time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(camera_guard.time, "sleep", lambda s: setattr(clock, "now", clock.now+s))
+    def stuck(action):
+        robot.position.update({**action, "gripper.pos": 20.})
+    robot.send_action = stuck
+    assert not release_and_rest(robot, {"shoulder_pan.pos": 10., "gripper.pos": 0.},
+                                lambda opened: True, logging.getLogger())
+    assert "gripper.pos" in caplog.text and "20.00" in caplog.text
+    assert clock.now <= 7.1

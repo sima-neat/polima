@@ -1,6 +1,7 @@
 """Detect a lost robot camera and bring the arm to rest instead of freezing mid-task."""
 from __future__ import annotations
 
+import math
 import os
 import time
 from collections.abc import Callable, Mapping
@@ -87,23 +88,83 @@ def move_gripper(robot, target: float, duration_s: float = 1.0, fps: int = 50) -
         time.sleep(1 / fps)
 
 
-def release_and_rest(robot, rest: Mapping[str, float], move_to_rest: Callable[[], bool],
+def release_and_rest(robot, rest: Mapping[str, float], move_to_rest: Callable[[float], bool],
                      log, open_position: float | None = None) -> bool:
     """Open the gripper, return to rest, then close it. Never raises; True when at rest."""
-    if open_position is None:
-        open_position = float(os.environ.get(ENV_GRIPPER_OPEN, "40"))
     try:
+        if not rest or GRIPPER not in rest:
+            raise ValueError("Camera recovery requires a rest pose including the gripper")
+        if open_position is None:
+            open_position = float(os.environ.get(ENV_GRIPPER_OPEN, "40"))
         log.warning("Camera recovery 1/3: opening the gripper to release any object")
         move_gripper(robot, open_position)
         log.warning("Camera recovery 2/3: returning to the resting position")
-        rested = move_to_rest()
+        rested = move_to_rest(open_position)
         if not rested:
             log.error("Camera recovery: the arm did not reach rest")
             return False
         log.warning("Camera recovery 3/3: closing the gripper")
         if GRIPPER in rest:
             move_gripper(robot, float(rest[GRIPPER]))
-        return True
+        deadline = time.monotonic() + 5.0
+        while True:
+            actual = joint_positions(robot)
+            errors = {key: abs(actual[key] - target) for key, target in rest.items()}
+            if not all(math.isfinite(error) for error in errors.values()):
+                raise RuntimeError(f"Invalid joint readings during recovery: {actual}")
+            if max(errors.values()) <= 2.0:
+                return True
+            if time.monotonic() >= deadline:
+                detail = "; ".join(
+                    f"{key}: actual={actual[key]:.2f}, target={rest[key]:.2f}, error={error:.2f}"
+                    for key, error in errors.items() if error > 2.0)
+                raise TimeoutError(f"Rest did not settle within 5s after closing gripper; {detail}")
+            robot.send_action(dict(rest))
+            time.sleep(.02)
     except Exception as error:  # noqa: BLE001 - the arm may have failed too; never hang here
         log.error("Camera recovery failed: %s", error)
         return False
+
+
+def wait_for_cameras(cameras: Mapping[str, object], stopped, log, *,
+                     timeout_s: float = 60.0, interval_s: float = 2.0,
+                     stable_s: float = 1.0) -> bool:
+    """Probe disconnected cameras without touching motors; release all handles before return."""
+    deadline = time.monotonic() + timeout_s
+    while cameras and not stopped.is_set() and time.monotonic() < deadline:
+        attempted = []
+        ready = False
+        try:
+            missing = missing_devices({role: _device(camera) for role, camera in cameras.items()})
+            if missing:
+                raise CameraFault(missing[0], "waiting for USB device")
+            for camera in cameras.values():
+                if stopped.is_set():
+                    return False
+                attempted.append(camera)
+                camera.connect()
+            stable_until = time.monotonic() + stable_s
+            while not stopped.is_set() and time.monotonic() < deadline:
+                probe(cameras)
+                if time.monotonic() >= stable_until:
+                    ready = True
+                    break
+                stopped.wait(min(.1, max(0, deadline - time.monotonic())))
+        except Exception as error:  # noqa: BLE001 - camera drivers expose several exception types
+            log.warning("Waiting for cameras before retry: %s", error)
+        finally:
+            cleanup_errors = []
+            for camera in reversed(attempted):
+                if (getattr(camera, "is_connected", False)
+                        or getattr(camera, "videocapture", None) is not None
+                        or getattr(camera, "thread", None) is not None):
+                    try:
+                        camera.disconnect()
+                    except Exception as error:  # noqa: BLE001 - finish closing other cameras, then abort
+                        cleanup_errors.append(str(error))
+            if cleanup_errors:
+                raise RuntimeError("Camera retry cleanup failed: " + "; ".join(cleanup_errors))
+        if ready and not stopped.is_set():
+            return True
+        stopped.wait(min(interval_s, max(0, deadline - time.monotonic())))
+    return False

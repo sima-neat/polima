@@ -32,7 +32,9 @@ from lerobot.utils.import_utils import register_third_party_plugins
 
 from polima.robot import camera_guard
 from polima.robot.so101 import SO101PolicyClient as ACTSOMClient
-from polima.robot.so101 import record
+from polima.robot.so101 import bound_queue_history, configure_run_logging, record
+
+configure_run_logging()
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -77,6 +79,7 @@ _frames: dict[str, bytes] = {}
 _frame_condition = threading.Condition()
 _active_client: RobotClient | None = None
 _last_web_encode_s = 0.0
+_operator_stopped = threading.Event()
 _direct_som = _DIRECT_SOM_IMPORT
 _JOINT_NAMES = (
     "shoulder_pan.pos", "shoulder_lift.pos", "elbow_flex.pos",
@@ -99,7 +102,7 @@ def _som_start(self: RobotClient) -> bool:
     if not _return_to_reset_position(self, stop_inference=False, force=True):
         record("error", message="The robot did not reach rest during startup")
         self.logger.error("Client startup aborted because the robot did not reach rest")
-        _original_stop(self)
+        _stop_after_reset(self)
         return False
     self.reset_completed = False
     self.shutdown_event.clear()
@@ -146,6 +149,8 @@ def _som_receive_actions(self: RobotClient, verbose: bool = False) -> None:
         try:
             state = np.asarray([raw[name] for name in joint_names], dtype=np.float32)
             actions, inference_ms = self.som_client.predict(raw["overhead"], raw["wrist"], state)
+            if not self.running:
+                return
             count = min(int(self.config.actions_per_chunk), actions.shape[0])
             first_step = max(observation.get_timestep(), 0)
             timestamp = observation.get_timestamp()
@@ -296,6 +301,7 @@ def _init_with_reset_position(self: RobotClient, config) -> None:
         record("camera_fault", message=message, cameras=missing)
         raise ConnectionError(message)
     _original_init(self, config)
+    bound_queue_history(self)
     self.camera_watch = camera_guard.CameraWatch()
     self.reset_position = _load_dataset_rest_position()
     self.reset_completed = False
@@ -383,9 +389,14 @@ def _return_to_reset_position(
     *,
     stop_inference: bool = True,
     force: bool = False,
+    gripper_target: float | None = None,
 ) -> bool:
     if (self.reset_completed and not force) or not self.reset_position:
         return True
+
+    target_position = dict(self.reset_position)
+    if gripper_target is not None:
+        target_position["gripper.pos"] = gripper_target
 
     if stop_inference:
 
@@ -396,7 +407,7 @@ def _return_to_reset_position(
         current_position = {
             key: value
             for key, value in current_observation.items()
-            if key in self.reset_position
+            if key in target_position
         }
 
         lift_position = dict(current_position)
@@ -404,7 +415,7 @@ def _return_to_reset_position(
             if key not in lift_position:
                 continue
             current = float(lift_position[key])
-            target = float(self.reset_position[key])
+            target = float(target_position[key])
             delta = max(-lift_degrees, min(lift_degrees, target - current))
             lift_position[key] = current + delta
 
@@ -429,7 +440,7 @@ def _return_to_reset_position(
             ratio = step / steps
             action = {
                 key: lift_position[key] * (1 - ratio)
-                + self.reset_position[key] * ratio
+                + target_position[key] * ratio
                 for key in lift_position
             }
             self.robot.send_action(action)
@@ -440,7 +451,7 @@ def _return_to_reset_position(
             current_observation = camera_guard.joint_positions(self.robot)
             errors = {
                 key: abs(float(current_observation[key]) - target)
-                for key, target in self.reset_position.items()
+                for key, target in target_position.items()
             }
             max_error = max(errors.values())
             if max_error <= tolerance_degrees:
@@ -450,10 +461,10 @@ def _return_to_reset_position(
                     f"Rest position did not settle within {tolerance_degrees} degrees; "
                     f"maximum remaining error is {max_error:.2f} degrees"
                 )
-            self.robot.send_action(dict(self.reset_position))
+            self.robot.send_action(dict(target_position))
             time.sleep(1 / fps)
 
-        self.robot.send_action(dict(self.reset_position))
+        self.robot.send_action(dict(target_position))
         self.reset_completed = True
         self.logger.info("Robot reached reset position")
         return True
@@ -464,8 +475,37 @@ def _return_to_reset_position(
 
 
 def _stop_after_reset(self: RobotClient) -> None:
-    _return_to_reset_position(self)
-    _original_stop(self)
+    if getattr(self, "_cleanup_done", False):
+        return
+    self.shutdown_event.set()
+    try:
+        if not getattr(self, "_camera_recovery_attempted", False):
+            _return_to_reset_position(self)
+        _original_stop(self)
+    except Exception as error:  # noqa: BLE001 - release other resources after a driver failure
+        self._cleanup_failed = True
+        record("error", message=f"Robot shutdown failed: {error}")
+        self.logger.error("Robot shutdown failed; motor torque state is unconfirmed: %s", error)
+        cleanup = []
+        bus = getattr(self.robot, "bus", None)
+        if bus is not None:
+            cleanup.append(bus.port_handler.closePort)
+        for camera in getattr(self.robot, "cameras", {}).values():
+            if (getattr(camera, "is_connected", False)
+                    or getattr(camera, "videocapture", None) is not None
+                    or getattr(camera, "thread", None) is not None):
+                cleanup.append(camera.disconnect)
+        channel = getattr(self, "channel", None)
+        if channel is not None:
+            cleanup.append(channel.close)
+        for close in cleanup:
+            try:
+                close()
+            except Exception as cleanup_error:  # noqa: BLE001 - attempt every remaining resource
+                record("error", message=f"Resource cleanup failed: {cleanup_error}")
+                self.logger.error("Resource cleanup failed: %s", cleanup_error)
+    finally:
+        self._cleanup_done = True
 
 
 def _start_after_reset(self: RobotClient) -> bool:
@@ -481,7 +521,7 @@ def _start_after_reset(self: RobotClient) -> bool:
         self.logger.error(
             "Client startup aborted because the robot did not reach the resting position"
         )
-        _original_stop(self)
+        _stop_after_reset(self)
         return False
 
     self.reset_completed = False
@@ -490,6 +530,7 @@ def _start_after_reset(self: RobotClient) -> bool:
 
 
 def _request_graceful_shutdown(signum: int, _frame) -> None:
+    _operator_stopped.set()
     record("operator_stop", signal=signum)
     if _active_client is None:
         raise KeyboardInterrupt
@@ -524,7 +565,15 @@ def _control_loop_action_with_completion(
     self: RobotClient,
     verbose: bool = False,
 ) -> dict[str, float]:
-    performed_action = _original_control_loop_action(self, verbose)
+    try:
+        performed_action = _original_control_loop_action(self, verbose)
+    except Exception as error:
+        record("error", message=str(error))
+        try:
+            camera_guard.probe(getattr(self.robot, "cameras", {}) or {})
+        except camera_guard.CameraFault as fault:
+            _recover_from_camera_fault(self, fault)
+        raise
     record("action_sent", positions=performed_action)
     if not self.auto_complete_enabled or self._auto_complete_triggered:
         return performed_action
@@ -622,22 +671,61 @@ def _control_loop_action_with_completion(
 
 
 def _recover_from_camera_fault(self: RobotClient, fault: camera_guard.CameraFault) -> None:
-    """Stop inference, release any object, return to rest, close the gripper, then exit."""
+    """Stop this client and recover the arm before considering a fresh camera session."""
     record("camera_fault", message=str(fault), camera=fault.role)
     self.logger.error("Camera fault: %s; stopping inference and returning to rest", fault)
     self.shutdown_event.set()
     with self.action_queue_lock:
         self.action_queue.queue.clear()
+    self._camera_recovery_attempted = True
     rested = camera_guard.release_and_rest(
         self.robot, self.reset_position,
-        lambda: _return_to_reset_position(self, stop_inference=False, force=True),
+        lambda opened: _return_to_reset_position(
+            self, stop_inference=False, force=True, gripper_target=opened),
         self.logger,
     )
+    self.reset_completed = rested
     if rested:
-        self.logger.error("Camera recovery complete; the arm is at rest. Check the %s camera "
-                          "and start the client again.", fault.role)
+        self.logger.warning("Arm recovery complete; shutting down this client before camera retry")
     else:
         record("error", message="Camera recovery did not reach rest")
+
+
+
+def _run_with_camera_retries() -> None:
+    """Reuse LeRobot's complete client lifecycle; never replay actions from a failed session."""
+    global _active_client
+    for attempt in range(4):
+        if _operator_stopped.is_set():
+            return
+        _active_client = None
+        try:
+            async_client()  # Joins the receiver after stop, including failed motor cleanup.
+        finally:
+            if _active_client is not None and not getattr(_active_client, "_cleanup_done", False):
+                _stop_after_reset(_active_client)
+        client = _active_client
+        if (_operator_stopped.is_set() or client is None
+                or getattr(client, "_cleanup_failed", False)
+                or not getattr(client, "_camera_recovery_attempted", False)
+                or not client.reset_completed):
+            return
+        if attempt == 3:
+            record("error", message="Camera recovery retry limit reached (3 restarts)")
+            client.logger.error("Camera retry limit reached; leaving the robot stopped")
+            return
+        client.logger.warning("Camera retry %d/3: waiting up to 60s for both cameras", attempt + 1)
+        with _frame_condition:
+            _frames.clear()
+        if not camera_guard.wait_for_cameras(client.robot.cameras, _operator_stopped, client.logger):
+            if not _operator_stopped.is_set():
+                record("error", message="Cameras did not recover within 60 seconds")
+                client.logger.error("Cameras did not recover; leaving the robot stopped")
+            return
+        if _operator_stopped.is_set():
+            return
+        record("camera_retry", attempt=attempt + 1)
+        client.logger.warning("Both cameras recovered; restarting the policy with fresh observations")
 
 
 def _guarded_control_loop_observation(self: RobotClient, task: str, verbose: bool = False):
@@ -796,10 +884,10 @@ if __name__ == "__main__":
     else:
         print("Live camera preview disabled for direct Modalix inference.", flush=True)
     try:
-        async_client()
+        _run_with_camera_retries()
     except KeyboardInterrupt:
         print(
-            "Robot client interrupted; reset and shutdown complete.",
+            "Robot client interrupted; see the shutdown log for rest and cleanup results.",
             flush=True,
         )
     finally:

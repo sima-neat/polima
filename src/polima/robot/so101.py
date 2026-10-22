@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import runpy
 import sys
+from collections import deque
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import numpy as np
@@ -278,7 +281,7 @@ def record(kind: str, **fields) -> None:
     global _RUN_STATUS
     if kind == "action_sent" and not fields.get("positions"):
         return
-    if kind == "error":
+    if kind in ("error", "camera_fault"):
         _RUN_STATUS = "failed"
     elif kind == "operator_stop" and _RUN_STATUS != "failed":
         _RUN_STATUS = "interrupted"
@@ -289,7 +292,34 @@ def record(kind: str, **fields) -> None:
             pass
 
 
+def bound_queue_history(client) -> None:
+    """Keep only the recent queue-size samples used by LeRobot's optional plot."""
+    client.action_queue_size = deque(maxlen=900)
+
+
+def configure_run_logging(logger=None) -> None:
+    """Replace LeRobot's unlimited debug file with a bounded warning/error log."""
+    logger = logging.getLogger() if logger is None else logger
+    for handler in list(logger.handlers):
+        if isinstance(handler, logging.FileHandler):
+            logger.removeHandler(handler)
+            handler.close()
+    folder = Path(os.environ.get("POLIMA_ROOT", "/media/nvme/polima")) / "var/log"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(folder / "robot-errors.log", maxBytes=2 * 1024 * 1024,
+                                      backupCount=2, encoding="utf-8")
+    except OSError as error:
+        print(f"Error log unavailable: {error}", file=sys.stderr)
+        return
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
+
+
 def start_record(root, bundle, spec, task_id, args):
+    if os.environ.get("POLIMA_RECORD_RUN", "0") != "1":
+        return None
     from polima.robot.evidence import RunRecorder
     from polima.util.hashing import sha256_file
 
@@ -350,7 +380,6 @@ def main(argv=None):
     substep_count = substeps.substeps_from_env()
     ease = reset_ease.ease_from_env()
     if smooth_moves or substep_count > 1:
-
         from lerobot.async_inference.robot_client import RobotClient
         if smooth_moves:
             smoothing.install(RobotClient, smooth_moves, shape=smoothing.shape_from_env())
