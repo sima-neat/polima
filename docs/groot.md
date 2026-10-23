@@ -81,10 +81,13 @@ compiler failures still stop the build. These are PoLiMa export thresholds, not
 ModelSDK settings or task-accuracy percentages. Device validation below is a
 separate check with its own precision-specific thresholds.
 
-**Precision.** `mixed` (default) stores the transformer weights as 8-bit
-integers and computes in 16-bit floating point. It is the precision tested on
-the arm. `bf16` uses 16-bit floating point. Measure numerical fidelity and latency
-for the checkpoint and target device to compare the two.
+**Precision.** `mixed` (default) stores transformer weights as symmetric INT8
+values per output channel and keeps activations between graphs in BF16. Inside
+an INT8-weight linear operation, the accelerator dynamically quantizes its BF16
+input to INT8 per token. The remaining graphs use BF16 weights and activations.
+This is the precision tested on the arm. `bf16` keeps both weights and
+activations in BF16. Measure numerical fidelity and latency for the checkpoint
+and target device to compare the two.
 
 **Pass marks** for the device check, over the complete action chunk:
 
@@ -157,17 +160,26 @@ overridden for one run with an environment variable ([robot.md](robot.md#motion-
 
 ## Performance
 
-Measured on a Modalix DevKit driving an SO-101 arm with two USB cameras, mixed
-precision, one 32-move plan:
+Median over 30 measured runs after 5 warm-up runs on a Modalix DevKit, using
+two 640×480 USB cameras, mixed precision and one 32-move plan. The runtime was
+built from `develop` at `7342f90`.
 
 | | GR00T N1.6 | GR00T N1.7 |
 |---|---|---|
-| Model time on the accelerator | 317 ms | 233 ms |
-| Camera picture to plan ready | 364 ms | 285 ms |
+| Model time on the DevKit | 317 ms | 233 ms |
+| Camera picture to plan ready | 361 ms | 279 ms |
+
+Model time is reported by the policy server. Camera picture to plan starts at
+the newest capture timestamp of the two camera frames and ends when the action
+plan is ready.
 
 These are reference-setup measurements. A newly compiled bundle needs its own
 fidelity check and benchmark; model geometry, precision and runtime version
 affect the result. Published model cards describe the exact artifact tested.
+
+The [GR00T reference benchmarks](benchmarks.md) pin both public bundle
+revisions and record their build time, precision map, size and numerical
+validation evidence.
 
 ## Troubleshooting
 
