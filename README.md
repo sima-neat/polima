@@ -93,29 +93,26 @@ Every command has `--help`.
 
 ## Performance
 
-Reference measurements on a Modalix DevKit with two cameras:
-
-<!-- TODO(#14): measure camera picture to plan for ACT and SmolVLA on the SO-101 arm. -->
+Reference medians on a Modalix DevKit with two 640×480 cameras, over 30
+measured runs after 5 warm-up runs. The runtime was built from `develop` at
+`7342f90`.
 
 | Model | Quantization | Moves per plan | Model time on the DevKit | Camera picture to plan |
 |---|---|---|---|---|
-| ACT | BF16 | 100 | 17.3 ms | pending |
-| SmolVLA | Mixed: denoising expert INT8 weights, rest BF16 | 50 | 248.3 ms | pending |
-| GR00T N1.6 | Mixed: transformer blocks INT8 weights, rest BF16 | 32 | 317 ms | 364 ms |
-| GR00T N1.7 | Mixed: transformer blocks INT8 weights, rest BF16 | 32 | 233 ms | 285 ms |
+| ACT | BF16 | 100 | 13.3 ms | 25 ms |
+| GR00T N1.6 | Mixed | 32 | 317 ms | 361 ms |
+| GR00T N1.7 | Mixed | 32 | 233 ms | 279 ms |
 
-ACT and SmolVLA model times are medians measured with the runtime in this
-repository (`polima_cli` built from `main`, 3718bce). The DevKit's older August
-runtime is about 1.2–1.6× slower on the same bundles (ACT 28.9 ms,
-SmolVLA 301.9 ms). The GR00T rows are the earlier reference measurements on the arm.
+Model time is reported by the policy server. Camera picture to plan starts at
+the newest capture timestamp of the two camera frames and ends when the action
+plan is ready. ACT used the optimized device-chain bundle with `uint8` camera
+transport.
 
-**Quantization.** BF16 is 16-bit floating point throughout. Mixed bundles store
-the weights of the largest graphs as 8-bit integers (per output channel) and
-keep every other graph in BF16. Activations are BF16 between layers; the
-accelerator converts a layer's input to 8 bits on the fly when that layer has
-8-bit weights. GR00T's INT8 graphs are its vision, language-model and action
-(DiT) transformer blocks. SmolVLA's is its action expert, which runs once per
-denoising step (10 steps).
+**Quantization.** ACT uses BF16 weights and activations. The mixed GR00T bundles
+store the transformer weights as symmetric INT8 values per output channel and
+keep the remaining graphs in BF16. Activations between graphs are BF16. Inside
+an INT8-weight linear operation, the accelerator dynamically quantizes its
+BF16 input to INT8 per token.
 
 These measurements describe the reference setup, not a guaranteed latency for
 every checkpoint or release bundle. Use the model card for artifact-specific
