@@ -37,9 +37,8 @@ target_link_libraries(polima_core PUBLIC SimaLMM::sima_lmm_runtime)
 if(nlohmann_json_FOUND)
   target_link_libraries(polima_core PUBLIC nlohmann_json::nlohmann_json)
 endif()
-# -O3 is load bearing: Runner::run's bf16 conversion loops are header-inline and
-# compiled into plan.cpp, so -O2 de-optimizes every MLA call. Measured on the
-# DevKit, ACT end to end: 40.5 ms at -O2, 20.5 ms at -O3.
+# -O3 is required for Runner::run's header-inline BF16 conversion loops in
+# plan.cpp; lower optimization adds overhead to every MLA call.
 target_compile_options(polima_core PRIVATE -Wall -Wextra -O3)
 
 
