@@ -23,6 +23,17 @@ from pathlib import Path
 
 PREPROCESSOR = "policy_preprocessor.json"
 POSTPROCESSOR = "policy_postprocessor.json"
+#: LeRobot's NormalizerProcessor default: MEAN_STD divides by ``std + eps``.
+LEROBOT_EPS = 1e-8
+
+
+def _normalizer_eps(checkpoint: Path) -> float:
+    """The eps the checkpoint's normalizer adds to std (LeRobot's default if unrecorded)."""
+    steps = json.loads((checkpoint / PREPROCESSOR).read_text(encoding="utf-8"))["steps"]
+    for step in steps:
+        if step.get("registry_name") == "normalizer_processor":
+            return float((step.get("config") or {}).get("eps", LEROBOT_EPS))
+    return LEROBOT_EPS
 
 
 def _state_file(checkpoint: Path, manifest: str, registry_name: str) -> Path:
@@ -66,6 +77,9 @@ def from_lerobot_checkpoint(checkpoint: str | Path, camera_keys: Sequence[str],
     for index, key in enumerate(camera_keys):
         arrays[f"camera{index}_mean"] = pre[f"{key}.mean"].numpy()
         arrays[f"camera{index}_std"] = pre[f"{key}.std"].numpy()
+    # The image path divides by std + eps, exactly as LeRobot's preprocessor does
+    # (see polima.bundle.pack._attach_wire_decode).
+    arrays["eps"] = np.asarray(_normalizer_eps(checkpoint), dtype=np.float64)
 
     zero_std = [name for name, value in arrays.items()
                 if name.endswith("_std") and float(np.min(np.abs(value))) == 0.0]

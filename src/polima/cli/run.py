@@ -221,13 +221,15 @@ def _host_of(address: str) -> str:
 def _load_tensors(spec, inputs_dir: Path) -> dict[str, np.ndarray]:
     tensors: dict[str, np.ndarray] = {}
     for tensor in spec.wire.request_tensors:
-        path = inputs_dir / f"{tensor.name}.f32"
+        # A uint8 wire tensor is a raw camera frame: <name>.u8 beside the .f32s.
+        suffix, dtype = (".u8", np.uint8) if tensor.dtype == "uint8" else (".f32", np.dtype("<f4"))
+        path = inputs_dir / f"{tensor.name}{suffix}"
         if not path.is_file():
             raise SystemExit(f"polima run: missing fixture {path}")
-        values = np.fromfile(path, dtype="<f4")
+        values = np.fromfile(path, dtype=dtype)
         if values.size != tensor.elements:
             raise SystemExit(
-                f"polima run: {path.name} holds {values.size} floats, "
+                f"polima run: {path.name} holds {values.size} values, "
                 f"tensor {tensor.name} needs {tensor.elements}"
             )
         tensors[tensor.name] = values

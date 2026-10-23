@@ -530,15 +530,15 @@ int main(int argc, char** argv) {
     const fs::path input_dir = args.get("--input-dir", (bundle / "fixtures/inputs").string());
     const fs::path output = args.get("--output", "");
 
-    // Read one .f32 per declared request tensor. Names match the wire
-    // description, so fixtures/inputs/image0.f32 feeds tensor "image0".
+    // Read one input per declared request tensor. Names match the wire
+    // description, so fixtures/inputs/image0.f32 feeds tensor "image0"; a uint8
+    // tensor reads its raw frame, image0.u8, through the server's decode.
     std::map<std::string, std::vector<float>> staging;
     std::map<std::string, const float*> inputs;
     for (const auto& [name, elements] : wire.request_tensors) {
-      const fs::path path = input_dir / (name + ".f32");
-      staging[name] = polima::read_f32(path, elements);
+      staging[name] = polima::read_wire_input(input_dir, name, elements, wire);
       inputs[name] = staging[name].data();
-      if (verbose) std::cout << "read " << path << " (" << elements << " floats)" << std::endl;
+      if (verbose) std::cout << "read " << (input_dir / name) << " (" << elements << " values)" << std::endl;
     }
 
     const auto started = std::chrono::steady_clock::now();
