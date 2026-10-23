@@ -115,6 +115,7 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
         if host_side:
             check_compiler(doc, config)
         check_policies(doc)
+        check_pi05_env(doc, config)
         if host_side:
             check_datasets(doc, config)
         elif args.deploy_only:
@@ -370,6 +371,35 @@ def check_policies(doc: Doctor) -> None:
             )
         except Exception as exc:  # noqa: BLE001
             doc.record(table.FAIL, f"policy {name}", str(exc)[:160])
+
+
+def check_pi05_env(doc: Doctor, config) -> None:
+    """The Pi0.5 export interpreter, when one is configured (only `compile --policy pi05` needs it)."""
+    import subprocess
+
+    python = getattr(getattr(config, "paths", None), "pi05_python", None)
+    if not python:
+        doc.record(table.SKIP, "pi05 export env",
+                   "not set -- POLIMA_PI05_PYTHON / paths.pi05_python, needed only to compile Pi0.5")
+        return
+    probe = ("import torch, transformers, onnx, onnxruntime; "
+             "from lerobot.policies.pi05.modeling_pi05 import PI05Policy; "
+             "print(torch.__version__, transformers.__version__)")
+    try:
+        result = subprocess.run([str(python), "-c", probe], capture_output=True, text=True, timeout=120, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        doc.record(table.FAIL, "pi05 export env", f"{python}: {error}")
+        return
+    if result.returncode:
+        reason = (result.stderr.strip().splitlines() or ["import failed"])[-1][:160]
+        doc.record(table.FAIL, "pi05 export env", f"{python}: {reason}")
+        return
+    torch_version, transformers_version = result.stdout.split()[:2]
+    if int(transformers_version.split(".")[0]) < 5:
+        doc.record(table.FAIL, "pi05 export env",
+                   f"transformers {transformers_version}; LeRobot's pi05 needs transformers >= 5")
+        return
+    doc.record(table.OK, "pi05 export env", f"torch {torch_version}, transformers {transformers_version}")
 
 
 def check_datasets(doc: Doctor, config) -> None:

@@ -24,7 +24,7 @@ deploy  = ["pyyaml"]
 data    = ["pyarrow"]
 host    = ["polima[data,export,compile,deploy]"]
 # DevKit runtime dependencies; model export runs on the compiler host.
-robot   = ["flask", "waitress", "opencv-python-headless", "pillow"]
+robot   = ["flask", "waitress", "opencv-python-headless", "pillow", "tokenizers==0.22.2"]
 board   = ["polima[robot]"]
 dev     = ["pytest", "ruff"]
 

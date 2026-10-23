@@ -311,6 +311,8 @@ Plan::Plan(const std::filesystem::path& bundle_root, bool verbose)
                          info.external_layout, info.output_layout == DramLayout::Plain,
                          graph.contains("int8_inputs")};
       if (device.bindings.empty()) device.bindings.push_back(info.inputs);
+      device.output_bindings =
+          graph.value("persistent_output_elements", std::vector<size_t>{});
       device_graphs[name] = std::move(device);
     }
     std::vector<TensorQuantization> int8_inputs;

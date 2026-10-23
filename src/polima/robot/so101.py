@@ -24,7 +24,7 @@ from polima.util.jsonio import read_json
 AGGREGATES = ("weighted_average", "latest_only", "average", "conservative")
 
 
-SUPPORTED_POLICIES = ("groot", "act")
+SUPPORTED_POLICIES = ("groot", "act", "pi05")
 
 
 ACT_INSTRUCTION = "ACT (no language input)"
@@ -36,6 +36,9 @@ RECIPES = {
               "POLIMA_AUTO_COMPLETE": "0"},
     "act": {"fps": 30, "POLIMA_SMOOTH_MOVES": "10", "POLIMA_SUBSTEPS": "1",
             "POLIMA_CHUNK_THRESHOLD": "0.5"},
+    # Pi0.5: 50-move chunks like ACT; zero noise keeps consecutive plans consistent.
+    "pi05": {"fps": 30, "POLIMA_SMOOTH_MOVES": "10", "POLIMA_SUBSTEPS": "1",
+             "POLIMA_CHUNK_THRESHOLD": "0.5", "POLIMA_GROOT_NOISE": "zero"},
 }
 
 COMMON_RECIPE = {
@@ -92,7 +95,7 @@ def load_contract(root: Path, task: str | int = 0):
         or len(spec.robot.camera_keys) != 2
         or set(spec.robot.camera_keys) not in ({"front", "wrist"}, {"overhead", "wrist"})
     ):
-        raise ValueError("This launcher requires a two-camera SO101 GR00T or ACT bundle")
+        raise ValueError("This launcher requires a two-camera SO101 GR00T, ACT or Pi0.5 bundle")
     if spec.name == "act" and not bundle.tasks:
 
         if str(task) != "0":
@@ -155,6 +158,11 @@ class SO101PolicyClient:
             spec, bundle, address, task_id=task_id, timeout=timeout,
             noise=(os.environ.get("POLIMA_GROOT_NOISE", "").strip() or "random"),
         )
+        if spec.name == "pi05":
+            # Pi0.5 reads its instruction as text, so any instruction works; the
+            # bundle's compiled-in task is only the default.
+            self.adapter.task = (os.environ.get("POLIMA_PI05_TASK", "").strip()
+                                 or instruction(bundle, task_id))
         self.host = self.adapter.client.host
         self.port = self.adapter.client.port
 

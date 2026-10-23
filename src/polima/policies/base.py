@@ -272,6 +272,9 @@ OPCODES = (
     "euler",  # loop body xN with x -= dt*v
     "normalize",  # (x - mean) / std
     "denormalize",  # x * std + mean
+    # Graph calls on plan-wide device buffers with uploads/downloads around them
+    # (runtime/include/polima/device_chain.hpp); the native Plan checks them at load.
+    "run_device_chain",
 )
 
 
@@ -301,6 +304,9 @@ class RuntimePlan:
     result: str
     sidecars: tuple[str, ...] = ()
     loops: Mapping[str, int] = field(default_factory=dict)
+    #: Plan-wide BF16 device buffers (name -> elements) that run_device_chain steps
+    #: bind graph inputs and outputs to; they persist across steps.
+    device_buffers: Mapping[str, int] = field(default_factory=dict)
 
     def validate(self, where: str, compile_plan: CompilePlan | None = None) -> None:
         if self.result not in self.buffers:

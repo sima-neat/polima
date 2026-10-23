@@ -1,7 +1,7 @@
 """Export a checkpoint, compile its graphs and package a deployment bundle.
 
-ACT uses --checkpoint with --build-dir. GR00T uses --policy groot with
---checkpoint, --dataset and --output. Existing graph builds can be compiled
+ACT uses --checkpoint with --build-dir. GR00T and Pi0.5 use --policy groot|pi05
+with --checkpoint, --dataset and --output. Existing graph builds can be compiled
 with --build-dir; --reuse explicitly retains graphs with matching content keys.
 """
 
@@ -47,6 +47,10 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
         from polima.compile.groot import main as groot_main
 
         return groot_main(argv, load(config_file=getattr(parent, "config", None)))
+    if _staged_policy(argv) == "pi05":
+        from polima.compile.pi05 import main as pi05_main
+
+        return pi05_main(argv, load(config_file=getattr(parent, "config", None)))
 
     parser = argparse.ArgumentParser(prog="polima compile")
     parser.add_argument("--policy", default="act")
@@ -119,12 +123,17 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     return _import_build(args, output_root)
 
 
-def _groot_build(argv: list[str]) -> bool:
-    """`--policy groot` without --build-dir/--import-build: checkpoint-to-bundle build."""
+def _staged_policy(argv: list[str]) -> str | None:
+    """The --policy of a staged checkpoint-to-bundle build (no --build-dir/--import-build)."""
     policy = next((argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--policy"),
                   next((a.split("=", 1)[1] for a in argv if a.startswith("--policy=")), None))
     paths = ("--build-dir", "--import-build")
-    return policy == "groot" and not any(a.split("=", 1)[0] in paths for a in argv)
+    return None if any(a.split("=", 1)[0] in paths for a in argv) else policy
+
+
+def _groot_build(argv: list[str]) -> bool:
+    """`--policy groot` without --build-dir/--import-build: checkpoint-to-bundle build."""
+    return _staged_policy(argv) == "groot"
 
 
 # ------------------------------------------------------------------- compile

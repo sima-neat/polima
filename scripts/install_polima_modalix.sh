@@ -11,6 +11,7 @@ LEROBOT_INSTALLER="${LEROBOT_INSTALLER:-$POLIMA_SOURCE/examples/so101/setup/inst
 JOBS="${JOBS:-$(nproc)}"
 STUDIO_USER="${POLIMA_STUDIO_USER:-$(id -un)}"
 STUDIO_GROUP="$(id -gn "$STUDIO_USER")"
+TOKENIZERS_VERSION="${TOKENIZERS_VERSION:-0.22.2}"
 
 fail() { echo "[fail] $*" >&2; exit 1; }
 log() { echo "==> $*"; }
@@ -40,14 +41,16 @@ fi
 
 if ! "$LEROBOT_VENV/bin/python" -c '
 import importlib.metadata as metadata
-import flask, grpc, waitress, google.protobuf.runtime_version
+import flask, grpc, tokenizers, waitress, google.protobuf.runtime_version
 assert metadata.version("protobuf") == "6.31.1"
 assert metadata.version("wandb") == "0.24.2"
 assert metadata.version("grpcio") == "1.80.0"
+assert metadata.version("tokenizers") == "'"$TOKENIZERS_VERSION"'"
 ' >/dev/null 2>&1; then
-    log "Installing Studio dependencies and compatible protobuf and gRPC runtimes"
+    log "Installing Studio and Pi0.5 robot-client dependencies"
     "$LEROBOT_VENV/bin/python" -m pip install \
-        flask waitress "wandb==0.24.2" "protobuf==6.31.1" "grpcio==1.80.0"
+        flask waitress "wandb==0.24.2" "protobuf==6.31.1" "grpcio==1.80.0" \
+        "tokenizers==$TOKENIZERS_VERSION"
 fi
 
 log "Installing the PoLiMa DevKit package and Studio assets"
@@ -156,7 +159,7 @@ fi
 log "Verifying"
 "$ROOT/bin/polima_cli" --help >/dev/null
 "$ROOT/bin/polima_server" --help >/dev/null
-"$LEROBOT_VENV/bin/python" -c 'import importlib.metadata as m; import lerobot, cv2, flask, waitress, torch, polima.studio; print("lerobot=%s torch=%s cv2=%s flask=%s waitress=%s" % (lerobot.__version__, torch.__version__, cv2.__version__, m.version("flask"), m.version("waitress")))'
+"$LEROBOT_VENV/bin/python" -c 'import importlib.metadata as m; import lerobot, cv2, flask, tokenizers, waitress, torch, polima.studio; print("lerobot=%s torch=%s cv2=%s flask=%s waitress=%s tokenizers=%s" % (lerobot.__version__, torch.__version__, cv2.__version__, m.version("flask"), m.version("waitress"), m.version("tokenizers")))'
 
 cat <<EOF
 

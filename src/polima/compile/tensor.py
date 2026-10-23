@@ -329,7 +329,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--precision", choices=("int8", "bf16"), default="bf16",
                         help="sets both sides unless overridden individually")
     parser.add_argument("--activation-precision", choices=("int8", "bf16"))
-    parser.add_argument("--weight-precision", choices=("int8", "bf16"))
+    # int4: LLiMa's A_BF16_W_INT4 weight scheme (symmetric, per channel), for
+    # weight-bandwidth-bound graphs such as a few-token denoiser step.
+    parser.add_argument("--weight-precision", choices=("int8", "int4", "bf16"))
 
     parser.add_argument("--calibration-npz", type=Path,
                         help="one array per input, shaped (N, *input_shape)")
@@ -473,7 +475,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             bfloat16_scheme() if activation == "bf16" else quantization_scheme(True, False, 8)
         )
         .with_weight_quantization(
-            bfloat16_scheme() if weights == "bf16" else quantization_scheme(False, True, 8)
+            bfloat16_scheme() if weights == "bf16"
+            else quantization_scheme(False, True, 4 if weights == "int4" else 8)
         )
         .with_requantization_mode(
             RequantizationMode.sima if args.requant_mode == "sima" else RequantizationMode.tflite

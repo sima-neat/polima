@@ -1,7 +1,8 @@
 """Bundle-driven policy input preparation and transport; no robot control.
 
-- CompiledPolicyAdapter: a GR00T bundle's exact request tensors (camera frames,
-  state, noise) for the SO-101 loop in polima.robot.so101.
+- CompiledPolicyAdapter: a GR00T or Pi0.5 bundle's exact request tensors (camera
+  frames, state, noise; Pi0.5 also its tokenized prompt) for the SO-101 loop in
+  polima.robot.so101.
 - BundlePolicy: an ACT bundle, its whole contract read from the bundle's plan.json.
 """
 
@@ -244,7 +245,13 @@ class CompiledPolicyAdapter:
         if noise not in ("random", "zero"):
             raise ValueError(f"noise must be 'random' or 'zero', not {noise!r}")
         stats = None
-        if spec.wire.normalization_side == "client":
+        self.pi05 = None
+        if spec.name == "pi05":
+            # Pi0.5's client normalizes (quantiles), tokenizes and embeds the prompt itself.
+            from polima.policies.pi05.client import Pi05Client
+
+            self.pi05 = Pi05Client(bundle.root / "robot_client" / "pi05")
+        elif spec.wire.normalization_side == "client":
             candidates = (
                 bundle.root / spec.wire.stats_file,
                 bundle.fixtures_dir / spec.wire.stats_file,
@@ -260,6 +267,8 @@ class CompiledPolicyAdapter:
         self.client = client_factory(spec, address, stats=stats, timeout=timeout)
         self.rng = np.random.default_rng(seed)
         self.noise = noise
+        #: Pi0.5 instruction (it is part of the prompt, not a compiled catalog row).
+        self.task = ""
 
     def _camera_pool(self, cameras: int):
         pool = getattr(self, "_camera_executor", None)
@@ -288,6 +297,11 @@ class CompiledPolicyAdapter:
     ) -> dict[str, np.ndarray]:
         if self.spec.name == "act":
             return self.client.prepare_inputs(images, state)
+        if self.pi05 is not None:
+            noise = (np.zeros((50, 32), DTYPE) if self.noise == "zero"
+                     else self.rng.standard_normal((50, 32)).astype(DTYPE))
+            task = self.task or self.pi05.config.get("task", "")
+            return self.pi05.request(images, state, task, noise=noise)
 
         tensors: dict[str, np.ndarray] = {"state": state}
         image_specs = [
@@ -330,7 +344,8 @@ class CompiledPolicyAdapter:
         state, images = self._observation_inputs(observation)
         tensors = self._prepare_request(state, images)
         raw_actions, latency_ms = self.client.predict_raw(tensors, task_id=self.task_id)
-        actions = self.client.decode_actions(raw_actions)
+        actions = (self.pi05.actions(raw_actions, state) if self.pi05 is not None
+                   else self.client.decode_actions(raw_actions))
         return PolicyPrediction(
             request_tensors=tensors,
             raw_actions=raw_actions,

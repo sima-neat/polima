@@ -7,6 +7,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_devkit_installer_includes_pi05_tokenizer_runtime():
+    installer = (ROOT / "scripts/install_polima_modalix.sh").read_text()
+    project = (ROOT / "pyproject.toml").read_text()
+    assert 'TOKENIZERS_VERSION="${TOKENIZERS_VERSION:-0.22.2}"' in installer
+    assert '"tokenizers==$TOKENIZERS_VERSION"' in installer
+    assert 'import lerobot, cv2, flask, tokenizers, waitress, torch, polima.studio' in installer
+    assert '"tokenizers==0.22.2"' in project
+
+
 def test_studio_service_uses_selected_installation(tmp_path):
     installer = (ROOT / "scripts/install_polima_modalix.sh").read_text()
     renderer = installer.split("<<'PY_SERVICE'\n", 1)[1].split("\nPY_SERVICE", 1)[0]

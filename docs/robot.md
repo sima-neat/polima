@@ -88,6 +88,12 @@ GR00T uses fast motion settings by default and slow settings with `--slow`
 ([groot.md](groot.md#running)). Any of them can be changed for one run
 by setting it in the same terminal before `polima robot run`:
 
+Pi0.5 bundles use 30 commands per second, ask for the next 50-move plan when
+half of the current one is left, and start each plan from zero noise, so
+consecutive plans agree. Pi0.5 reads its instruction as text:
+`POLIMA_PI05_TASK="..." polima robot run` replaces the bundle's instruction.
+Pi0.5 has not yet been tested on the arm ([pi05.md](pi05.md#limitations)).
+
 | Variable | What it does |
 |---|---|
 | `POLIMA_CHUNK_THRESHOLD` | Each model answer is a plan of upcoming moves. Ask for the next plan when this fraction of the current one is left. |

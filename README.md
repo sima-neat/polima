@@ -4,7 +4,7 @@
 
 # PoLiMa: Running Robot Policies on SiMa.ai Modalix
 
-**Po**licy + Si**Ma**: compile robot policies (ACT, NVIDIA GR00T) for the SiMa.ai
+**Po**licy + Si**Ma**: compile robot policies (ACT, NVIDIA GR00T, Pi0.5) for the SiMa.ai
 Modalix DevKit and drive a robot arm with them.
 
 </div>
@@ -25,6 +25,7 @@ and PoLiMa starts from the checkpoint.
 | ACT (LeRobot) | yes | yes | yes |
 | GR00T N1.6 | yes | yes | yes (mixed precision) |
 | GR00T N1.7 | yes | yes | yes (mixed precision) |
+| Pi0.5 (LeRobot) | yes | yes | not yet (validated against LeRobot) |
 
 ## Start here
 
@@ -114,6 +115,9 @@ keep the remaining graphs in BF16. Activations between graphs are BF16. Inside
 an INT8-weight linear operation, the accelerator dynamically quantizes its
 BF16 input to INT8 per token.
 
+Pi0.5 (50 actions per plan, ten denoising steps, INT8 weights): 361 ms with two
+cameras, 613 ms with three; see [docs/pi05.md](docs/pi05.md#performance).
+
 These measurements describe the reference setup, not a guaranteed latency for
 every checkpoint or release bundle. Use the model card for artifact-specific
 validation and benchmark your deployed bundle in Studio.
@@ -127,7 +131,7 @@ The arm keeps moving while the next plan is computed.
 | `src/polima/` | The `polima` command: compile, deploy, robot client, Studio, Workbench. |
 | `runtime/` | The C++ model server that runs on the DevKit ([README](runtime/README.md)). |
 | `examples/so101/` | Our SO-101 setup, and arm and teleoperation tools. |
-| `docs/` | Reference guides: [install](docs/install.md), [your own model](docs/your-own-model.md), [GR00T](docs/groot.md), [deploy](docs/deploy.md), [robot](docs/robot.md). |
+| `docs/` | Reference guides: [install](docs/install.md), [your own model](docs/your-own-model.md), [GR00T](docs/groot.md), [Pi0.5](docs/pi05.md), [deploy](docs/deploy.md), [robot](docs/robot.md). |
 
 ## Licence
 
