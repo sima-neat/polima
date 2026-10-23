@@ -246,6 +246,7 @@ def collect_fixtures(build: BuildTree, spec: PolicySpec) -> dict[str, Path]:
         state = direct / "state.f32"
         if state.is_file():
             fixtures["inputs/state.f32"] = state
+        fixtures.update(_uint8_frame_fixtures(build, spec, direct))
 
         expected = direct / "expected_normalized_actions.f32"
         if expected.is_file():
@@ -358,6 +359,45 @@ def collect_fixtures(build: BuildTree, spec: PolicySpec) -> dict[str, Path]:
         source = build.root / name
         if source.is_file():
             fixtures[name] = source
+    return fixtures
+
+
+def _uint8_frame_fixtures(build: BuildTree, spec: PolicySpec, direct: Path) -> dict[str, Path]:
+    """`inputs/<tensor>.u8` for each uint8 camera tensor: the raw frame the wire sends.
+
+    A build exported for uint8 transport writes `vision_input_<i>.u8`. An older
+    build has only the normalized `.f32`; its frame is recovered exactly, or
+    packing stops (see `polima.wire.protocol.frame_from_normalized`).
+    """
+    images = [t for t in spec.wire.request_tensors if t.name.startswith("image")]
+    if not any(t.dtype == "uint8" for t in images):
+        return {}
+    import numpy as np
+
+    from polima.wire.protocol import frame_from_normalized
+
+    fixtures: dict[str, Path] = {}
+    materialized = build.root / ".polima_fixtures"
+    for index, tensor in enumerate(images):
+        if tensor.dtype != "uint8":
+            continue
+        raw = direct / f"vision_input_{index}.u8"
+        if raw.is_file():
+            fixtures[f"inputs/{tensor.name}.u8"] = raw
+            continue
+        normalized = direct / f"vision_input_{index}.f32"
+        stats_path = build.root / spec.wire.stats_file
+        if not (normalized.is_file() and stats_path.is_file()):
+            continue
+        with np.load(stats_path, allow_pickle=False) as stats:
+            eps = np.float32(stats["eps"]) if "eps" in stats.files else np.float32(1e-8)
+            decode = {"scale": 255.0, "mean": stats[f"camera{index}_mean"].reshape(-1),
+                      "std": stats[f"camera{index}_std"].reshape(-1).astype(np.float32) + eps}
+        frame = frame_from_normalized(np.fromfile(normalized, dtype="<f4"), decode)
+        materialized.mkdir(parents=True, exist_ok=True)
+        destination = materialized / f"{tensor.name}.u8"
+        frame.tofile(destination)
+        fixtures[f"inputs/{tensor.name}.u8"] = destination
     return fixtures
 
 
@@ -582,7 +622,20 @@ def import_build(
             source_dir=str(build.root),
             tool_versions=tool_versions,
             precisions=build.precisions,
+            plan_rewrite=_device_chain_rewrite(spec),
         ),
         output_root,
     )
     return bundle
+
+
+def _device_chain_rewrite(spec: PolicySpec):
+    """The spec's `device_chain` levels as a pack-time plan rewrite, or None."""
+    if not spec.device_chain:
+        return None
+    from polima.bundle.device_chain import rewrite
+
+    graphs = [{"name": g.name, "input_elements": sum(t.elements for t in g.inputs),
+               "output_elements": sum(t.elements for t in g.outputs),
+               "dram_layout": g.outputs[0].dram_layout} for g in spec.compile.graphs]
+    return lambda plan: rewrite(plan, graphs, spec.device_chain)

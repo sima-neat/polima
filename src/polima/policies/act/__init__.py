@@ -295,14 +295,19 @@ ACT_SPEC = PolicySpec(
     # ------------------------------------------------------------------ wire --
     wire=WireSpec(
         magic=0x4D544341,  # "ACTM" little-endian
-        version=1,
+        # Version 2: camera frames travel as raw uint8 and the server normalizes
+        # them (plan.json wire decode). A version-1 server refuses the request.
+        version=2,
         default_port=8092,
         request_header="<IIII",
         response_header="<IIIIfI",
         request_tensors=(
-            # HWC, already normalized by the client.
-            TensorSpec("image0", (HEIGHT, WIDTH, 3)),
-            TensorSpec("image1", (HEIGHT, WIDTH, 3)),
+            # HWC uint8 camera frames, 4x smaller than float32. Normalizing two
+            # 640x480 frames in Python took ~58 ms per request on the DevKit; the
+            # server decodes them with the same float32 arithmetic instead.
+            TensorSpec("image0", (HEIGHT, WIDTH, 3), dtype="uint8"),
+            TensorSpec("image1", (HEIGHT, WIDTH, 3), dtype="uint8"),
+            # Normalized by the client from normalization_stats.npz.
             TensorSpec("state", (STATE_DIM,)),
         ),
         response_shape=(CHUNK, ACTION_DIM),
@@ -323,6 +328,9 @@ ACT_SPEC = PolicySpec(
     runtime_plan_builder="polima.policies.act.runtime:build_plan",
     checkpoint_validator="polima.policies.act.graphs:validate_checkpoint",
     profile_entry="polima.policies.act:specialize_spec",
+    # Both cameras, the stem, the encoder and the decoder as one device program:
+    # 19.0 -> 15.8 ms on Modalix, outputs byte-identical to the per-graph plan.
+    device_chain=("act",),
 )
 
 register_policy(ACT_SPEC)

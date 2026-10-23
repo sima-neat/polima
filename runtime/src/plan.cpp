@@ -53,6 +53,28 @@ void report_phase(const std::string& graph, const std::string& out,
       {"stage_execute_ms", timing.stage_execute_ms}}.dump() << '\n';
 }
 
+}  // namespace
+
+std::vector<float> read_wire_input(const std::filesystem::path& directory,
+                                   const std::string& name, size_t elements,
+                                   const WireDescription& wire) {
+  const auto decode = wire.decode.find(name);
+  const auto frame = directory / (name + ".u8");
+  if (decode == wire.decode.end() || !std::filesystem::is_regular_file(frame))
+    return read_f32(directory / (name + ".f32"), elements);
+  std::ifstream stream(frame, std::ios::binary);
+  std::vector<uint8_t> bytes(elements);
+  stream.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(elements));
+  if (!stream || stream.peek() != std::ifstream::traits_type::eof())
+    throw std::runtime_error(frame.string() + " must hold exactly " + std::to_string(elements) +
+                             " bytes");
+  std::vector<float> values(elements);
+  decode->second.apply(bytes.data(), values.data(), elements);
+  return values;
+}
+
+namespace {
+
 [[noreturn]] void throw_nonfinite(const std::string& stage, size_t index) {
   throw std::runtime_error(stage + " produced a non-finite value at index " +
                            std::to_string(index));
@@ -217,6 +239,26 @@ Plan::Plan(const std::filesystem::path& bundle_root, bool verbose)
                                  std::to_string(elements) + " elements but its buffer holds " +
                                  std::to_string(declared->second));
       wire_.request_tensors.emplace_back(name, elements);
+      const auto dtype = tensor.value("dtype", std::string("float32"));
+      if (dtype == "uint8") {
+        const json& decode = tensor.at("decode");
+        const float scale = decode.at("scale").get<float>();
+        const auto mean = decode.at("mean").get<std::vector<float>>();
+        const auto stdev = decode.at("std").get<std::vector<float>>();
+        if (mean.empty() || mean.size() != stdev.size() || elements % mean.size() ||
+            !(scale > 0.0f))
+          throw std::runtime_error("wire request tensor '" + name + "' has an invalid uint8 decode");
+        WireDecode table{mean.size(), std::vector<float>(mean.size() * 256)};
+        for (size_t c = 0; c < mean.size(); ++c) {
+          if (!(stdev[c] != 0.0f))
+            throw std::runtime_error("wire request tensor '" + name + "' has a zero std");
+          for (int x = 0; x < 256; ++x)
+            table.table[c * 256 + x] = (static_cast<float>(x) / scale - mean[c]) / stdev[c];
+        }
+        wire_.decode.emplace(name, std::move(table));
+      } else if (dtype != "float32") {
+        throw std::runtime_error("wire request tensor '" + name + "' has unsupported dtype " + dtype);
+      }
     }
   }
 

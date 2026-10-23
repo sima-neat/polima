@@ -99,6 +99,7 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
 
     plan = spec.build_runtime_plan()
     plan_data = _plan_dict(plan, wire=spec)
+    _attach_wire_decode(plan_data, spec, inputs.fixtures)
     if inputs.plan_rewrite:
         plan_data = inputs.plan_rewrite(plan_data)
         _check_plan_data_against_elfs(plan_data, inputs.elfs)
@@ -221,6 +222,38 @@ def build_bundle(inputs: BundleInputs, output_root: str | Path) -> Bundle:
     return bundle
 
 
+def _attach_wire_decode(plan_data: dict, spec: PolicySpec, fixtures: dict[str, Path]) -> None:
+    """Give each uint8 camera tensor the server-side normalization of its camera.
+
+    The server decodes ``(x / scale - mean[c]) / std[c]`` in float32
+    (`polima.wire.protocol.decode_tensor`). ``std`` here is the float32 sum
+    ``std + eps`` LeRobot's NormalizerProcessor divides by, so the decoded frame
+    is bit-identical to the checkpoint's own preprocessing (and to the export's
+    PyTorch reference fixtures), not merely within a float32 ulp of it.
+    """
+    frames = [item for item in plan_data.get("wire", {}).get("request_tensors", [])
+              if item.get("dtype") == "uint8"]
+    if not frames:
+        return
+    stats_path = fixtures.get(spec.wire.stats_file)
+    if stats_path is None or not Path(stats_path).is_file():
+        raise ValueError(f"uint8 camera tensors need {spec.wire.stats_file} to decode them")
+    import numpy as np
+
+    images = [t.name for t in spec.wire.request_tensors if t.name.startswith("image")]
+    with np.load(stats_path, allow_pickle=False) as stats:
+        eps = np.float32(stats["eps"]) if "eps" in stats.files else np.float32(1e-8)
+        for item in frames:
+            index = images.index(item["name"])
+            mean = np.asarray(stats[f"camera{index}_mean"], dtype=np.float32).reshape(-1)
+            std = np.asarray(stats[f"camera{index}_std"], dtype=np.float32).reshape(-1) + eps
+            if mean.size != item["shape"][-1] or std.size != mean.size:
+                raise ValueError(f"{item['name']}: camera{index} stats do not match "
+                                 f"{item['shape'][-1]} channels")
+            item["decode"] = {"scale": 255.0, "mean": [float(v) for v in mean],
+                              "std": [float(v) for v in std]}
+
+
 def _plan_dict(plan: RuntimePlan, wire: PolicySpec | None = None) -> dict:
     """The JSON the native interpreter reads.
 
@@ -265,7 +298,10 @@ def _plan_dict(plan: RuntimePlan, wire: PolicySpec | None = None) -> dict:
             "version": wire.wire.version,
             "default_port": wire.wire.default_port,
             "request_tensors": [
-                {"name": t.name, "elements": t.elements, "shape": list(t.shape)}
+                # dtype only when it is not the float32 default, so float plans
+                # (and therefore their bundle ids) are unchanged.
+                {"name": t.name, "elements": t.elements, "shape": list(t.shape),
+                 **({"dtype": t.dtype} if t.dtype != "float32" else {})}
                 for t in wire.wire.request_tensors
             ],
             "response_shape": list(wire.wire.response_shape),
