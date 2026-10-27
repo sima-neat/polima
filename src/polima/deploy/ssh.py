@@ -101,15 +101,20 @@ class BoardSession:
     # ---------------------------------------------------------------- public
 
     def run(
-        self, command: str, *, check: bool = True, echo: bool = False, timeout: float | None = None
+        self, command: str, *, check: bool = True, echo: bool = False,
+        timeout: float | None = None, merge_stderr: bool = True,
     ) -> Result:
         return run(
             [*self._ssh_prefix(), self.board.host, command],
             check=check, echo=echo, timeout=timeout, dry_run=self.dry_run,
+            merge_stderr=merge_stderr,
         )
 
     def capture(self, command: str) -> str:
-        return self.run(command, check=False, echo=False).stdout.strip()
+        result = self.run(command, check=False, echo=False, merge_stderr=False)
+        if result.stderr:
+            log.debug("remote stderr while capturing %r: %s", command, result.stderr.strip())
+        return result.stdout.strip()
 
     def exists(self, remote_path: str) -> bool:
         return self.run(

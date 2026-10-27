@@ -25,6 +25,8 @@ before installation; an unpublished release is not available from the default
 GitHub branch.
 
 ```bash
+mkdir -p ~/src
+cd ~/src
 git clone https://github.com/sima-neat/polima.git
 cd polima
 python3 -m venv .venv
@@ -63,10 +65,16 @@ Use the same release on both computers. Log in with the account configured
 on your DevKit (`ssh <username>@<devkit-address>`) and run:
 
 ```bash
+mkdir -p ~/src
+cd ~/src
 git clone https://github.com/sima-neat/polima.git
 cd polima
 ./scripts/install_polima_modalix.sh
 ```
+
+Keep the source checkout under your home directory. The installer uses
+`/media/nvme/polima` for the installed runtime, so do not use that path for the
+checkout.
 
 The DevKit must have its SDK build tools installed, writable installation
 directories and the privileges required to register a system service. The
@@ -102,7 +110,7 @@ it up once, in either of two ways.
 
 **With the Workbench.** Run `polima workbench start`, open its URL, go to **DevKits**, and
 enter the address (for example `sima@192.168.1.20`), a name, and the DevKit's
-password. The password is used once to authorize a dedicated PoLiMa SSH key on the
+password. Click **Connect DevKit**. The password is used once to authorize a dedicated PoLiMa SSH key on the
 DevKit and is never saved. Unless you select an existing key, PoLiMa creates or reuses
 `~/.ssh/id_ed25519_polima` on the Workbench host. This key has no passphrase so
 Workbench can connect unattended. Your existing personal SSH keys are unchanged. The Workbench verifies the connection before saving it. Connection setup does

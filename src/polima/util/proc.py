@@ -10,6 +10,7 @@ import os
 import shlex
 import signal
 import subprocess
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -66,12 +67,14 @@ def run(
     check: bool = False,
     timeout: float | None = None,
     capture: bool = True,
+    merge_stderr: bool = True,
     on_line: Callable[[str], None] | None = None,
     dry_run: bool = False,
 ) -> Result:
     """Run a command, streaming output to stdout and (optionally) a log file.
 
-    stdout and stderr are merged so the log matches what a human sees.
+    stdout and stderr are merged by default so the log matches what a human
+    sees. Set ``merge_stderr=False`` when stdout is machine-readable.
 
     `dry_run` returns a synthetic success without executing, which is what backs
     `polima train --dry-run` and `polima compile --dry-run`.
@@ -100,30 +103,53 @@ def run(
 
     started = time.monotonic()
     chunks: list[str] = []
+    error_chunks: list[str] = []
     process = subprocess.Popen(
         argv,
         cwd=str(cwd) if cwd else None,
         env=full_env,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
     )
     try:
-        assert process.stdout is not None
-        for line in process.stdout:
-            if echo:
-                print(line, end="", flush=True)
+        if merge_stderr:
+            assert process.stdout is not None
+            for line in process.stdout:
+                if echo:
+                    print(line, end="", flush=True)
+                if log_handle:
+                    log_handle.write(line)
+                if capture:
+                    chunks.append(line)
+                if on_line:
+                    on_line(line.rstrip("\n"))
+                if timeout is not None and time.monotonic() - started > timeout:
+                    process.send_signal(signal.SIGTERM)
+                    raise subprocess.TimeoutExpired(argv, timeout)
+            process.wait()
+        else:
+            stdout, stderr = process.communicate(timeout=timeout)
+            if echo and stdout:
+                print(stdout, end="", flush=True)
+            if echo and stderr:
+                print(stderr, end="", file=sys.stderr, flush=True)
             if log_handle:
-                log_handle.write(line)
+                log_handle.write(stdout)
+                log_handle.write(stderr)
             if capture:
-                chunks.append(line)
+                chunks.append(stdout)
+                error_chunks.append(stderr)
             if on_line:
-                on_line(line.rstrip("\n"))
-            if timeout is not None and time.monotonic() - started > timeout:
-                process.send_signal(signal.SIGTERM)
-                raise subprocess.TimeoutExpired(argv, timeout)
+                for line in (stdout + stderr).splitlines():
+                    on_line(line)
+    except subprocess.TimeoutExpired:
+        process.send_signal(signal.SIGTERM)
         process.wait()
+        raise
     except KeyboardInterrupt:
         # Forward the interrupt and let the child clean up, then re-raise so the
         # caller's own handler (e.g. checkpoint retention) still runs.
@@ -139,6 +165,7 @@ def run(
         returncode=process.returncode,
         duration_s=time.monotonic() - started,
         stdout="".join(chunks),
+        stderr="".join(error_chunks),
         cwd=str(cwd) if cwd else None,
         log_path=str(log_path) if log_path else None,
     )
