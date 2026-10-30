@@ -1,6 +1,6 @@
-# GR00T on SO-101
+# ACT, GR00T and Pi0.5 on SO-101
 
-Deploy a compiled GR00T N1.6 or N1.7 policy to Modalix, verify inference, then
+Deploy a compiled ACT, GR00T or Pi0.5 policy to Modalix, verify inference, then
 run an SO-101 follower arm. The reference task is placing a grey eraser in a
 white basket. A model trained for this task is not a general-purpose robot policy.
 
@@ -18,29 +18,36 @@ white basket. A model trained for this task is not a general-purpose robot polic
 
 A precompiled bundle does not require the training dataset, PyTorch checkpoint
 or ModelSDK on the customer's host. To compile your own checkpoint, use the
-[compiler guide](../../docs/your-own-model.md#gr00t) first.
+[compiler guide](../../docs/your-own-model.md#3-compile), which has separate
+instructions for ACT, GR00T and Pi0.5.
 
 ## Reference models
 
 These are task-specific SO-101 fine-tunes for placing a grey eraser in a white
-basket. Both deployment bundles use checkpoint step 50,000, 32 output actions and mixed
-precision. N1.7 was trained with a native 40-step architecture and supervised
-32-step targets; the released bundle exposes 32 actions.
+basket. ACT uses checkpoint step 100,000, BF16 and 100 output actions. Both
+GR00T bundles use checkpoint step 50,000, mixed precision and 32 output actions.
+N1.7 was trained with a native 40-step architecture and supervised 32-step
+targets; the released bundle exposes 32 actions. Pi0.5 uses checkpoint step
+20,000, W8A16 with BF16 shared attention, ten denoising steps and 50 actions.
 
 | Model | Compiled model repository |
 |---|---|
+| ACT | [simaai/ACT-SO101-PickPlace](https://huggingface.co/simaai/ACT-SO101-PickPlace) |
 | GR00T N1.6 | [simaai/GR00T-N1.6-SO101-PickPlace](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace) |
 | GR00T N1.7 | [simaai/GR00T-N1.7-SO101-PickPlace](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace) |
+| Pi0.5 | [simaai/Pi0.5-SO101-PickPlace](https://huggingface.co/simaai/Pi0.5-SO101-PickPlace) |
 
 These public packages contain compiled models, not training checkpoints or
 datasets. Downloading them does not require a Hugging Face login.
 
-Uploaded revisions: [N1.6 `dea49322`](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace/commit/dea49322cdc48384da4a34b6ecde5b16d92f99a9)
-and [N1.7 `fc452a54`](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace/commit/fc452a5463eba524c317d9fa5c05f8d9b7cc795c).
+Validated revisions: [ACT `307e6dbc`](https://huggingface.co/simaai/ACT-SO101-PickPlace/commit/307e6dbccc32d8e52ea0a4a983dd9c024c157643),
+[N1.6 `97b01c04`](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace/commit/97b01c04d4c1751476184d13105df4f6d5670ec9),
+[N1.7 `f0b5a251`](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace/commit/f0b5a25148f1d41d625043dcf8191d8ff7658feb) and
+[Pi0.5 `308b18cf`](https://huggingface.co/simaai/Pi0.5-SO101-PickPlace/commit/308b18cf2d32e28004a8ce2ca1b60ac4fa4c952d).
 
 ## Reference dataset
 
-Both models were fine-tuned on **SO-101 Grey Eraser Pick-and-Place**, a collection
+All four models were fine-tuned on **SO-101 Grey Eraser Pick-and-Place**, a collection
 of 961 demonstrations of placing the grey eraser in the white basket.
 
 | Split | Demonstrations | Frames |
@@ -83,18 +90,28 @@ the correct account/key or first-time password setup; it is not a model error.
 
 ## 2. Download and deploy the bundle
 
-Download N1.7 on the host without needing PoLiMa for the download:
+Download a compiled model on the host without needing PoLiMa for the download:
 
 ```bash
 python -m pip install "huggingface_hub>=0.34,<1"
 mkdir -p ~/polima-models
 cd ~/polima-models
-hf download simaai/GR00T-N1.7-SO101-PickPlace --local-dir GR00T-N1.7-SO101-PickPlace
-cd GR00T-N1.7-SO101-PickPlace
+hf download simaai/ACT-SO101-PickPlace \
+  --revision 307e6dbccc32d8e52ea0a4a983dd9c024c157643 \
+  --local-dir ACT-SO101-PickPlace
+cd ACT-SO101-PickPlace
 sha256sum --check SHA256SUMS
 ```
 
-For N1.6, replace `N1.7` with `N1.6` in the command and directory name.
+For another model, use its corresponding immutable repository revision:
+
+| Repository | Revision |
+|---|---|
+| `simaai/GR00T-N1.6-SO101-PickPlace` | `97b01c04d4c1751476184d13105df4f6d5670ec9` |
+| `simaai/GR00T-N1.7-SO101-PickPlace` | `f0b5a25148f1d41d625043dcf8191d8ff7658feb` |
+| `simaai/Pi0.5-SO101-PickPlace` | `308b18cf2d32e28004a8ce2ca1b60ac4fa4c952d` |
+
+Use the repository name as the local directory name, as in the ACT example.
 The deployable bundle is the **`bundle/` subdirectory**, not the download root.
 On macOS, use `shasum -a 256 --check SHA256SUMS` to verify the files.
 
