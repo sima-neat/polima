@@ -160,9 +160,9 @@ overridden for one run with an environment variable ([robot.md](robot.md#motion-
 
 ## Performance
 
-Median over 30 measured runs after 5 warm-up runs on a Modalix DevKit, using
-two 640×480 USB cameras, mixed precision and one 32-move plan. The runtime was
-built from `develop` at `7342f90`.
+Median over 30 measured runs after five warm-up runs on a Modalix DevKit,
+using two 640×480 USB cameras, mixed precision and one 32-action plan. The
+runtime was built from `develop` at `7342f90`.
 
 | | GR00T N1.6 | GR00T N1.7 |
 |---|---|---|
