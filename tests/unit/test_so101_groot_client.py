@@ -1,3 +1,4 @@
+import os
 import socket
 import threading
 
@@ -174,7 +175,7 @@ def test_control_rate_does_not_change_camera_mode(tmp_path, control_fps, capture
     assert f"--fps={control_fps}" in argv
     assert "--robot.max_relative_target=12" in argv
 
-@pytest.mark.parametrize("mode", ["random", "zero"])
+@pytest.mark.parametrize("mode", ["random", "fixed", "zero"])
 def test_noise_mode_controls_only_the_noise_tensor(tmp_path, monkeypatch, mode):
     from polima.robot.policy import CompiledPolicyAdapter
 
@@ -192,10 +193,12 @@ def test_noise_mode_controls_only_the_noise_tensor(tmp_path, monkeypatch, mode):
     assert first["noise"].shape == (50, 128) and first["noise"].dtype == np.float32
     if mode == "zero":
         assert not first["noise"].any() and not second["noise"].any()
+    elif mode == "fixed":
+        assert first["noise"].std() > 0.5 and np.array_equal(first["noise"], second["noise"])
     else:
         assert first["noise"].std() > 0.5 and not np.array_equal(first["noise"], second["noise"])
     with pytest.raises(ValueError, match="noise"):
-        CompiledPolicyAdapter(spec, bundle, "127.0.0.1:1", noise="fixed",
+        CompiledPolicyAdapter(spec, bundle, "127.0.0.1:1", noise="invalid",
                               client_factory=lambda *a, **k: None)
 
 def test_launcher_aggregate_selection(tmp_path, monkeypatch):
@@ -205,9 +208,48 @@ def test_launcher_aggregate_selection(tmp_path, monkeypatch):
     monkeypatch.setenv("POLIMA_AGGREGATE", "latest_only")
     _, argv = client_configuration(tmp_path, spec, 0, bundle.tasks[0], args)
     assert "--aggregate_fn_name=latest_only" in argv
+    monkeypatch.setenv("POLIMA_AGGREGATE", "crossfade")
+    monkeypatch.setenv("POLIMA_SMOOTH_MOVES", "0")
+    _, argv = client_configuration(tmp_path, spec, 0, bundle.tasks[0], args)
+    assert "--aggregate_fn_name=crossfade" in argv
     monkeypatch.setenv("POLIMA_AGGREGATE", "smooth")
     with pytest.raises(ValueError, match="POLIMA_AGGREGATE"):
         client_configuration(tmp_path, spec, 0, bundle.tasks[0], args)
+
+
+def test_pi05_recipe_selects_crossfade(monkeypatch):
+    from polima.robot.so101 import apply_recipe, recipe_environment
+
+    spec = get_policy("pi05")
+    for name in recipe_environment(spec):
+        monkeypatch.delenv(name, raising=False)
+    apply_recipe(spec)
+    assert os.environ["POLIMA_AGGREGATE"] == "crossfade"
+
+
+def test_crossfade_moves_progressively_from_queued_to_new_plan():
+    import torch
+
+    from polima.robot.crossfade import Crossfade
+
+    aggregate = Crossfade()
+    aggregate.arm(3)
+    old = torch.zeros(1)
+    new = torch.tensor([12.0])
+    assert [aggregate(old, new).item() for _ in range(3)] == [3.0, 6.0, 9.0]
+
+
+def test_fir3_filters_only_interior_arm_targets():
+    from polima.robot.smoothing import filter_chunk
+
+    actions = np.arange(30, dtype=np.float32).reshape(5, 6)
+    actions[2, :5] += 12
+    filtered = filter_chunk(actions, "fir3")
+    assert np.array_equal(filtered[[0, -1]], actions[[0, -1]])
+    assert np.array_equal(filtered[:, 5], actions[:, 5])
+    assert np.all(filtered[2, :5] < actions[2, :5])
+    assert np.array_equal(filter_chunk(actions, "off"), actions)
+
 
 def test_smoothing_selection_and_default_aggregate(tmp_path, monkeypatch):
     bundle, spec = make_bundle(tmp_path)

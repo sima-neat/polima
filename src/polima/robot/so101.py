@@ -17,11 +17,11 @@ import numpy as np
 from polima.bundle.contract import spec_from_bundle
 from polima.bundle.layout import Bundle
 from polima.policies.registry import get_policy
-from polima.robot import reset_ease, smoothing, substeps
+from polima.robot import crossfade, reset_ease, smoothing, substeps
 from polima.robot.policy import CompiledPolicyAdapter
 from polima.util.jsonio import read_json
 
-AGGREGATES = ("weighted_average", "latest_only", "average", "conservative")
+AGGREGATES = ("weighted_average", "latest_only", "average", "conservative", crossfade.NAME)
 
 
 SUPPORTED_POLICIES = ("groot", "act", "pi05")
@@ -36,9 +36,11 @@ RECIPES = {
               "POLIMA_AUTO_COMPLETE": "0"},
     "act": {"fps": 30, "POLIMA_SMOOTH_MOVES": "10", "POLIMA_SUBSTEPS": "1",
             "POLIMA_CHUNK_THRESHOLD": "0.5"},
-    # Pi0.5: 50-move chunks like ACT; zero noise keeps consecutive plans consistent.
-    "pi05": {"fps": 30, "POLIMA_SMOOTH_MOVES": "10", "POLIMA_SUBSTEPS": "1",
-             "POLIMA_CHUNK_THRESHOLD": "0.5", "POLIMA_GROOT_NOISE": "zero"},
+    # Pi0.5: overlap plans and smooth arm targets within each plan.
+    "pi05": {"fps": 30, "POLIMA_SMOOTH_MOVES": "0", "POLIMA_SUBSTEPS": "1",
+             "POLIMA_CHUNK_THRESHOLD": "0.5", "POLIMA_GROOT_NOISE": "fixed",
+             "POLIMA_CHUNK_FILTER": "fir3", "POLIMA_AGGREGATE": "crossfade",
+             "POLIMA_AUTO_COMPLETE": "0"},
 }
 
 COMMON_RECIPE = {
@@ -158,6 +160,7 @@ class SO101PolicyClient:
             spec, bundle, address, task_id=task_id, timeout=timeout,
             noise=(os.environ.get("POLIMA_GROOT_NOISE", "").strip() or "random"),
         )
+        self.chunk_filter = smoothing.chunk_filter_from_env()
         if spec.name == "pi05":
             # Pi0.5 reads its instruction as text, so any instruction works; the
             # bundle's compiled-in task is only the default.
@@ -178,7 +181,7 @@ class SO101PolicyClient:
         expected = tuple(self.adapter.spec.wire.response_shape)
         if actions.shape != expected or not np.isfinite(actions).all():
             raise ValueError(f"Expected finite actions shaped {expected}, got {actions.shape}")
-        return actions, latency
+        return smoothing.filter_chunk(actions, self.chunk_filter), latency
 
 
 DEVKIT_CALIBRATION = Path.home() / ".cache/huggingface/lerobot/calibration/robots/so_follower"
@@ -246,6 +249,7 @@ def client_configuration(root, spec, task_id, instruction, args):
     smooth_moves = smoothing.moves_from_env()
 
     smoothing.shape_from_env()
+    smoothing.chunk_filter_from_env()
     substeps.substeps_from_env()
     reset_ease.ease_from_env()
     aggregate = (os.environ.get("POLIMA_AGGREGATE", "").strip()
@@ -384,11 +388,22 @@ def main(argv=None):
             os.environ[f"ACT_{name}"] = os.environ[f"POLIMA_{name}"]
     if os.environ.get("POLIMA_NO_AUTO_COMPLETE"):
         os.environ["ACT_AUTO_COMPLETE"] = "0"
+    aggregate = next(
+        (
+            value.split("=", 1)[1]
+            for value in client_args
+            if value.startswith("--aggregate_fn_name=")
+        ),
+        os.environ.get("POLIMA_AGGREGATE", "weighted_average"),
+    )
     smooth_moves = smoothing.moves_from_env()
     substep_count = substeps.substeps_from_env()
     ease = reset_ease.ease_from_env()
-    if smooth_moves or substep_count > 1:
+    if aggregate == crossfade.NAME or smooth_moves or substep_count > 1:
         from lerobot.async_inference.robot_client import RobotClient
+        if aggregate == crossfade.NAME:
+            import lerobot.async_inference.configs as lerobot_configs
+            crossfade.install(lerobot_configs, RobotClient)
         if smooth_moves:
             smoothing.install(RobotClient, smooth_moves, shape=smoothing.shape_from_env())
         if substep_count > 1:

@@ -89,10 +89,11 @@ GR00T uses fast motion settings by default and slow settings with `--slow`
 by setting it in the same terminal before `polima robot run`:
 
 Pi0.5 bundles use 30 commands per second, ask for the next 50-move plan when
-half of the current one is left, and start each plan from zero noise, so
-consecutive plans agree. Pi0.5 reads its instruction as text:
+half of the current one is left, and reuse one fixed noise sample for the run.
+A three-tap filter smooths the arm targets inside each plan without changing
+its endpoints or gripper commands. Overlapping plans are crossfaded. Pi0.5
+reads its instruction as text:
 `POLIMA_PI05_TASK="..." polima robot run` replaces the bundle's instruction.
-Pi0.5 has not yet been tested on the arm ([pi05.md](pi05.md#limitations)).
 
 | Variable | What it does |
 |---|---|
@@ -101,7 +102,9 @@ Pi0.5 has not yet been tested on the arm ([pi05.md](pi05.md#limitations)).
 | `POLIMA_SMOOTH_SHAPE` | `smoothstep`: make that spreading an S-curve instead of equal steps. |
 | `POLIMA_SUBSTEPS` | Send each command as this many smaller steps. |
 | `POLIMA_RESET_EASE` | `smoothstep`: ease into and out of the return to rest. |
-| `POLIMA_GROOT_NOISE` | `zero`: start every plan from the same noise, so the same view gives the same plan; `random` otherwise. |
+| `POLIMA_GROOT_NOISE` | Plan noise: `zero`, `fixed` (one standard-normal sample reused for the run), or `random` (a new sample for every plan). |
+| `POLIMA_CHUNK_FILTER` | `fir3`: smooth interior arm targets in each plan while preserving its endpoints and gripper commands; `off` disables it. |
+| `POLIMA_AGGREGATE` | How an incoming plan is combined with queued commands. Pi0.5 uses `crossfade` across their overlap. |
 
 ## Camera recovery
 

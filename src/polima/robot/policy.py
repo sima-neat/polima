@@ -239,11 +239,8 @@ class CompiledPolicyAdapter:
         noise: str = "random",
         client_factory=PolimaSOMClient,
     ) -> None:
-        # "zero" starts every flow-matching request from the same all-zero
-        # noise, so consecutive plans stop disagreeing merely because of a
-        # different random draw (ACT likewise uses a zero latent at inference).
-        if noise not in ("random", "zero"):
-            raise ValueError(f"noise must be 'random' or 'zero', not {noise!r}")
+        if noise not in ("random", "fixed", "zero"):
+            raise ValueError(f"noise must be 'random', 'fixed' or 'zero', not {noise!r}")
         stats = None
         self.pi05 = None
         if spec.name == "pi05":
@@ -265,8 +262,11 @@ class CompiledPolicyAdapter:
         self.bundle = bundle
         self.task_id = int(task_id)
         self.client = client_factory(spec, address, stats=stats, timeout=timeout)
-        self.rng = np.random.default_rng(seed)
+        # Fixed seed zero is the standard-normal input used by this bundle's
+        # numerical fixture, reused to avoid noise-only plan disagreement.
+        self.rng = np.random.default_rng(0 if noise == "fixed" and seed is None else seed)
         self.noise = noise
+        self._fixed_noise: dict[tuple[int, ...], np.ndarray] = {}
         #: Pi0.5 instruction (it is part of the prompt, not a compiled catalog row).
         self.task = ""
 
@@ -298,8 +298,7 @@ class CompiledPolicyAdapter:
         if self.spec.name == "act":
             return self.client.prepare_inputs(images, state)
         if self.pi05 is not None:
-            noise = (np.zeros((50, 32), DTYPE) if self.noise == "zero"
-                     else self.rng.standard_normal((50, 32)).astype(DTYPE))
+            noise = self._noise((50, 32))
             task = self.task or self.pi05.config.get("task", "")
             return self.pi05.request(images, state, task, noise=noise)
 
@@ -332,11 +331,19 @@ class CompiledPolicyAdapter:
             None,
         )
         if noise_spec is not None:
-            if self.noise == "zero":
-                tensors["noise"] = np.zeros(noise_spec.shape, dtype=DTYPE)
-            else:
-                tensors["noise"] = self.rng.standard_normal(noise_spec.shape).astype(DTYPE)
+            tensors["noise"] = self._noise(noise_spec.shape)
         return tensors
+
+    def _noise(self, shape: tuple[int, ...]) -> np.ndarray:
+        if self.noise == "zero":
+            return np.zeros(shape, dtype=DTYPE)
+        if self.noise == "fixed":
+            sample = self._fixed_noise.get(shape)
+            if sample is None:
+                sample = self.rng.standard_normal(shape).astype(DTYPE)
+                self._fixed_noise[shape] = sample
+            return sample.copy()
+        return self.rng.standard_normal(shape).astype(DTYPE)
 
     def predict_detailed(self, observation: dict[str, Any]) -> PolicyPrediction:
         """Return the exact request, raw response, and robot-unit actions."""
