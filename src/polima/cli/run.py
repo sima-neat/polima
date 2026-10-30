@@ -237,7 +237,7 @@ def _load_tensors(spec, inputs_dir: Path) -> dict[str, np.ndarray]:
 
 
 def _resolve_bundle(reference: str, bundles_root: str | None) -> Bundle:
-    candidate = Path(reference)
+    candidate = Path(reference).expanduser()
     if not candidate.is_dir():
         candidate = Path(bundles_root or (outputs_root() / "bundles")) / reference
     manifest = candidate / "bundle.json"

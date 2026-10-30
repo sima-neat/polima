@@ -32,9 +32,8 @@ precision. N1.7 was trained with a native 40-step architecture and supervised
 | GR00T N1.6 | [simaai/GR00T-N1.6-SO101-PickPlace](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace) |
 | GR00T N1.7 | [simaai/GR00T-N1.7-SO101-PickPlace](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace) |
 
-These packages contain compiled models, not training checkpoints or datasets.
-If access is restricted, run `hf auth login` with an authorized Hugging Face
-account before downloading.
+These public packages contain compiled models, not training checkpoints or
+datasets. Downloading them does not require a Hugging Face login.
 
 Uploaded revisions: [N1.6 `dea49322`](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace/commit/dea49322cdc48384da4a34b6ecde5b16d92f99a9)
 and [N1.7 `fc452a54`](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace/commit/fc452a5463eba524c317d9fa5c05f8d9b7cc795c).
@@ -88,6 +87,8 @@ Download N1.7 on the host without needing PoLiMa for the download:
 
 ```bash
 python -m pip install "huggingface_hub>=0.34,<1"
+mkdir -p ~/polima-models
+cd ~/polima-models
 hf download simaai/GR00T-N1.7-SO101-PickPlace --local-dir GR00T-N1.7-SO101-PickPlace
 cd GR00T-N1.7-SO101-PickPlace
 sha256sum --check SHA256SUMS
@@ -98,15 +99,13 @@ The deployable bundle is the **`bundle/` subdirectory**, not the download root.
 On macOS, use `shasum -a 256 --check SHA256SUMS` to verify the files.
 
 
-Run in the host terminal (Ubuntu/WSL on Windows). Enter the downloaded bundle
-folder containing `bundle.json` (`./bundle` after the download above), and the
-complete DevKit login when prompted:
+Run in the same host terminal (Ubuntu/WSL on Windows). Set the complete DevKit
+login for your setup; `bundle_dir` points to the downloaded folder containing
+`bundle.json`:
 
 ```bash
-printf "Bundle folder: "
-read -r bundle_dir
-printf "DevKit login (username@address): "
-read -r devkit_login
+bundle_dir="$PWD/bundle"
+devkit_login="sima@<devkit-address>"
 polima deploy --bundle "$bundle_dir" --devkit "$devkit_login" --start
 ```
 
@@ -219,6 +218,12 @@ arm once, following the interactive middle-position and joint-range prompts:
 ```bash
 polima robot calibrate
 ```
+
+The supported LeRobot calibration intentionally omits `wrist_roll` from the
+min/max sweep because it is a full-turn joint. The middle-position step records
+its homing offset, and LeRobot assigns its full encoder range (0–4095). The
+printed table therefore lists the other four arm joints and the gripper. Do not
+add a wrist-roll sweep; keep its camera cable clear through the full rotation.
 
 Calibration belongs to that physical arm. Model normalization statistics,
 compiler calibration samples and motor calibration serve different purposes.

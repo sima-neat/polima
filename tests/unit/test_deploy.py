@@ -7,10 +7,14 @@ otherwise fail only on hardware.
 from __future__ import annotations
 
 import inspect
+import json
+import sys
 
 import numpy as np
 import pytest
 
+from polima.cli import deploy as deploy_cli
+from polima.cli import run as run_cli
 from polima.config.base import BoardConfig
 from polima.deploy import deploy
 from polima.deploy.build import source_hash
@@ -60,6 +64,60 @@ def test_deploy_directory_is_configurable():
 def test_default_build_jobs_uses_the_devkit_cores():
     """The DevKit has 16 cores; the build must not default to -j2."""
     assert BoardConfig().build_jobs > 2
+
+
+@pytest.mark.parametrize("resolver", [deploy_cli._resolve_bundle, run_cli._resolve_bundle])
+def test_bundle_path_expands_quoted_home(resolver, tmp_path, monkeypatch):
+    """The shell does not expand ``~`` inside a quoted --bundle value."""
+    bundle_dir = tmp_path / "downloads" / "model" / "bundle"
+    bundle_dir.mkdir(parents=True)
+    (bundle_dir / "bundle.json").write_text(
+        json.dumps({"bundle_id": "groot-test-0-deadbeef", "policy": "groot"})
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    bundle = resolver("~/downloads/model/bundle", None)
+
+    assert bundle.root == bundle_dir
+
+
+def test_board_capture_keeps_remote_stderr_out_of_parsed_stdout(monkeypatch):
+    """A remote shell warning must not become a filename or a df value."""
+    from polima.deploy import ssh
+    from polima.util.proc import Result
+
+    def fake_run(argv, **kwargs):
+        assert kwargs["merge_stderr"] is False
+        return Result(
+            list(argv),
+            0,
+            0.01,
+            stdout="407000000000\n",
+            stderr="bash: warning: setlocale: cannot change locale\n",
+        )
+
+    monkeypatch.setattr(ssh, "run", fake_run)
+    session = ssh.BoardSession(BoardConfig(host="sima@example", control_master=False))
+
+    assert session.capture("df --output=avail /media/nvme | tail -1") == "407000000000"
+    assert session.free_bytes("/media/nvme/polima") == 407000000000
+
+
+def test_process_runner_can_capture_stdout_and_stderr_separately():
+    from polima.util.proc import run
+
+    result = run(
+        [
+            sys.executable,
+            "-c",
+            "import os; print('407000000000'); os.write(2, b'locale warning: \\xff\\n')",
+        ],
+        echo=False,
+        merge_stderr=False,
+    )
+
+    assert result.stdout == "407000000000\n"
+    assert result.stderr == "locale warning: �\n"
 
 
 # -------------------------------------------------------------- build hashing
