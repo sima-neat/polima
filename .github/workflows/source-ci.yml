@@ -61,7 +61,7 @@ jobs:
         working-directory: src/polima/studio/ui
         run: |
           npm ci
-          node --test src
+          node --test src/*.test.js
           npm run build
       - name: Require the committed Studio bundle to match its source
         run: git diff --exit-code -- src/polima/studio/static

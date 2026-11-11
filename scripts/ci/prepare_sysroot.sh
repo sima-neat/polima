@@ -63,6 +63,7 @@ done
 if (( ${#packages[@]} )); then
   echo "Adding SDK packages to the sysroot: ${packages[*]}"
   mkdir -p "$work/apt"
+  run_as_root apt-get update -qq  # a fresh SDK container has no package lists
   (cd "$work/apt" && apt-get download "${packages[@]}")
   for deb in "$work"/apt/*.deb; do run_as_root dpkg-deb -x "$deb" "$sysroot"; done
 fi

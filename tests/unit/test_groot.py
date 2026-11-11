@@ -13,6 +13,7 @@ plan with the MLA stubbed.
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from pathlib import Path
@@ -558,7 +559,8 @@ def test_n17_vision_attention_splits_the_fused_qkv_exactly(tmp_path):
             return self.attention(hidden, position_embeddings=(cos, sin))
 
     path = tmp_path / "vision_attention.onnx"
-    torch.onnx.export(OneImage(), (hidden,), str(path), opset_version=17, do_constant_folding=True)
+    legacy = {"dynamo": False} if "dynamo" in inspect.signature(torch.onnx.export).parameters else {}
+    torch.onnx.export(OneImage(), (hidden,), str(path), opset_version=17, do_constant_folding=True, **legacy)
     operators = [node.op_type for node in onnx.load(str(path)).graph.node]
     assert operators.count("Gemm") == 4 and "Split" not in operators  # q, k, v, proj
 
