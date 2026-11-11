@@ -1,12 +1,15 @@
-"""Build the native runtime on the DevKit, skipping when nothing changed.
+"""Build the native runtime on the DevKit from source, skipping when nothing changed.
 
 There is one binary for every policy, so a policy change does not touch the
-C++ at all, and the build tree is keyed by a content hash of runtime/, so an
-unchanged source tree skips configure and compile entirely.
+C++ at all. Reuse is keyed by both the runtime sources and the installed
+SDK/LLiMa packages, so an SDK or LLiMa upgrade cannot reuse an old binary.
+A DevKit installed from a PoLiMa package keeps its prebuilt runtime.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shlex
 from dataclasses import dataclass
 
@@ -27,11 +30,13 @@ class BuildResult:
     build_dir: str
     skipped: bool
     binaries: list[str]
+    toolchain_hash: str = ""
 
     def to_dict(self) -> dict:
         return {
             "source_hash": self.source_hash, "build_dir": self.build_dir,
             "skipped": self.skipped, "binaries": self.binaries,
+            "toolchain_hash": self.toolchain_hash,
         }
 
 
@@ -46,6 +51,60 @@ def source_hash(source_dir=None) -> str:
     )
 
 
+def build_key(source: str, toolchain: str) -> str:
+    """Content key for sources compiled against one exact target toolchain."""
+    return hashlib.sha256(f"{source}\0{toolchain}".encode()).hexdigest()[:16]
+
+
+def toolchain_identity(session: BoardSession) -> str:
+    """Fingerprint the platform and the matching LLiMa runtime and development packages.
+
+    A version mismatch is an installation error: compiling against one package
+    and loading another is unsafe.
+    """
+    result = session.run(
+        r'''set -eu
+core=$(dpkg-query -W -f='${Version}' sima-lmm-core 2>/dev/null) || exit 1
+dev=$(dpkg-query -W -f='${Version}' sima-lmm-dev 2>/dev/null) || exit 1
+[ "$core" = "$dev" ] || exit 2
+printf 'platform\n'
+sed -nE 's/^[[:space:]]*(MACHINE|DISTRO_VERSION|DISTRO_BUILD)[[:space:]]*=[[:space:]]*(.*)$/\1=\2/p' \
+    /etc/buildinfo 2>/dev/null | LC_ALL=C sort
+printf 'packages\nsima-lmm-core=%s\nsima-lmm-dev=%s\n' "$core" "$dev"
+printf 'files\n'
+for package in sima-lmm-core sima-lmm-dev; do
+    cat /var/lib/dpkg/info/"$package".md5sums /var/lib/dpkg/info/"$package":*.md5sums 2>/dev/null || true
+done
+''',
+        check=False,
+    )
+    if result.returncode == 2:
+        raise RuntimeError(
+            "LLiMa development and runtime packages differ; install one matching LLiMa artifact"
+        )
+    if result.returncode != 0:
+        raise RuntimeError("LLiMa 0.6 (sima-lmm-core and sima-lmm-dev) is not installed on the DevKit")
+    return result.stdout.strip()
+
+
+def packaged_runtime(session: BoardSession, board: BoardConfig) -> bool:
+    """Does the DevKit run a prebuilt runtime installed from a PoLiMa package?"""
+    text = session.capture(f"cat {shlex.quote(board.path('runtime.json'))} 2>/dev/null || true")
+    try:
+        return json.loads(text).get("schema_version") == 2
+    except ValueError:
+        return False
+
+
+def toolchain_value(identity: str, name: str) -> str:
+    """Read one ``name=value`` line from a captured toolchain identity."""
+    for line in identity.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip() == name:
+            return value.strip()
+    return ""
+
+
 def build_native(
     session: BoardSession,
     board: BoardConfig,
@@ -53,16 +112,21 @@ def build_native(
     force: bool = False,
     jobs: int | None = None,
 ) -> BuildResult:
-    """Sync runtime/ to the DevKit and build it if the source changed."""
+    """Sync runtime/ and build it for an explicit source deployment."""
     digest = source_hash()
-    build_dir = board.path("build", digest)
+    identity = toolchain_identity(session)
+    platform_version = toolchain_value(identity, "DISTRO_VERSION")
+    llima_version = toolchain_value(identity, "sima-lmm-core")
+    toolchain_hash = short(hashlib.sha256(identity.encode()).hexdigest(), 12)
+    key = build_key(digest, identity)
+    build_dir = board.path("build", key)
     sentinel = f"{build_dir}/.ok"
     jobs = jobs or board.build_jobs
 
     if not force and session.exists(sentinel):
-        log.info("build: skipped (source hash %s unchanged)", digest)
+        log.info("build: skipped (source and LLiMa toolchain unchanged: %s)", key)
         _link_binaries(session, board, build_dir)
-        return BuildResult(digest, build_dir, True, list(BINARIES))
+        return BuildResult(digest, build_dir, True, list(BINARIES), toolchain_hash)
 
     log.info("build: source hash %s, compiling with -j%d", digest, jobs)
     session.mkdirs(board.native_src_dir, build_dir)
@@ -70,7 +134,9 @@ def build_native(
 
     session.run(
         f"cmake -S {shlex.quote(board.native_src_dir)} -B {shlex.quote(build_dir)} "
-        f"-DCMAKE_BUILD_TYPE=Release",
+        f"-DCMAKE_BUILD_TYPE=Release -DPOLIMA_SOURCE_COMMIT={shlex.quote(digest)}"
+        f" -DPOLIMA_PLATFORM_VERSION={shlex.quote(platform_version)}"
+        f" -DPOLIMA_LLIMA_PACKAGE_VERSION={shlex.quote(llima_version)}",
         echo=False,
     )
     session.run(f"cmake --build {shlex.quote(build_dir)} -j{jobs}", echo=True)
@@ -84,7 +150,7 @@ def build_native(
 
     session.run(f"touch {shlex.quote(sentinel)}")
     _link_binaries(session, board, build_dir)
-    return BuildResult(digest, build_dir, False, list(BINARIES))
+    return BuildResult(digest, build_dir, False, list(BINARIES), toolchain_hash)
 
 
 def _link_binaries(session: BoardSession, board: BoardConfig, build_dir: str) -> None:

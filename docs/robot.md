@@ -126,7 +126,7 @@ Recovery cannot resume with a missing camera and does not repair USB faults.
 | The arm consistently moves the wrong way | The cameras are in the wrong roles, or placed differently from the recording. |
 | The arm misses by the same amount every time | Recalibrate (see above). |
 | The run stops before moving and asks for `polima robot calibrate` | The arm has no calibration on this DevKit yet; calibrate it once. |
-| The model server does not start | `polima server status`; on `MLA_LOAD_FAILED`, see [deploy.md](deploy.md#accelerator-reset-and-sudo). |
+| The model server does not start | `polima server status`; on `MLA_LOAD_FAILED`, see [accelerator recovery](deploy.md#accelerator-recovery). |
 
 Run summaries stream the event log rather than loading it into RAM. Counts and
 maximum latency are exact. For more than 4,096 valid latency measurements per

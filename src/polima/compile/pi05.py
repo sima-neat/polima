@@ -434,12 +434,17 @@ def stage_llima(build: Build) -> None:
     with build.path("logs", "llima.log").open("a") as log:
         code = subprocess.run(cmd, cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT, check=False).returncode
 
-    missing = [n for n in llima_elf_names(group).values()
-               if not (work / "out/sima_files/mpk" / f"{n}_mpk.tar.gz").is_file()]
+    mpk = work / "out/sima_files/mpk"
+    try:
+        vision = llima_vision_layers(mpk)
+    except StageError:
+        vision = 1  # reported below as the missing one-ELF tower
+    names = llima_elf_names(group, vision_layers=vision)
+    missing = [n for n in names.values() if not (mpk / f"{n}_mpk.tar.gz").is_file()]
     if code or missing:
         raise StageError(f"llima-compile exit {code}; missing {missing[:4]}{'...' if len(missing) > 4 else ''}; "
                          f"see {build.path('logs', 'llima.log')}; --resume keeps finished graphs")
-    build.log(f"llima: {len(llima_elf_names(group))} ELFs, {group}-token group ({precision} vision and layers)")
+    build.log(f"llima: {len(names)} ELFs, {group}-token group ({precision} vision and layers)")
 
 
 RUNNERS = {"export": stage_export, "llima": stage_llima, "compile": stage_compile, "bundle": stage_bundle,
@@ -584,11 +589,25 @@ if __name__ == "__main__":
 LLIMA_MODEL = "pi05_paligemma"
 
 
-def llima_elf_names(prefix: int, layers: int = 18) -> dict[str, str]:
+def llima_vision_layers(mpk_dir: Path) -> int:
+    """1 when LLiMa compiled the vision tower as one ELF (0.4), else its per-layer ELF count (0.6)."""
+    if (mpk_dir / f"{LLIMA_MODEL}_vision_mpk.tar.gz").is_file():
+        return 1
+    count = 0
+    while (mpk_dir / f"{LLIMA_MODEL}_vision_layer{count}_mpk.tar.gz").is_file():
+        count += 1
+    if count == 0:
+        raise StageError(f"LLiMa produced no vision ELF in {mpk_dir}")
+    return count
+
+
+def llima_elf_names(prefix: int, layers: int = 18, vision_layers: int = 1) -> dict[str, str]:
     """Bundle graph name -> LLiMa ELF name (sima_lmm.model.language_model._get_part_model)."""
     from polima.policies.pi05 import runtime as rt
 
-    names = {"vision": f"{LLIMA_MODEL}_vision", "attn": f"{LLIMA_MODEL}_language_n{prefix}_cache_token0"}
+    names = ({"vision": f"{LLIMA_MODEL}_vision"} if vision_layers == 1 else
+             {rt.llima_vision(n, vision_layers): f"{LLIMA_MODEL}_vision_layer{n}" for n in range(vision_layers)})
+    names["attn"] = f"{LLIMA_MODEL}_language_n{prefix}_cache_token0"
     for layer in range(layers):
         names[rt.llima_pre(layer)] = f"{LLIMA_MODEL}_language_n{prefix}_pre_layer{layer}"
         if layer + 1 < layers:
@@ -596,7 +615,7 @@ def llima_elf_names(prefix: int, layers: int = 18) -> dict[str, str]:
     return names
 
 
-def extract_llima(mpk_dir: Path, out: Path, prefix: int) -> dict[str, dict]:
+def extract_llima(mpk_dir: Path, out: Path, prefix: int, vision_layers: int = 1) -> dict[str, dict]:
     """ELFs and per-binding element counts (MLA I/O in compiler order) from LLiMa's MPKs."""
     import tarfile
 
@@ -604,7 +623,7 @@ def extract_llima(mpk_dir: Path, out: Path, prefix: int) -> dict[str, dict]:
 
     out.mkdir(parents=True, exist_ok=True)
     found = {}
-    for graph, name in llima_elf_names(prefix).items():
+    for graph, name in llima_elf_names(prefix, vision_layers=vision_layers).items():
         archive = mpk_dir / f"{name}_mpk.tar.gz"
         if not archive.is_file():
             raise StageError(f"LLiMa did not produce {archive.name}")
@@ -677,12 +696,15 @@ def make_llima_bundle(*, export: Path, llima_mpk: Path, expert_dir: Path, work: 
     profile = json.loads((export / "profile.json").read_text())
     form = "nchw" if (export / "constants" / "ada_00.f32").is_file() else "nhwc"
     profile["runtime_context"] = {**profile.get("runtime_context", {}), "backend": "llima", "expert_form": form}
+    vision_layers = llima_vision_layers(llima_mpk)
+    if vision_layers > 1:
+        profile["runtime_context"]["vision_layers"] = vision_layers
     base = get_policy("pi05").specialize_profile(profile=profile)
     cameras = int(base.runtime_context["cameras"])
     prefix = int(base.runtime_context["prefix_tokens"])
     derived = work / "derived"
     pi05_graphs.write_llima_export(export, derived, cameras)
-    llima = extract_llima(llima_mpk, work / "llima-elfs", prefix)
+    llima = extract_llima(llima_mpk, work / "llima-elfs", prefix, vision_layers)
     expert_elf = expert_dir / "retained" / "expert_stage1_mla.elf"
     from polima.policies.pi05 import runtime as rt
 

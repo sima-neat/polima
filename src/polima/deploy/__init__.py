@@ -13,7 +13,7 @@ from pathlib import Path
 from polima.bundle.layout import Bundle
 from polima.config.base import BoardConfig
 from polima.deploy import board as board_ops
-from polima.deploy.build import BuildResult, build_native, link_onto_path
+from polima.deploy.build import BuildResult, build_native, link_onto_path, packaged_runtime
 from polima.deploy.service import ServiceStatus, start
 from polima.deploy.ssh import BoardError, BoardSession
 from polima.util.logging import get
@@ -149,8 +149,10 @@ def deploy(
         else:
             report.record("python-runtime", "skipped", reason="bundle uses standalone client")
 
-        # --- build: skipped when runtime/ is unchanged ----------------------
-        if build:
+        # --- build: skipped when runtime/ is unchanged or prebuilt ---------
+        if build and not force and packaged_runtime(session, board_config):
+            report.record("build", "skipped", reason="packaged runtime (use --force to rebuild)")
+        elif build:
             result = build_native(session, board_config, force=force)
             report.build = result
             report.record(

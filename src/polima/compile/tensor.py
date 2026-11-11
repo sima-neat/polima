@@ -377,12 +377,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from afe.apis import defines as afe_defines
     from afe.apis.defines import (
         CalibrationMethod,
         RequantizationMode,
         bfloat16_scheme,
         default_quantization,
-        gen1_target,
         gen2_target,
         quantization_scheme,
     )
@@ -440,7 +440,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         layout=args.model_layout,
         output_names=list(outputs),
     )
-    target = gen2_target if args.device == "modalix" else gen1_target
+    target = gen2_target if args.device == "modalix" else getattr(afe_defines, "gen1_target", None)
+    if target is None:
+        raise SystemExit(f"ModelSDK {get_model_sdk_version()} cannot compile for {args.device}")
     loaded = load_model(importer, target=target)
 
     activation = args.activation_precision or args.precision

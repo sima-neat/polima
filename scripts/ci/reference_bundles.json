@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "bundles": [
+    {"name": "act", "repo": "simaai/ACT-SO101-PickPlace",
+     "revision": "307e6dbccc32d8e52ea0a4a983dd9c024c157643"},
+    {"name": "groot-n1.6", "repo": "simaai/GR00T-N1.6-SO101-PickPlace",
+     "revision": "97b01c04d4c1751476184d13105df4f6d5670ec9"},
+    {"name": "groot-n1.7", "repo": "simaai/GR00T-N1.7-SO101-PickPlace",
+     "revision": "f0b5a25148f1d41d625043dcf8191d8ff7658feb"},
+    {"name": "pi05", "repo": "simaai/Pi0.5-SO101-PickPlace",
+     "revision": "308b18cf2d32e28004a8ce2ca1b60ac4fa4c952d"}
+  ]
+}
