@@ -16,20 +16,17 @@ concurrency:
 
 jobs:
   python:
-    name: Python ${{ matrix.python }}
+    # The full host stack, as `make venv` builds it (docs/install.md: Python 3.12).
+    name: Full host stack (Python 3.12)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.12"
       - name: Install test dependencies
         # The native tests compile the runtime against tests/native/llima_mock.
         # The host stack is pinned exactly as `make venv` pins it for users.
@@ -44,6 +41,30 @@ jobs:
         run: pytest -q -ra tests/unit --junitxml="$RUNNER_TEMP/junit.xml"
       - name: Allow only the listed skips
         run: python scripts/ci/check_skips.py "$RUNNER_TEMP/junit.xml" tests/allowed_skips.txt
+
+  deploy-install:
+    # The deploy and Workbench installation (docs/install.md: Python 3.10 to 3.12).
+    name: Deploy install (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install and check as docs/install.md describes
+        run: |
+          python -m pip install -e ".[deploy]"
+          polima --version
+          polima doctor --deploy-only
+          polima deploy --help > /dev/null
+          polima run --help > /dev/null
 
   ui:
     name: Studio and Workbench UI

@@ -164,10 +164,17 @@ def test_rope_rows_match_the_graph_tables():
     torch = pytest.importorskip("torch")
     from polima.policies.pi05 import modules
 
-    cos, sin = modules.rope_tables(torch.arange(900, 950))
-    rows = client.rope_rows(900)
-    np.testing.assert_allclose(rows[:50], cos.numpy(), atol=1e-5)
-    np.testing.assert_allclose(rows[50:], sin.numpy(), atol=1e-5)
+    positions = np.arange(900, 950)
+    inv_freq = 1.0 / (client.THETA ** (np.arange(0, client.HEAD_DIM, 2) / client.HEAD_DIM))
+    angles = np.tile(positions[:, None] * inv_freq, 2)
+    exact = np.concatenate([np.cos(angles), np.sin(angles)])
+    # Both tables are float32: one ULP of a frequency moves a 950-rad angle by 1.1e-4,
+    # and NumPy and PyTorch round differently on different CPUs. A wrong table is off
+    # by more than 0.1, so compare each with the exact values at float32 precision.
+    tolerance = 4 * np.spacing(np.float32(positions[-1]))
+    cos, sin = modules.rope_tables(torch.from_numpy(positions))
+    np.testing.assert_allclose(client.rope_rows(900), exact, atol=tolerance)
+    np.testing.assert_allclose(np.concatenate([cos.numpy(), sin.numpy()]), exact, atol=tolerance)
 
 
 def test_quantile_round_trip_and_identity_without_stats():
