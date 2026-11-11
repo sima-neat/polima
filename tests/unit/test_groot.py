@@ -516,6 +516,53 @@ def test_validator_flags_a_checkpoint_with_no_statistics(tmp_path):
     assert len(problems) == 1 and "statistics.json" in problems[0]
 
 
+def test_n17_vision_attention_splits_the_fused_qkv_exactly(tmp_path):
+    """Three Q/K/V projections reproduce NVIDIA's fused-QKV export attention, and the graph
+    carries no Split of a fused projection for ModelSDK to place."""
+    from types import SimpleNamespace
+
+    import torch.nn.functional as F
+
+    from polima.policies.groot.n17 import _target_modules
+
+    onnx = pytest.importorskip("onnx")
+    torch.manual_seed(0)
+    seq, heads, dim = 12, 4, 32
+    source = SimpleNamespace(qkv=nn.Linear(dim, 3 * dim), proj=nn.Linear(dim, dim), num_heads=heads,
+                             scaling=(dim // heads) ** -0.5)
+
+    def rotary(x, cos, sin):  # export_onnx_n1d7._apply_rotary_real
+        half, x32 = x.shape[-1] // 2, x.float()
+        rotated = torch.cat((-x32[..., half:], x32[..., :half]), dim=-1)
+        return (x32 * cos.float().unsqueeze(1) + rotated * sin.float().unsqueeze(1)).to(x.dtype)
+
+    def fused(hidden, cos, sin):  # export_onnx_n1d7._make_onnx_vision_attention_forward, one image
+        q, k, v = source.qkv(hidden).reshape(seq, 3, heads, -1).permute(1, 0, 2, 3).unbind(0)
+        q, k, v = rotary(q, cos, sin).transpose(0, 1), rotary(k, cos, sin).transpose(0, 1), v.transpose(0, 1)
+        weights = F.softmax((q @ k.transpose(-2, -1) * source.scaling).float(), dim=-1).to(v.dtype)
+        return source.proj((weights @ v).transpose(0, 1).reshape(seq, -1))
+
+    attention = _target_modules()["VisionAttention"](source, rotary).eval()
+    hidden, angles = torch.randn(seq, dim), torch.randn(seq, dim // heads)
+    cos, sin = angles.cos(), angles.sin()
+    with torch.no_grad():
+        torch.testing.assert_close(attention(hidden, position_embeddings=(cos, sin)), fused(hidden, cos, sin),
+                                   rtol=1e-6, atol=1e-6)
+
+    class OneImage(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attention = attention
+
+        def forward(self, hidden):
+            return self.attention(hidden, position_embeddings=(cos, sin))
+
+    path = tmp_path / "vision_attention.onnx"
+    torch.onnx.export(OneImage(), (hidden,), str(path), opset_version=17, do_constant_folding=True)
+    operators = [node.op_type for node in onnx.load(str(path)).graph.node]
+    assert operators.count("Gemm") == 4 and "Split" not in operators  # q, k, v, proj
+
+
 def test_n17_processor_uses_local_assets_without_hub(tmp_path, monkeypatch):
     import sys
 

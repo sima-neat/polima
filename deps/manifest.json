@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "package-version": "0.3.0",
+  "sdk": {
+    "channel": "develop",
+    "sysroot-version": "3.0.0"
+  },
+  "llima": {
+    "ref": "v0.6.0",
+    "spec": "88bfaffc1bf1"
+  },
+  "platform-version": "3.0.0",
+  "elxr_version": "3.0.0_master_B2499"
+}

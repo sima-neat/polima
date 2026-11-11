@@ -237,6 +237,28 @@ def _target_modules():
         def forward(self, patches):
             return F.linear(patches, self.weight, self.bias) + self.position
 
+    class VisionAttention(nn.Module):
+        """NVIDIA's one-image export attention (scripts/deployment/export_onnx_n1d7.py) with
+        Q, K and V as three projections over the rows of the fused QKV weight. ModelSDK 3.0
+        cannot allocate the three slices of one fused projection ("Overlap in L1 detected")."""
+
+        def __init__(self, source, rotary):
+            super().__init__()
+            self.heads, self.scaling, self.rotary, self.proj = source.num_heads, source.scaling, rotary, source.proj
+            weights, biases = source.qkv.weight.detach().chunk(3), source.qkv.bias.detach().chunk(3)
+            self.q, self.k, self.v = (nn.Linear(w.shape[1], w.shape[0]) for w in weights)
+            for linear, weight, bias in zip((self.q, self.k, self.v), weights, biases):
+                linear.weight.data, linear.bias.data = weight.clone(), bias.clone()
+
+        def forward(self, hidden_states, cu_seqlens=None, rotary_pos_emb=None, position_embeddings=None, **_):
+            seq = hidden_states.shape[0]
+            q, k, v = (p(hidden_states).reshape(seq, self.heads, -1) for p in (self.q, self.k, self.v))
+            q, k = (self.rotary(x, *position_embeddings).transpose(0, 1) for x in (q, k))
+            v = v.transpose(0, 1)
+            weights = F.softmax((torch.matmul(q, k.transpose(-2, -1)) * self.scaling).to(torch.float32), dim=-1)
+            output = torch.matmul(weights.to(v.dtype), v).transpose(0, 1)
+            return self.proj(output.reshape(seq, -1).contiguous())
+
     class VisionGroup(nn.Module):
         def __init__(self, vision, start, stop, grid, helpers):
             super().__init__()
@@ -246,7 +268,8 @@ def _target_modules():
                 frequencies = torch.cat((rotary, rotary), dim=-1)
             self.register_buffer("cos", frequencies.cos())
             self.register_buffer("sin", frequencies.sin())
-            helpers._patch_vision_attention_for_export(self, chunk_sizes=[int(grid[0].prod())])
+            for block in self.blocks:  # one image per graph: full-sequence attention
+                block.attn = VisionAttention(block.attn, helpers._apply_rotary_real)
 
         def forward(self, hidden):
             hidden = hidden[0, 0]
@@ -349,7 +372,8 @@ def _target_modules():
             hidden = self.proj2(self.norm(hidden) * (1 + scale) + shift)
             return self.layer2(F.relu(self.layer1(hidden)))[:, :, -self.horizon:]
 
-    return {"clone": clone, "MatmulNorm": MatmulNorm, "VisionPatch": VisionPatch, "VisionGroup": VisionGroup,
+    return {"clone": clone, "MatmulNorm": MatmulNorm, "VisionPatch": VisionPatch,
+            "VisionAttention": VisionAttention, "VisionGroup": VisionGroup,
             "VisionMerge": VisionMerge, "LanguageGroup": LanguageGroup, "VLGroup": VLGroup,
             "StateProject": StateProject, "ActionProject": ActionProject, "DiTPair": DiTPair,
             "ActionTail": ActionTail}

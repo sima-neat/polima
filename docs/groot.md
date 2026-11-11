@@ -181,7 +181,7 @@ affect the result. Published model cards describe the exact artifact tested.
 
 | What you see | What to do |
 |---|---|
-| The server fails to start; its log says `MLA_LOAD_FAILED` | Follow [accelerator recovery](deploy.md#accelerator-reset-and-sudo); recovery affects shared DevKit services. |
+| The server fails to start; its log says `MLA_LOAD_FAILED` | Stop robot motion and follow [accelerator recovery](deploy.md#accelerator-recovery). Recovery is platform-version specific. |
 | The arm consistently moves the wrong way | Check camera roles and framing, joint order, action units and calibration against the model contract; the symptom alone does not identify the cause. |
 | "Goal position clamped" warnings | The requested joint target exceeded the configured per-command limit and was reduced. This does not prove object contact or a successful grasp. If motion is unexpected, stop and inspect calibration, observations and requested targets. |
 | A camera or the motors drop out ("exceeded maximum consecutive read failures", "There is no status packet") | A USB connection dropped. Use a powered USB hub and secure the cables along the arm. |
