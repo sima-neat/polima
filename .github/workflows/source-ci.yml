@@ -32,11 +32,12 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install test dependencies
         # The native tests compile the runtime against tests/native/llima_mock.
+        # The host stack is pinned exactly as `make venv` pins it for users.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends g++ nlohmann-json3-dev
           python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu \
-            -e ".[dev,host,robot]" torchvision
+            -c constraints-host.txt -e ".[dev,host,robot]" torchvision
       - name: Lint
         run: ruff check src tests scripts/ci
       - name: Unit, native and contract tests

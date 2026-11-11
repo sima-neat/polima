@@ -187,13 +187,18 @@ jobs:
         run: |
           set -euo pipefail
           spec="polima@${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}:${GITHUB_SHA:0:12}"
+          resolution="$RUNNER_TEMP/polima-resolution-${GITHUB_RUN_ID}.json"
           for attempt in 1 2 3 4; do
-            sima-cli neat install --env "$VULCAN_ENV" "$spec" --json && break
+            sima-cli neat install --env "$VULCAN_ENV" "$spec" --json > "$resolution" && break
             [[ "$attempt" -lt 4 ]] || { echo "cannot resolve $spec" >&2; exit 1; }
             sleep $((attempt * 10))
           done
           rm -rf "$PACKAGE_DIR" && mkdir -p "$PACKAGE_DIR"
           sima-cli neat install --env "$VULCAN_ENV" --download-only -d "$PACKAGE_DIR" "$spec"
+          # The package's own checksums, which verify_package.py checks every file against.
+          metadata_url="$(PYTHONPATH=scripts/ci python3 -c 'import sys, resolve_llima
+          print(resolve_llima.parse_resolution(open(sys.argv[1]).read())["metadata_url"])' "$resolution")"
+          curl -fsSL --retry 3 "$metadata_url" -o "$PACKAGE_DIR/metadata.json"
           python3 scripts/ci/verify_package.py "$PACKAGE_DIR" \
             --commit "$GITHUB_SHA" --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
 
