@@ -28,10 +28,10 @@ archive="polima-runtime-$version-modalix.tar.gz"
 install -m 0644 "$runtime_dir/$archive" "$runtime_dir/$archive.sha256" "$output/"
 (cd "$output" && sha256sum --check --strict --quiet "$archive.sha256")
 
-# The tracked source tree (CI checkouts have no .git: every file is tracked),
-# without the documentation images (17 MB the DevKit never uses).
+# Package only tracked source files. Generated and local files must never enter
+# a customer package. Documentation images are not needed on the DevKit.
 if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
-  git -C "$root" ls-files -z --cached --others --exclude-standard
+  git -C "$root" ls-files -z --cached
 else
   (cd "$root" && find . -type f ! -path './dist/*' ! -path './.git/*' -printf '%P\0')
 fi | grep -zv '^docs/images/' | LC_ALL=C sort -z > "$work/files"

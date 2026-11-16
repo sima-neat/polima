@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -314,11 +315,12 @@ def board_check(build: Build, board: str) -> dict:
 
     from polima.config import devkits
     from polima.config.base import BoardConfig
+    from polima.deploy.ssh import BoardSession
 
     bundle = Path(build.settings["bundle"])
     target = BoardConfig(host=board)
     devkits.apply(target)
-    host, ssh = target.host, ["ssh", *target.ssh_options]
+    host = target.host
     workdir = f"{target.root}/compile-check"
     remote, results = f"{workdir}/bundles/{bundle.name}", f"{workdir}/results/{bundle.name}"
     local = build.path("check", "actions")
@@ -330,19 +332,43 @@ def board_check(build: Build, board: str) -> dict:
     expected = {name: root / "set" / name / "expected/normalized_actions.f32" for name in samples} or \
         {"s00": root / "expected/normalized_actions.f32"}
     cli = os.environ.get("POLIMA_CHECK_CLI", target.root + "/bin/polima_cli")
-    runs = " && ".join(f"{cli} --bundle {remote} --input-dir {where} --output {results}/{name}.f32"
-                       for name, where in inputs.items())
-    for argv, problem in (
-        ([*ssh, host, f"mkdir -p {workdir}/bundles && rm -rf {results} && mkdir -p {results}"],
-         "could not reach {host}"),
-        (["rsync", "-a", "--exclude", "robot_client/pi05/embedding.f16", "-e", " ".join(ssh),
-          f"{bundle}/", f"{host}:{remote}/"], "could not copy the bundle to {host}"),
-        ([*ssh, host, f"flock /tmp/polima-bench.lock sh -c '{runs}'"],
-         "the bundle did not run on {host}; PoLiMa must be installed there and the policy server stopped"),
-        (["rsync", "-a", "-e", " ".join(ssh), f"{host}:{results}/", f"{local}/"], "could not read the results from {host}"),
-    ):
-        if subprocess.run(argv, check=False).returncode:
-            raise StageError(problem.format(host=host))
+    runs = " && ".join(
+        shlex.join([
+            cli,
+            "--bundle", remote,
+            "--input-dir", where,
+            "--output", f"{results}/{name}.f32",
+        ])
+        for name, where in inputs.items()
+    )
+    try:
+        with BoardSession(target) as session:
+            session.mkdirs(f"{workdir}/bundles")
+            session.run(f"rm -rf -- {shlex.quote(results)} && mkdir -p {shlex.quote(results)}")
+            try:
+                session.rsync(
+                    bundle,
+                    remote,
+                    delete=True,
+                    excludes=("robot_client/pi05/embedding.f16",),
+                )
+            except (OSError, RuntimeError) as error:
+                raise StageError(f"could not copy the bundle to {host}") from error
+            command = f"flock /tmp/polima-bench.lock sh -c {shlex.quote(runs)}"
+            if session.run(command, check=False).returncode:
+                raise StageError(
+                    f"the bundle did not run on {host}; PoLiMa must be installed there and "
+                    "the policy server stopped"
+                )
+            try:
+                for name in inputs:
+                    session.fetch(f"{results}/{name}.f32", local / f"{name}.f32")
+            except (OSError, RuntimeError) as error:
+                raise StageError(f"could not read the results from {host}") from error
+    except StageError:
+        raise
+    except (OSError, RuntimeError) as error:
+        raise StageError(f"could not reach {host}") from error
     plan = json.loads((bundle / "plan.json").read_text())
     shape = tuple(plan["wire"]["response_shape"])
     per = {}

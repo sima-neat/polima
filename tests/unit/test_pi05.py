@@ -574,6 +574,7 @@ def test_llima_export_converts_every_fixture_in_the_set(tmp_path):
 def test_check_judges_the_mean_of_the_fixture_set(tmp_path, monkeypatch):
     from polima.compile import pi05 as builder
     from polima.config import devkits
+    from polima.deploy import ssh
 
     bundle = tmp_path / "bundle"
     (bundle / "plan.json").parent.mkdir(parents=True)
@@ -599,21 +600,38 @@ def test_check_judges_the_mean_of_the_fixture_set(tmp_path, monkeypatch):
 
     commands = []
 
-    def run(argv, check=False):
-        commands.append(argv)
-        if argv[0] == "rsync" and argv[-1].endswith("actions/"):
-            for name, value in got.items():
-                value.astype("<f4").tofile(Path(argv[-1]) / f"{name}.f32")
-        return type("Done", (), {"returncode": 0})()
+    class Session:
+        def __init__(self, _board):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def mkdirs(self, *paths):
+            commands.append(("mkdirs", *paths))
+
+        def rsync(self, source, destination, **_kwargs):
+            commands.append(("copy", str(source), destination))
+
+        def run(self, command, **_kwargs):
+            commands.append(("run", command))
+            return type("Done", (), {"returncode": 0})()
+
+        def fetch(self, remote, local):
+            name = Path(remote).stem
+            got[name].astype("<f4").tofile(local)
 
     monkeypatch.setattr(devkits, "apply", lambda target: None)
-    monkeypatch.setattr(builder.subprocess, "run", run)
+    monkeypatch.setattr(ssh, "BoardSession", Session)
     build = FakeBuild()
     report = builder.board_check(build, "sima@devkit")
     assert report["fixtures"] == 4 and report["ok"]
     assert report["mean_abs"] == pytest.approx(0.02, abs=1e-6)
     assert report["worst"]["fixture"] == "s00" and report["worst"]["mean_abs"] == pytest.approx(0.05, abs=1e-6)
-    assert sum(cmd.count("--input-dir") for cmd in (" ".join(c) for c in commands)) == 4
+    assert sum(item[-1].count("--input-dir") for item in commands if item[0] == "run") == 4
     assert "worst s00" in build.lines[-1]
 
 

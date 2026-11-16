@@ -49,6 +49,21 @@ def test_source_install_embeds_the_exact_installed_runtime_identity():
     assert '-DPOLIMA_LLIMA_PACKAGE_VERSION="$llima_core"' in installer
 
 
+def test_installer_escalates_only_exact_installation_directories():
+    installer = (ROOT / "scripts/install_polima_modalix.sh").read_text()
+    assert 'fail "do not run the entire installer with sudo' in installer
+    assert 'sudo -n install -d -o "$STUDIO_USER"' in installer
+    assert 'ensure_install_root "$ROOT"' in installer
+    assert 'ensure_install_root "$LEROBOT_VENV"' in installer
+    assert "chown -R" not in installer
+
+
+def test_customer_source_package_excludes_untracked_worktree_files():
+    packager = (ROOT / "scripts/ci/package_polima.sh").read_text()
+    assert "git -C \"$root\" ls-files -z --cached" in packager
+    assert "--others" not in packager
+
+
 def test_studio_service_uses_selected_installation(tmp_path):
     installer = (ROOT / "scripts/install_polima_modalix.sh").read_text()
     renderer = installer.split("<<'PY_SERVICE'\n", 1)[1].split("\nPY_SERVICE", 1)[0]

@@ -160,18 +160,29 @@ overridden for one run with an environment variable ([robot.md](robot.md#motion-
 
 ## Performance
 
-Median over 30 measured runs after five warm-up runs on a Modalix DevKit,
-using two 640×480 USB cameras, mixed precision and one 32-action plan. The
-runtime was built from `develop` at `7342f90`.
+The published mixed-precision bundles produce one 32-action plan. Fixture-only
+model latency was measured on a Modalix DevKit with Palette 3.0.0, LLiMa 0.6.0
+and PoLiMa runtime `7ca990f`, over 30 plans after five warm-ups.
 
-| | GR00T N1.6 | GR00T N1.7 |
+| Normal queued model latency | GR00T N1.6 | GR00T N1.7 |
 |---|---|---|
-| Model time on the DevKit | 317 ms | 233 ms |
-| Camera picture to plan ready | 361 ms | 279 ms |
+| p50 | 309.7 ms | 226.6 ms |
+| p95 | 309.9 ms | 227.1 ms |
+| p99 | 310.0 ms | 227.4 ms |
 
-Model time is reported by the policy server. Camera picture to plan starts at
-the newest capture timestamp of the two camera frames and ends when the action
-plan is ready.
+Diagnostic stage profiling runs compiled graphs individually instead of using
+the normal accelerator queue. These medians come from ten profiles after five
+warm-ups and should not be added to or compared directly with queued latency.
+
+| Diagnostic accelerator stage | GR00T N1.6 | GR00T N1.7 |
+|---|---:|---:|
+| Vision, both camera views | 155.27 ms | 70.40 ms |
+| Language backbone | 42.61 ms | 27.45 ms |
+| Action policy, four denoising passes | 108.95 ms | 123.78 ms |
+
+The physical-robot series measured live observation to plan at 361 ms for N1.6
+and 279 ms for N1.7. This spans the completed two-camera observation through
+queueing the action plan.
 
 These are reference-setup measurements. A newly compiled bundle needs its own
 fidelity check and benchmark; model geometry, precision and runtime version

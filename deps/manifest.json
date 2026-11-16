@@ -9,6 +9,17 @@
     "ref": "v0.6.0",
     "spec": "88bfaffc1bf1"
   },
+  "model-compiler": {
+    "repository": "model-compiler/arm64",
+    "release": {
+      "ref": "main",
+      "spec": "7fa6d2524a5d"
+    },
+    "develop": {
+      "ref": "develop",
+      "spec": "latest"
+    }
+  },
   "platform-version": "3.0.0",
   "elxr_version": "3.0.0_master_B2499"
 }

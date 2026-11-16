@@ -703,6 +703,20 @@ class StudioRuntime:
         except OSError:
             return None
         if any(line.split() == ["NoNewPrivs:", "1"] for line in status.splitlines()):
+            try:
+                buildinfo = Path("/etc/buildinfo").read_text()
+            except OSError:
+                buildinfo = ""
+            platform = next(
+                (line.partition("=")[2].strip() for line in buildinfo.splitlines()
+                 if line.partition("=")[0].strip() == "DISTRO_VERSION"),
+                "",
+            )
+            if platform.startswith("3."):
+                return ("Accelerator recovery requires an authorized terminal because Studio "
+                        "cannot elevate privileges. Stop robot motion first, run "
+                        "`polima server stop`, then start it again. If the model still fails "
+                        "to load, reboot the DevKit.")
             return ("Accelerator recovery requires an authorized terminal because Studio "
                     "cannot elevate privileges. Stop robot motion first, then run "
                     "`polima server stop` and `sudo /usr/bin/fix_devkit_runtime.sh` "

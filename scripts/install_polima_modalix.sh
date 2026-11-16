@@ -12,11 +12,27 @@ JOBS="${JOBS:-$(nproc)}"
 STUDIO_USER="${POLIMA_STUDIO_USER:-$(id -un)}"
 STUDIO_GROUP="$(id -gn "$STUDIO_USER")"
 TOKENIZERS_VERSION="${TOKENIZERS_VERSION:-0.22.2}"
+INSTALL_LINKS="${POLIMA_INSTALL_LINKS:-1}"
+INSTALL_SERVICE="${POLIMA_INSTALL_SERVICE:-1}"
 # Set by the published package's install_polima.sh; a checkout builds from source.
 RUNTIME_ARCHIVE="${POLIMA_RUNTIME_ARCHIVE:-}"
 
 fail() { echo "[fail] $*" >&2; exit 1; }
 log() { echo "==> $*"; }
+
+[[ "$EUID" -ne 0 ]] ||
+    fail "do not run the entire installer with sudo; log in as sima, run sudo -v once, then rerun"
+
+ensure_install_root() {
+    local path="$1"
+    if mkdir -p "$path" 2>/dev/null && [[ -w "$path" ]]; then
+        return
+    fi
+    sudo -n true 2>/dev/null ||
+        fail "cannot create $path; run sudo -v once, then rerun this installer without sudo"
+    sudo -n install -d -o "$STUDIO_USER" -g "$STUDIO_GROUP" -m 0755 "$path"
+    [[ -w "$path" ]] || fail "$path is not writable by $STUDIO_USER after creation"
+}
 
 [[ "$(uname -m)" == aarch64 ]] || fail "this installer must run on the Modalix devkit"
 for tool in python3 install; do
@@ -33,9 +49,13 @@ fi
 for path in "$ROOT" "$LEROBOT_VENV"; do
     [[ "$path" =~ ^/[a-zA-Z0-9_./-]+$ ]] || fail "installation paths must be absolute and contain only letters, digits, /, ., _ or -"
 done
-if command -v systemctl >/dev/null 2>&1 && [[ ! -w /etc/systemd/system ]]; then
-    sudo -n true 2>/dev/null || fail "service installation requires passwordless sudo; configure installation privileges before continuing"
+if [[ "$INSTALL_SERVICE" == 1 ]] && command -v systemctl >/dev/null 2>&1 && \
+        [[ ! -w /etc/systemd/system ]]; then
+    sudo -n true 2>/dev/null ||
+        fail "service installation needs sudo; run sudo -v once, then rerun this installer"
 fi
+ensure_install_root "$ROOT"
+ensure_install_root "$LEROBOT_VENV"
 mkdir -p "$ROOT/bin" "$ROOT/build" "$ROOT/var/log" "$ROOT/var/run"
 
 # An interrupted LeRobot install leaves a venv without lerobot; finish it instead of reusing it.
@@ -175,27 +195,29 @@ mv -f "$ROOT/bin/polima_server.new" "$ROOT/bin/polima_server"
 mv -f "$ROOT/bin/polima_cli.new" "$ROOT/bin/polima_cli"
 mv -f "$ROOT/runtime.json.new" "$ROOT/runtime.json"
 
-link_dir=""
-for candidate in /usr/local/bin /usr/bin; do
-    if [[ -d "$candidate" && -w "$candidate" ]]; then
-        link_dir="$candidate"
-        break
+if [[ "$INSTALL_LINKS" == 1 ]]; then
+    link_dir=""
+    for candidate in /usr/local/bin /usr/bin; do
+        if [[ -d "$candidate" && -w "$candidate" ]]; then
+            link_dir="$candidate"
+            break
+        fi
+        if [[ -d "$candidate" ]] && sudo -n true 2>/dev/null; then
+            sudo -n ln -sfn "$ROOT/bin/polima_cli" "$candidate/polima"
+            sudo -n ln -sfn "$ROOT/bin/polima_cli" "$candidate/polima-cli"
+            sudo -n ln -sfn "$ROOT/bin/polima_server" "$candidate/polima-server"
+            link_dir="$candidate"
+            break
+        fi
+    done
+    if [[ -n "$link_dir" && -w "$link_dir" ]]; then
+        ln -sfn "$ROOT/bin/polima_cli" "$link_dir/polima"
+        ln -sfn "$ROOT/bin/polima_cli" "$link_dir/polima-cli"
+        ln -sfn "$ROOT/bin/polima_server" "$link_dir/polima-server"
     fi
-    if [[ -d "$candidate" ]] && sudo -n true 2>/dev/null; then
-        sudo -n ln -sfn "$ROOT/bin/polima_cli" "$candidate/polima"
-        sudo -n ln -sfn "$ROOT/bin/polima_cli" "$candidate/polima-cli"
-        sudo -n ln -sfn "$ROOT/bin/polima_server" "$candidate/polima-server"
-        link_dir="$candidate"
-        break
-    fi
-done
-if [[ -n "$link_dir" && -w "$link_dir" ]]; then
-    ln -sfn "$ROOT/bin/polima_cli" "$link_dir/polima"
-    ln -sfn "$ROOT/bin/polima_cli" "$link_dir/polima-cli"
-    ln -sfn "$ROOT/bin/polima_server" "$link_dir/polima-server"
 fi
 
-if command -v systemctl >/dev/null 2>&1; then
+if [[ "$INSTALL_SERVICE" == 1 ]] && command -v systemctl >/dev/null 2>&1; then
     systemd_dir=/etc/systemd/system
     default_dir=/etc/default
     studio_service_was_installed=0

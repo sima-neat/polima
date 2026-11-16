@@ -6,15 +6,17 @@ bundle contains, with a checksum for every model file), test inputs, and the
 robot client. Its name ends in a short hash of the model files, so two bundles
 with the same name hold the same model.
 
-`polima deploy` runs on the host and copies a bundle to the DevKit over `ssh`
-and `rsync`. A source deployment also updates PoLiMa's native runtime. Its build
+`polima deploy` runs on the host and copies a bundle to the DevKit over SSH.
+It uses `rsync` when the DevKit provides it and otherwise uses `scp` and `tar`,
+which are present on the Palette SDK 3.0 image. A source deployment also updates
+PoLiMa's native runtime. Its build
 cache includes the runtime source, Modalix platform and exact LLiMa development
 and runtime packages, so an SDK upgrade cannot reuse an incompatible binary.
 
 ## Before the first deploy
 
-1. Install PoLiMa on the DevKit once with `./scripts/install_polima_modalix.sh`
-   (see the README).
+1. Install PoLiMa on the DevKit once with
+   `sima-cli neat install polima@main:latest` (see the install guide).
 2. Make sure `ssh sima@<devkit-address>` works from the host without a password
    prompt (use an SSH key).
 3. Tell PoLiMa the address:
@@ -41,7 +43,7 @@ What happens, in order (the command prints each step):
 
 | Step | What it does |
 |---|---|
-| preflight | Checks the DevKit: it is a Modalix, and it has `cmake`, the SiMa runtime development files and `jsoncpp`. Fails before copying anything. |
+| preflight | Checks the DevKit architecture and free space. A source-runtime build also checks `cmake`, the SiMa runtime development files and `jsoncpp`; a published prebuilt runtime does not require them. Fails before copying anything. |
 | layout | Creates the folders under `/media/nvme/polima`. |
 | sync-bundle | Copies the bundle to `/media/nvme/polima/models/<bundle-id>/`. Files that are already there are not copied again. |
 | python-runtime | Copies PoLiMa's Python package to `/media/nvme/polima/python/`, which the robot client uses. |

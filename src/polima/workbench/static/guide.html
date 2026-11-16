@@ -55,11 +55,11 @@ PYCONFIG</pre>
 <pre>polima workbench stop
 polima workbench start</pre>
 <p>Select the checkpoint and dataset, then choose <strong>Check prerequisites</strong>. These checks confirm basic paths and dataset structure; dependency compatibility, weights and model execution are checked during the build. Successful compilation does not prove robot readiness.</p></section>
-<section id="devkit"><h2>4. Install PoLiMa on your DevKit</h2><p>Connecting over SSH does not install PoLiMa. On a new Modalix DevKit with supported SiMa runtime software, obtain the PoLiMa source checkout and run its installer on the DevKit:</p>
-<pre>git clone https://github.com/sima-neat/polima.git
-cd polima
-./scripts/install_polima_modalix.sh</pre>
-<p>Repository access and internet access are required. The installer prepares the Python environment, runtime and Studio. Review <code>docs/install.md</code> for the supported SDK versions and required privileges. With systemd available, it installs <code>polima-studio.service</code>; installing the Python package alone does not create this service. The installer leaves Studio stopped.</p>
+<section id="devkit"><h2>4. Install PoLiMa on your DevKit</h2><p>Connecting over SSH does not install PoLiMa. On a new Modalix DevKit with supported SiMa runtime software, install the published package:</p>
+<pre>sima-cli neat install polima@main:latest
+polima --version
+polima doctor</pre>
+<p>Internet access is required for the first install. The package prepares the Python environment, prebuilt runtime and Studio. Review <code>docs/install.md</code> for the supported SDK versions and required privileges. With systemd available, it installs <code>polima-studio.service</code>; installing the Python wheel alone does not create this service. The installer leaves Studio stopped.</p>
 <pre>polima studio start
 polima studio status
 polima studio stop</pre><p>Open the address printed by <code>studio start</code> from your laptop. If the service is missing, complete the DevKit installer and inspect its output. To run Studio in the foreground after its dependencies are installed, use <code>polima studio serve</code>; Ctrl-C stops it.</p>

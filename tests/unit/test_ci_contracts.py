@@ -15,6 +15,7 @@ yaml = pytest.importorskip("yaml")
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
 SHARED = "sima-neat/.github/.github/workflows/"
+SHARED_REF = "473e2cc61c2b3720ef5c7488d70f3cf643887da6"
 RUN_DEVKIT = "needs.resolve-test-scope.outputs.run_devkit"
 
 
@@ -36,6 +37,11 @@ def test_manifest_uses_the_formats_core_and_the_sysroot_resolver_accept():
     assert set(manifest["llima"]) == {"ref", "spec"}
     assert re.fullmatch(r"v\d+\.\d+\.\d+", manifest["llima"]["ref"])
     assert re.fullmatch(r"[0-9a-f]{12}", manifest["llima"]["spec"])
+    compiler = manifest["model-compiler"]
+    assert compiler["repository"] == "model-compiler/arm64"
+    assert compiler["release"]["ref"] == "main"
+    assert re.fullmatch(r"[0-9a-f]{12}", compiler["release"]["spec"])
+    assert compiler["develop"] == {"ref": "develop", "spec": "latest"}
     project = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(), re.MULTILINE)
     assert manifest["package-version"] == project.group(1)
 
@@ -46,7 +52,8 @@ def test_every_action_is_pinned_and_every_shared_workflow_is_sima_neat():
             if uses.startswith("actions/"):
                 assert re.fullmatch(r"actions/[\w-]+@[0-9a-f]{40}", uses), f"{path.name}: {uses}"
             else:
-                assert uses.startswith(SHARED) and uses.endswith("@main"), f"{path.name}: {uses}"
+                assert uses.startswith(SHARED) and uses.endswith("@" + SHARED_REF), \
+                    f"{path.name}: {uses}"
 
 
 def test_pull_requests_run_only_on_github_hosted_machines():
@@ -70,20 +77,21 @@ def test_source_ci_rejects_unlisted_skips():
 def test_vulcan_ci_builds_both_lanes_with_the_shared_build_workflow():
     jobs = workflow("vulcan-ci.yml")["jobs"]
     for lane, job in (("release", jobs["build-release"]), ("develop", jobs["build-develop"])):
-        assert job["uses"] == SHARED + "vulcan-build.yml@main"
+        assert job["uses"] == SHARED + "vulcan-build.yml@" + SHARED_REF
         assert f"scripts/ci/vulcan_host_build.sh {lane}" in job["with"]["build_command"]
         assert job["with"]["artifact_path"] == f"dist/{lane}/*"
         assert job["with"]["vulcan_env"] == "${{ needs.resolve-vulcan-config.outputs.vulcan_env }}"
     assert "verify_package.py dist/release" in jobs["build-release"]["with"]["post_build_command"]
 
 
-def test_every_push_publishes_tests_and_promotes_the_package_like_llima():
+def test_only_trusted_pushes_publish_and_manual_runs_are_validation_only():
     data = workflow("vulcan-ci.yml")
     jobs = data["jobs"]
-    assert not triggers(data)["workflow_dispatch"], "a manual run tests everything; no inputs"
+    assert triggers(data)["push"]["branches"] == ["develop", "main", "release-**"]
+    assert triggers(data)["workflow_dispatch"] == {}
     publish = jobs["publish-vulcan-artifacts"]
-    assert publish["if"] == "${{ github.event_name != 'schedule' }}"  # nightly only rebuilds
-    assert publish["needs"] == ["resolve-vulcan-config", "build-release"]
+    assert publish["if"] == "${{ github.event_name == 'push' }}"
+    assert publish["needs"] == ["resolve-vulcan-config", "build-release", "compiler"]
     assert publish["with"]["artifact_pattern"] == "polima-release-dist"
     assert publish["with"]["environment_name"] == "${{ needs.resolve-vulcan-config.outputs.vulcan_env }}"
     scope = jobs["resolve-test-scope"]
@@ -91,15 +99,14 @@ def test_every_push_publishes_tests_and_promotes_the_package_like_llima():
     assert "scripts/ci/devkit_scope.py" in "\n".join(step.get("run", "") for step in scope["steps"])
     assert f"{RUN_DEVKIT} == 'true'" in jobs["resolve-test-runner"]["if"]
     assert jobs["test-devkit"]["if"] == "${{ " + RUN_DEVKIT + " == 'true' }}"
-    assert {"resolve-test-scope", "resolve-test-runner", "publish-vulcan-artifacts"} <= set(
+    assert {"resolve-test-scope", "resolve-test-runner", "build-release"} <= set(
         jobs["test-devkit"]["needs"])
     promote = jobs["promote-latest-tag"]
     assert promote["needs"][-1] == "test-devkit"
     gate = " ".join(promote["if"].split())
-    for condition in ("always()", "needs.resolve-test-scope.result == 'success'",
+    for condition in ("always()", "github.event_name == 'push'",
                       "needs.publish-vulcan-artifacts.result == 'success'",
-                      "needs.test-devkit.result == 'success'",
-                      f"{RUN_DEVKIT} == 'false' && needs.test-devkit.result == 'skipped'"):
+                      "needs.test-devkit.result == 'success'"):
         assert condition in gate, condition
 
 
@@ -113,10 +120,25 @@ def test_workflows_create_no_environments_and_use_only_org_secrets():
 def test_devkit_job_tests_the_published_artifact_and_never_builds():
     steps = workflow("vulcan-ci.yml")["jobs"]["test-devkit"]["steps"]
     commands = "\n".join(step.get("run", "") for step in steps)
-    assert "--download-only" in commands and "verify_package.py" in commands
+    assert "verify_package.py" in commands
+    assert "actions/download-artifact@" in "\n".join(step.get("uses", "") for step in steps)
     assert "scripts/ci/devkit_test.sh" in commands
     for forbidden in ("cmake", "build_runtime.sh", "vulcan_build.sh"):
         assert forbidden not in commands
+
+
+def test_devkit_qualification_does_not_replace_the_shared_llima_installation():
+    steps = workflow("vulcan-ci.yml")["jobs"]["test-devkit"]["steps"]
+    commands = "\n".join(step.get("run", "") for step in steps)
+    assert "dpkg-query" in commands and "resolved-dependencies.lock.json" in commands
+    assert "neat install" not in commands
+
+
+def test_model_compiler_release_and_develop_lanes_are_vulcan_jobs():
+    job = workflow("vulcan-ci.yml")["jobs"]["compiler"]
+    assert job["strategy"]["matrix"]["lane"] == ["release", "develop"]
+    assert job["with"]["runner_profile"] == "model-compiler"
+    assert "scripts/ci/compiler_lane.sh" in job["with"]["build_command"]
 
 
 def test_reference_bundles_are_the_revisions_the_benchmarks_document():

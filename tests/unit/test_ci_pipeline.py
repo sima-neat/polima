@@ -32,6 +32,8 @@ fetch_bundle = load("fetch_bundle")
 verify_package = load("verify_package")
 lane_summary = load("lane_summary")
 devkit_scope = load("devkit_scope")
+check_ci_results = load("check_ci_results")
+model_compiler_smoke = load("model_compiler_smoke")
 
 
 def sha(data: bytes) -> str:
@@ -48,12 +50,32 @@ def test_manifest_selector_reads_the_ref_pin_like_core():
         resolve_llima.manifest_selector({"llima": {"policy": "release", "version": "0.6.0"}})
 
 
+def test_ci_result_gate_distinguishes_validation_from_publication():
+    common = {name: {"result": "success"} for name in check_ci_results.COMMON_REQUIRED}
+    validation = {**common, "build-develop": {"result": "success"}}
+    assert check_ci_results.failures(validation, publish=False, devkit=False) == []
+    assert any("publish-vulcan-artifacts" in item for item in
+               check_ci_results.failures(validation, publish=True, devkit=False))
+    qualified = {**validation, "resolve-test-runner": {"result": "success"},
+                 "test-devkit": {"result": "success"}}
+    assert check_ci_results.failures(qualified, publish=False, devkit=True) == []
+
+
 def test_resolution_is_read_after_the_sima_cli_banner():
     text = 'warning banner\n{"ref": "develop", "resolved_spec": "9ab65e87d04c", ' \
            '"metadata_url": "https://x/m.json", "environment": "production"}'
     assert resolve_llima.parse_resolution(text)["resolved_spec"] == "9ab65e87d04c"
     with pytest.raises(ValueError):
         resolve_llima.parse_resolution('{"ref": "develop"}')
+
+
+def test_model_compiler_resolution_is_read_after_the_sima_cli_banner():
+    payload = {"repository": "model-compiler/arm64", "ref": "main",
+               "resolved_spec": "7fa6d2524a5d", "environment": "production"}
+    text = f"Environment: production\n{json.dumps(payload)}\n"
+    assert model_compiler_smoke.parse_resolution(text) == payload
+    with pytest.raises(ValueError, match="no complete JSON"):
+        model_compiler_smoke.parse_resolution("Environment: production")
 
 
 def _fake_llima(tmp_path: Path, version="0.6.0+develop.9ab65e87d04c", commit="9ab65e87d04c" + "0" * 28):

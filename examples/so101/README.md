@@ -14,7 +14,7 @@ white basket. A model trained for this task is not a general-purpose robot polic
 | Power and mounting | Power supply matched to the installed motor voltage; securely mounted robot base and camera mounts. |
 | Connections | Follower USB serial connection and two USB RGB cameras connected to the DevKit; secure the cables throughout the arm workspace. |
 | Cameras | Logitech C920 overhead and the reference Sonix USB wrist camera described below, capturing 640 × 480 at 30 frames/s. |
-| Host | PoLiMa deployment installation, SSH and rsync; Linux/macOS or Windows through WSL. |
+| Host | PoLiMa deployment installation and SSH; Linux/macOS or Windows through WSL. |
 
 A precompiled bundle does not require the training dataset, PyTorch checkpoint
 or ModelSDK on the customer's host. To compile your own checkpoint, use the

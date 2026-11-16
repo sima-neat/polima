@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    - modalix
+    - modalix-som-16gig

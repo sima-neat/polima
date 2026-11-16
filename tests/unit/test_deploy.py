@@ -103,6 +103,32 @@ def test_board_capture_keeps_remote_stderr_out_of_parsed_stdout(monkeypatch):
     assert session.free_bytes("/media/nvme/polima") == 407000000000
 
 
+def test_board_transfer_falls_back_to_scp_and_atomic_tar_swap(tmp_path, monkeypatch):
+    from polima.deploy import ssh
+    from polima.util.proc import Result
+
+    source = tmp_path / "bundle"
+    source.mkdir()
+    (source / "bundle.json").write_text("{}")
+    calls = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        return Result(list(argv), 0, 0.0)
+
+    monkeypatch.setattr(ssh, "run", fake_run)
+    session = ssh.BoardSession(BoardConfig(host="sima@example", control_master=False))
+    session._remote_rsync = False
+    session.rsync(source, "/media/nvme/polima/models/test", delete=True)
+
+    assert any(command[0] == "tar" and "bundle.json" not in command for command in calls)
+    assert any(command[0] == "scp" and command[-1].startswith("sima@example:")
+               for command in calls)
+    remote = "\n".join(" ".join(command) for command in calls if command[0] == "ssh")
+    assert "polima-stage-" in remote and "polima-previous-" in remote
+    assert "mv --" in remote
+
+
 def test_process_runner_can_capture_stdout_and_stderr_separately():
     from polima.util.proc import run
 
