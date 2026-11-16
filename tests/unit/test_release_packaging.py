@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,33 @@ def test_customer_source_package_excludes_untracked_worktree_files():
     packager = (ROOT / "scripts/ci/package_polima.sh").read_text()
     assert "git -C \"$root\" ls-files -z --cached" in packager
     assert "--others" not in packager
+
+
+def test_published_installer_removes_auto_extracted_package_trees(tmp_path):
+    installer = tmp_path / "install_polima.sh"
+    installer.write_bytes((ROOT / "scripts/ci/install_polima.sh").read_bytes())
+    installer.chmod(0o755)
+    (tmp_path / "polima-runtime-0.3.0-modalix.tar.gz").touch()
+    (tmp_path / "polima-0.3.0-py3-none-any.whl").touch()
+    source = tmp_path / "polima-source-0.3.0.tar.gz"
+    payload = tmp_path / "payload/scripts"
+    payload.mkdir(parents=True)
+    inner = payload / "install_polima_modalix.sh"
+    inner.write_text("#!/usr/bin/env bash\nset -euo pipefail\ntouch \"$1\"\n")
+    with tarfile.open(source, "w:gz") as archive:
+        archive.add(inner, arcname="scripts/install_polima_modalix.sh")
+
+    extracted = [tmp_path / "polima-runtime-0.3.0-modalix", tmp_path / "polima-source-0.3.0"]
+    for path in extracted:
+        path.mkdir()
+        (path / "automatic-extraction").touch()
+    marker = tmp_path / "installed"
+    subprocess.run([str(installer), str(marker)], check=True)
+
+    assert marker.exists()
+    assert not (tmp_path / "polima-source").exists()
+    assert all(not path.exists() for path in extracted)
+    assert source.exists()
 
 
 def test_studio_service_uses_selected_installation(tmp_path):

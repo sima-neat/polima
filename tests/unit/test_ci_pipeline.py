@@ -70,8 +70,8 @@ def test_resolution_is_read_after_the_sima_cli_banner():
 
 
 def test_model_compiler_resolution_is_read_after_the_sima_cli_banner():
-    payload = {"repository": "model-compiler/arm64", "ref": "main",
-               "resolved_spec": "7fa6d2524a5d", "environment": "production"}
+    payload = {"repository": "model-compiler/arm64", "ref": "v3.0.0",
+               "resolved_spec": "6cb61a63992f", "environment": "production"}
     text = f"Environment: production\n{json.dumps(payload)}\n"
     assert model_compiler_smoke.parse_resolution(text) == payload
     with pytest.raises(ValueError, match="no complete JSON"):

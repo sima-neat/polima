@@ -12,8 +12,8 @@
   "model-compiler": {
     "repository": "model-compiler/arm64",
     "release": {
-      "ref": "main",
-      "spec": "7fa6d2524a5d"
+      "ref": "v3.0.0",
+      "spec": "6cb61a63992f"
     },
     "develop": {
       "ref": "develop",

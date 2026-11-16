@@ -39,8 +39,7 @@ def test_manifest_uses_the_formats_core_and_the_sysroot_resolver_accept():
     assert re.fullmatch(r"[0-9a-f]{12}", manifest["llima"]["spec"])
     compiler = manifest["model-compiler"]
     assert compiler["repository"] == "model-compiler/arm64"
-    assert compiler["release"]["ref"] == "main"
-    assert re.fullmatch(r"[0-9a-f]{12}", compiler["release"]["spec"])
+    assert compiler["release"] == {"ref": "v3.0.0", "spec": "6cb61a63992f"}
     assert compiler["develop"] == {"ref": "develop", "spec": "latest"}
     project = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(), re.MULTILINE)
     assert manifest["package-version"] == project.group(1)
@@ -98,7 +97,8 @@ def test_only_trusted_pushes_publish_and_manual_runs_are_validation_only():
     assert scope["runs-on"] == "ubuntu-24.04"
     assert "scripts/ci/devkit_scope.py" in "\n".join(step.get("run", "") for step in scope["steps"])
     assert f"{RUN_DEVKIT} == 'true'" in jobs["resolve-test-runner"]["if"]
-    assert jobs["test-devkit"]["if"] == "${{ " + RUN_DEVKIT + " == 'true' }}"
+    assert f"{RUN_DEVKIT} == 'true'" in jobs["test-devkit"]["if"]
+    assert "needs.publish-vulcan-artifacts.result == 'success'" in jobs["test-devkit"]["if"]
     assert {"resolve-test-scope", "resolve-test-runner", "build-release"} <= set(
         jobs["test-devkit"]["needs"])
     promote = jobs["promote-latest-tag"]
@@ -118,20 +118,29 @@ def test_workflows_create_no_environments_and_use_only_org_secrets():
 
 
 def test_devkit_job_tests_the_published_artifact_and_never_builds():
-    steps = workflow("vulcan-ci.yml")["jobs"]["test-devkit"]["steps"]
+    jobs = workflow("vulcan-ci.yml")["jobs"]
+    steps = jobs["test-devkit"]["steps"]
     commands = "\n".join(step.get("run", "") for step in steps)
     assert "verify_package.py" in commands
-    assert "actions/download-artifact@" in "\n".join(step.get("uses", "") for step in steps)
+    assert "publish-vulcan-artifacts" in jobs["test-devkit"]["needs"]
+    assert "sima-cli neat install" in commands
+    assert "sima-cli neat install --env \"$NEAT_VULCAN_ENV\" --json" in commands
+    assert "parse_resolution" in commands and "metadata_url" in commands
+    assert 'polima@${GITHUB_REF_NAME}:${GITHUB_SHA:0:12}' in commands
+    assert "POLIMA_ROOT" in commands and "LEROBOT_VENV" in commands
+    assert "POLIMA_INSTALL_LINKS=0" in commands and "POLIMA_INSTALL_SERVICE=0" in commands
     assert "scripts/ci/devkit_test.sh" in commands
     for forbidden in ("cmake", "build_runtime.sh", "vulcan_build.sh"):
         assert forbidden not in commands
 
 
-def test_devkit_qualification_does_not_replace_the_shared_llima_installation():
+def test_devkit_qualification_does_not_replace_shared_installations():
     steps = workflow("vulcan-ci.yml")["jobs"]["test-devkit"]["steps"]
     commands = "\n".join(step.get("run", "") for step in steps)
     assert "dpkg-query" in commands and "resolved-dependencies.lock.json" in commands
-    assert "neat install" not in commands
+    assert "cp -a --reflink=auto" in commands
+    assert "/media/nvme/lerobot" in commands
+    assert 'rm -rf -- "$CANDIDATE_DIR" "$RESULTS_DIR" "$PACKAGE_DIR"' in commands
 
 
 def test_model_compiler_release_and_develop_lanes_are_vulcan_jobs():
@@ -139,6 +148,10 @@ def test_model_compiler_release_and_develop_lanes_are_vulcan_jobs():
     assert job["strategy"]["matrix"]["lane"] == ["release", "develop"]
     assert job["with"]["runner_profile"] == "model-compiler"
     assert "scripts/ci/compiler_lane.sh" in job["with"]["build_command"]
+    lane = (ROOT / "scripts/ci/compiler_lane.sh").read_text()
+    assert "python -m polima doctor" in lane
+    assert 'POLIMA_COMPILER_LANE="$lane"' in lane
+    assert "--imports --no-devkit --json" in lane
 
 
 def test_reference_bundles_are_the_revisions_the_benchmarks_document():

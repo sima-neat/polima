@@ -39,9 +39,12 @@ done
 [[ -n "$compiler_dir" ]] || { echo "Model Compiler installation not found" >&2; exit 1; }
 
 export POLIMA_COMPILER_ROOT="$root"
+export POLIMA_COMPILER_LANE="$lane"
 export POLIMA_COMPILER_OUTPUT="$output/smoke"
+export POLIMA_COMPILER_DOCTOR="$output/doctor.json"
 export POLIMA_COMPILER_RESOLUTION="$output/resolution.json"
 export MODEL_COMPILER_DIR="$compiler_dir"
+export MODEL_COMPILER_BIN="$compiler_dir/bin"
 bash --noprofile --rcfile "$HOME/.bashrc" -i <<'BASH'
 set -euo pipefail
 activate-model-compiler
@@ -51,6 +54,12 @@ import afe
 import importlib.metadata
 print("sima-frontend", importlib.metadata.version("sima-frontend"), afe.__file__)
 PY
+doctor=(--imports --no-devkit --json)
+if [[ "$POLIMA_COMPILER_LANE" == release ]]; then
+  doctor=(--no-devkit --json)
+fi
+PYTHONPATH="$POLIMA_COMPILER_ROOT/src" python -m polima doctor "${doctor[@]}" \
+  > "$POLIMA_COMPILER_DOCTOR"
 PYTHONPATH="$POLIMA_COMPILER_ROOT/src" python \
   "$POLIMA_COMPILER_ROOT/scripts/ci/model_compiler_smoke.py" \
   --output "$POLIMA_COMPILER_OUTPUT" --resolution "$POLIMA_COMPILER_RESOLUTION"

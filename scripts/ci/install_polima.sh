@@ -14,10 +14,14 @@ if (( ${#runtime[@]} != 1 || ${#wheel[@]} != 1 || ${#source[@]} != 1 )); then
   exit 1
 fi
 
-rm -rf "$here/polima-source"
-mkdir "$here/polima-source"
-tar -xzf "${source[0]}" -C "$here/polima-source" --no-same-owner
-POLIMA_SOURCE="$here/polima-source" \
+source_dir="$here/polima-source"
+extracted_dirs=("${runtime[0]%.tar.gz}" "${source[0]%.tar.gz}")
+cleanup() { rm -rf -- "$source_dir" "${extracted_dirs[@]}"; }
+trap cleanup EXIT
+cleanup
+mkdir "$source_dir"
+tar -xzf "${source[0]}" -C "$source_dir" --no-same-owner
+POLIMA_SOURCE="$source_dir" \
 POLIMA_RUNTIME_ARCHIVE="${runtime[0]}" \
 POLIMA_WHEEL="${wheel[0]}" \
   bash "$here/polima-source/scripts/install_polima_modalix.sh" "$@"

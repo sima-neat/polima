@@ -149,8 +149,13 @@ jobs:
 
   resolve-test-runner:
     name: Resolve exact DevKit
-    if: ${{ needs.resolve-test-scope.outputs.run_devkit == 'true' }}
-    needs: [resolve-test-scope, resolve-vulcan-config, build-release]
+    if: >-
+      ${{
+        always() && needs.resolve-test-scope.outputs.run_devkit == 'true' &&
+        needs.build-release.result == 'success' &&
+        (github.event_name != 'push' || needs.publish-vulcan-artifacts.result == 'success')
+      }}
+    needs: [resolve-test-scope, resolve-vulcan-config, build-release, publish-vulcan-artifacts]
     uses: sima-neat/.github/.github/workflows/vulcan-resolve-modalix-runner.yml@473e2cc61c2b3720ef5c7488d70f3cf643887da6
     with:
       manifest_path: deps/manifest.json
@@ -164,8 +169,15 @@ jobs:
 
   test-devkit:
     name: Qualify exact package on DevKit
-    if: ${{ needs.resolve-test-scope.outputs.run_devkit == 'true' }}
-    needs: [resolve-test-scope, resolve-vulcan-config, resolve-test-runner, build-release]
+    if: >-
+      ${{
+        always() && needs.resolve-test-scope.outputs.run_devkit == 'true' &&
+        needs.build-release.result == 'success' &&
+        needs.resolve-test-runner.result == 'success' &&
+        (github.event_name != 'push' || needs.publish-vulcan-artifacts.result == 'success')
+      }}
+    needs: [resolve-test-scope, resolve-vulcan-config, resolve-test-runner, build-release,
+            publish-vulcan-artifacts]
     runs-on:
       group: ${{ needs.resolve-test-runner.outputs.modalix_runner_group }}
       labels: ${{ fromJSON(needs.resolve-test-runner.outputs.runner_labels) }}
@@ -174,26 +186,55 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4
-        with:
-          name: polima-release-dist
-          path: ${{ runner.temp }}/polima-package
-      - name: Create isolated candidate layout
+      - name: Prepare run-specific paths
         run: |
           set -euo pipefail
           run="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          package="${RUNNER_TEMP}/polima-package"
-          candidate="${RUNNER_TEMP}/polima-candidate-${run}"
-          results="${RUNNER_TEMP}/polima-results-${run}"
-          mkdir -p "$candidate/python" "$results"
-          wheel=("$package"/polima-*.whl)
-          /media/nvme/lerobot/bin/python -m pip install --no-deps --target "$candidate/python" "${wheel[0]}"
           {
-            echo "PACKAGE_DIR=$package"
-            echo "CANDIDATE_DIR=$candidate"
-            echo "RESULTS_DIR=$results"
+            echo "PACKAGE_DIR=${RUNNER_TEMP}/polima-package-${run}"
+            echo "CANDIDATE_DIR=${RUNNER_TEMP}/polima-candidate-${run}"
+            echo "RESULTS_DIR=${RUNNER_TEMP}/polima-results-${run}"
+          } >> "$GITHUB_ENV"
+      - if: ${{ github.event_name != 'push' }}
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4
+        with:
+          name: polima-release-dist
+          path: ${{ runner.temp }}/polima-package-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Install exact published package in an isolated layout
+        if: ${{ github.event_name == 'push' }}
+        env:
+          NEAT_VULCAN_ENV: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PACKAGE_DIR" "$CANDIDATE_DIR" "$RESULTS_DIR"
+          target="polima@${GITHUB_REF_NAME}:${GITHUB_SHA:0:12}"
+          resolution="$RESULTS_DIR/package-resolution.json"
+          sima-cli neat install --env "$NEAT_VULCAN_ENV" --json "$target" > "$resolution"
+          metadata_url="$(PYTHONPATH="$GITHUB_WORKSPACE/scripts/ci" python3 -c \
+            'from pathlib import Path; import sys; from resolve_llima import parse_resolution; print(parse_resolution(Path(sys.argv[1]).read_text())["metadata_url"])' \
+            "$resolution")"
+          curl -fsSL "$metadata_url" -o "$PACKAGE_DIR/metadata.json"
+          cp -a --reflink=auto /media/nvme/lerobot "$CANDIDATE_DIR/lerobot"
+          POLIMA_ROOT="$CANDIDATE_DIR/polima" \
+          LEROBOT_VENV="$CANDIDATE_DIR/lerobot" \
+          POLIMA_INSTALL_LINKS=0 POLIMA_INSTALL_SERVICE=0 SKIP_LEROBOT=1 \
+            sima-cli neat install --env "$NEAT_VULCAN_ENV" -d "$PACKAGE_DIR" \
+              "$target"
+          {
+            echo "POLIMA_CI_PYTHON=$CANDIDATE_DIR/lerobot/bin/python"
+            echo "POLIMA_ROOT=$CANDIDATE_DIR/polima"
+          } >> "$GITHUB_ENV"
+      - name: Create isolated validation layout
+        if: ${{ github.event_name != 'push' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$CANDIDATE_DIR/python" "$RESULTS_DIR"
+          wheel=("$PACKAGE_DIR"/polima-*.whl)
+          /media/nvme/lerobot/bin/python -m pip install --no-deps \
+            --target "$CANDIDATE_DIR/python" "${wheel[0]}"
+          {
             echo "POLIMA_CI_PYTHON=/media/nvme/lerobot/bin/python"
-            echo "PYTHONPATH=$candidate/python"
+            echo "PYTHONPATH=$CANDIDATE_DIR/python"
           } >> "$GITHUB_ENV"
       - name: Verify firmware, package and installed LLiMa identity
         env:
@@ -219,7 +260,7 @@ jobs:
           path: ${{ env.RESULTS_DIR }}
           if-no-files-found: warn
       - if: ${{ always() }}
-        run: rm -rf -- "$CANDIDATE_DIR" "$RESULTS_DIR"
+        run: rm -rf -- "$CANDIDATE_DIR" "$RESULTS_DIR" "$PACKAGE_DIR"
 
   promote-latest-tag:
     name: Promote trusted latest tag
