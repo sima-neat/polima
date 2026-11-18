@@ -40,7 +40,13 @@ class Preflight:
         }
 
 
-def preflight(session: BoardSession, board: BoardConfig, bundle: Bundle | None) -> Preflight:
+def preflight(
+    session: BoardSession,
+    board: BoardConfig,
+    bundle: Bundle | None,
+    *,
+    require_build_tools: bool = True,
+) -> Preflight:
     """Check the board can take this deploy, before anything is transferred."""
     report = Preflight()
 
@@ -52,17 +58,18 @@ def preflight(session: BoardSession, board: BoardConfig, bundle: Bundle | None) 
 
     if report.machine != "aarch64":
         report.fail(f"expected an aarch64 board, found {report.machine or 'unknown'}")
-    if not report.cmake:
-        report.fail("cmake is not installed; the native runtime is built on the board")
-    if not report.simalmm:
-        report.fail(
-            "no SimaLMM cmake package (/usr/lib/*/cmake/SimaLMM); "
-            "find_package(SimaLMM REQUIRED) will fail"
-        )
-    if not facts.get("JSONCPP"):
-        report.fail(
-            "jsoncpp headers missing; SimaLMM's mla_model.hpp includes <json/json.h>"
-        )
+    if require_build_tools:
+        if not report.cmake:
+            report.fail("cmake is not installed; the native runtime is built on the board")
+        if not report.simalmm:
+            report.fail(
+                "no SimaLMM cmake package (/usr/lib/*/cmake/SimaLMM); "
+                "find_package(SimaLMM REQUIRED) will fail"
+            )
+        if not facts.get("JSONCPP"):
+            report.fail(
+                "jsoncpp headers missing; SimaLMM's mla_model.hpp includes <json/json.h>"
+            )
 
     # Measure at the deploy root itself (or its nearest existing parent), not at
     # the first path component: /media is the root filesystem, /media/nvme is the
@@ -117,8 +124,8 @@ def assert_no_archives(session: BoardSession, remote_dir: str) -> None:
 def verify_bundle(session: BoardSession, board: BoardConfig, bundle: Bundle) -> list[str]:
     """Confirm every ELF arrived intact, by hashing on the board.
 
-    A truncated rsync produces an ELF that loads and returns garbage; comparing
-    digests is the only way to rule that out.
+    A truncated transfer produces an ELF that loads and returns garbage;
+    comparing digests is the only way to rule that out.
     """
     remote_root = f"{board.bundles_dir}/{bundle.bundle_id}"
     problems: list[str] = []

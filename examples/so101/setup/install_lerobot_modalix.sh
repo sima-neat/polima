@@ -106,6 +106,23 @@ log "Creating venv at $VENV ${SSP:-(isolated)} -- ${avail_gb} GB free"
 # Record what the system interpreter sees, before the venv can shadow anything.
 sys_numpy="$("$PYTHON" -c 'import numpy;print(numpy.__version__)' 2>/dev/null || echo none)"
 
+# lerobot's pynput needs evdev, which ships only as source and compiles against Python.h.
+# The SDK 3.0 image (Python 3.13) has no python3-dev; fetch the matching headers without
+# sudo (apt-get download) and unpack them next to the venv instead of installing them.
+py_include="$("$PYTHON" -c 'import sysconfig;print(sysconfig.get_path("include"))')"
+if [ ! -f "$py_include/Python.h" ]; then
+  headers="$VENV/.python-headers"
+  log "Python.h is missing; fetching the python$pyver headers into $headers"
+  mkdir -p "$headers/debs"
+  (cd "$headers/debs" && apt-get download "libpython$pyver-dev" "python$pyver-dev") \
+    || die "could not download the python$pyver headers; run: sudo apt-get install -y python3-dev"
+  for deb in "$headers"/debs/*.deb; do dpkg-deb -x "$deb" "$headers/root"; done
+  [ -f "$headers/root/usr/include/python$pyver/Python.h" ] \
+    || die "the downloaded headers do not contain python$pyver/Python.h"
+  # Debian's pyconfig.h includes <$(arch)/python3.X/pyconfig.h>, relative to usr/include.
+  export CFLAGS="${CFLAGS:-} -I$headers/root/usr/include -I$headers/root/usr/include/python$pyver"
+fi
+
 # ---------------------------------------------------------------- install ----
 # aarch64 torch wheels on PyPI are already CPU-only (~146 MB, no bundled CUDA),
 # so no --extra-index-url is needed. torchcodec self-excludes on aarch64 via its

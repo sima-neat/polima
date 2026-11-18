@@ -6,24 +6,22 @@ software versions, not performance guarantees for other checkpoints or setups.
 
 ## Inference latency
 
-ACT and GR00T use 30 measured plans after five warm-up plans. Pi0.5 uses 20
-after three. Each model ran by itself. The camera-to-plan values come from the
+Each model uses 30 measured plans after five warm-up plans and runs by itself.
+Model latency was remeasured on eLxr 26.04.02 with Palette 3.0.0, LLiMa 0.6.0
+and PoLiMa runtime `7ca990f`. Live observation-to-plan latency comes from the
 reference robot setup with two 640 × 480 cameras at 30 FPS.
 
-| Model | Precision | Actions per plan | Model p50 / p95 / p99 | Camera to plan, median |
+| Model | Precision | Actions per plan | Model p50 / p95 / p99 | Live observation to plan, median |
 |---|---|---:|---:|---:|
-| ACT | BF16 | 100 | 13.23 / 13.39 / 13.45 ms | 25 ms |
-| GR00T N1.6 | Mixed INT8/BF16 | 32 | 315.40 / 315.62 / 315.68 ms | 361 ms |
-| GR00T N1.7 | Mixed INT8/BF16 | 32 | 231.65 / 232.17 / 232.57 ms | 279 ms |
-| Pi0.5 | W8A16 with BF16 attention | 50 | 358.5 / 359.1 / 360.3 ms | not measured |
+| ACT | BF16 | 100 | 13.5 / 13.5 / 13.5 ms | 25 ms |
+| GR00T N1.6 | Mixed INT8/BF16 | 32 | 309.7 / 309.9 / 310.0 ms | 361 ms |
+| GR00T N1.7 | Mixed INT8/BF16 | 32 | 226.6 / 227.1 / 227.4 ms | 279 ms |
+| Pi0.5 | W8A16 with BF16 attention | 50 | 345.7 / 345.9 / 346.0 ms | 438 ms |
 
 **Model latency** measures policy execution on the DevKit after request
-decoding. **Camera to plan** starts at the newer timestamp of the two camera
-frames and ends when the action plan is ready. The live-camera series retained
-its medians but not individual samples, so p95 and p99 are reported only for
-model execution. Pi0.5 camera-to-plan samples were not retained, so that
-value is left unreported. The arm can continue executing the current plan while
-the next plan is computed.
+decoding. **Live observation to plan** starts after the two-camera observation
+is captured and ends when the action plan enters the robot client's queue. The
+arm can continue executing the current plan while the next plan is computed.
 
 ## Model configuration
 
@@ -48,48 +46,34 @@ Pi0.5, its own noise tensor.
 | ACT | 16 held-out frames | 0.999992 / 0.999984 | 0.0030 / 0.0042 | 0.0190 / 0.0295 |
 | GR00T N1.6 | 6 held-out frames | 0.998941 / 0.995766 | 0.0115 / 0.0292 | 0.0545 / 0.1343 |
 | GR00T N1.7 | 6 held-out frames | 0.998489 / 0.996070 | 0.0115 / 0.0237 | 0.0680 / 0.1289 |
-| Pi0.5 | 8 fixtures | not retained | 0.0160 overall; 0.0370 worst timestep | not retained |
 
 ACT passes when cosine similarity is at least 0.999 and normalized mean
 absolute error is at most 0.01. The mixed-precision GR00T bundles pass at 0.995
-and 0.03 respectively. Pi0.5's eight-fixture check passes when the mean across
-the set meets the 0.995 cosine and 0.03 mean-error gates. Its retained summary
-reports overall action error and the worst individual timestep, rather than
-per-frame cosine and maximum error.
-Maximum error is reported where retained but is not a separate pass condition.
+and 0.03 respectively. Pi0.5 passed its eight-fixture comparison with an
+overall action mean absolute error of 0.016 and a worst-timestep error of 0.037.
+Maximum error is informational rather than a separate pass condition.
 
 These checks establish numerical agreement for the tested inputs. They do not
-measure physical task success. A controlled robot success rate was not recorded
-for this benchmark series.
+measure physical task success, which depends on the robot and workspace setup.
 
 ## Reference artifacts
 
-| Model | Published bundle | Checkpoint | Dataset split | Build software |
-|---|---|---|---|---|
-| ACT | [`ACT-SO101-PickPlace@307e6dbc`](https://huggingface.co/simaai/ACT-SO101-PickPlace/tree/307e6dbccc32d8e52ea0a4a983dd9c024c157643) | step 100,000 | 769 of 961 demonstrations | PoLiMa `e997878`, ModelSDK 2.1.3 |
-| GR00T N1.6 | [`GR00T-N1.6-SO101-PickPlace@97b01c04`](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace/tree/97b01c04d4c1751476184d13105df4f6d5670ec9) | step 50,000 from [`nvidia/GR00T-N1.6-3B`](https://huggingface.co/nvidia/GR00T-N1.6-3B) | 769 of 961 demonstrations | PoLiMa `19c052e`, ModelSDK 2.1.3 |
-| GR00T N1.7 | [`GR00T-N1.7-SO101-PickPlace@f0b5a251`](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace/tree/f0b5a25148f1d41d625043dcf8191d8ff7658feb) | step 50,000 from [`nvidia/GR00T-N1.7-3B`](https://huggingface.co/nvidia/GR00T-N1.7-3B) | 769 of 961 demonstrations | PoLiMa `19c052e`, ModelSDK 2.1.3 |
-| Pi0.5 | [`Pi0.5-SO101-PickPlace@308b18cf`](https://huggingface.co/simaai/Pi0.5-SO101-PickPlace/tree/308b18cf2d32e28004a8ce2ca1b60ac4fa4c952d) | step 20,000 from [`lerobot/pi05_base`](https://huggingface.co/lerobot/pi05_base) | 769 of 961 demonstrations | PoLiMa `d31a58a`, ModelSDK 2.1.3, LLiMa 0.4.0 |
+| Model | Published bundle | Training checkpoint |
+|---|---|---|
+| ACT | [`ACT-SO101-PickPlace@307e6dbc`](https://huggingface.co/simaai/ACT-SO101-PickPlace/tree/307e6dbccc32d8e52ea0a4a983dd9c024c157643) | step 100,000 |
+| GR00T N1.6 | [`GR00T-N1.6-SO101-PickPlace@97b01c04`](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace/tree/97b01c04d4c1751476184d13105df4f6d5670ec9) | step 50,000 from [`nvidia/GR00T-N1.6-3B`](https://huggingface.co/nvidia/GR00T-N1.6-3B) |
+| GR00T N1.7 | [`GR00T-N1.7-SO101-PickPlace@f0b5a251`](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace/tree/f0b5a25148f1d41d625043dcf8191d8ff7658feb) | step 50,000 from [`nvidia/GR00T-N1.7-3B`](https://huggingface.co/nvidia/GR00T-N1.7-3B) |
+| Pi0.5 | [`Pi0.5-SO101-PickPlace@308b18cf`](https://huggingface.co/simaai/Pi0.5-SO101-PickPlace/tree/308b18cf2d32e28004a8ce2ca1b60ac4fa4c952d) | step 20,000 from [`lerobot/pi05_base`](https://huggingface.co/lerobot/pi05_base) |
 
 All four models use the two-camera
 [`SO101-GreyEraser-PickPlace`](https://huggingface.co/datasets/Priyakarna/SO101-GreyEraser-PickPlace/tree/bfd7c1831092adfb0f02273e390d86bad193d419)
-dataset at revision `bfd7c183`. It contains 961 teleoperated demonstrations and
-272,853 frames. The reference task is placing a grey eraser in a white basket.
+dataset at revision `bfd7c183`. Each fine-tune uses its 769-demonstration
+training split; the complete dataset contains 961 teleoperated demonstrations
+and 272,853 frames. The reference task is placing a grey eraser in a white
+basket.
 
 The published repositories contain deployable compiled bundles. They do not
 contain the original training checkpoints or dataset.
-
-<details>
-<summary>Exact bundle identifiers and source revisions</summary>
-
-- ACT: `act-so101-grey-eraser-pickplace-100k-bf16-1879ca7c`
-- GR00T N1.6: `groot-so101-grey-eraser-pickplace-v1.6-50k-mixed-28ce4ebf`,
-  Isaac-GR00T `9b37aa1ce69c73c6d165233fa88128283bba4508`
-- GR00T N1.7: `groot-so101-grey-eraser-pickplace-v1.7-50k-mixed-d32a6801`,
-  Isaac-GR00T `51d4c89f72fda44cbf77285c6a8114b52676b8a1`
-- Pi0.5: `pi05-so101-grey-eraser-pickplace-20k-w8a16-2ae183ea`, based on `lerobot/pi05_base`
-
-</details>
 
 ## Compilation and package size
 
@@ -97,16 +81,16 @@ The bundles were compiled on Linux x86_64 with an Intel Core Ultra 7 265KF,
 249 GiB RAM and an NVIDIA GeForce RTX 5090. GR00T used three concurrent graph
 jobs; ACT used six. Pi0.5 used three for its ModelSDK expert build.
 
-| Model | Recorded build time | Peak build RAM | Retained build tree | Downloaded artifact | Free space for installation |
-|---|---:|---:|---:|---:|---:|
-| ACT | 2 min 46 s | 2.12 GiB | 1.62 GB | 142 MB | 213 MB |
-| GR00T N1.6 | 2 h 52 min | not recorded | 91.4 GB | 3.44 GB | 5.16 GB |
-| GR00T N1.7 | 2 h 0 min | not recorded | 83.4 GB | 3.64 GB | 5.46 GB |
-| Pi0.5 | 41 min 52 s | not recorded | 49.0 GB | 5.04 GB | 7.56 GB |
+| Model | Reference build time | Download size | Free space for installation |
+|---|---:|---:|---:|
+| ACT | 2 min 46 s | 142 MB | 213 MB |
+| GR00T N1.6 | 2 h 52 min | 3.44 GB | 5.16 GB |
+| GR00T N1.7 | 2 h 0 min | 3.64 GB | 5.46 GB |
+| Pi0.5 | 41 min 52 s | 5.04 GB | 7.56 GB |
 
-The GR00T and Pi0.5 retained-tree values include exports and compiler
-intermediates; they are not minimum disk requirements. Installation space is 1.5 times the final
-artifact so PoLiMa can stage and validate a replacement before activation.
+Build time depends on host hardware and compiler load. Installation space is
+1.5 times the downloaded artifact so PoLiMa can validate a replacement before
+activation.
 
 <details>
 <summary>Build commands and package contents</summary>
@@ -205,50 +189,34 @@ Gemma and action-expert weight layers; the shared attention graph remains BF16.
 - **Pi0.5:** `vision`, `pre_00..17`, shared `attn`, `post_00..16`, and
   `expert`. The prefix graphs run once; `expert` runs ten denoising steps.
 
-The bundle plans have no static INT8 graph inputs. Per-graph compiled accuracy
-was not measured because the fused device chains do not expose every
-intermediate output. End-to-end compiled accuracy is reported above.
+The bundle plans have no static INT8 graph inputs. Fused device chains are
+validated end to end using the numerical-fidelity checks above.
 
 </details>
 
-## DevKit resources
+## Execution-stage profile
 
-The measurements used eLxr 12, kernel `6.18.3-modalix`, Neat 0.5.0,
-`sima_lmm` 0.5.0 and PoLiMa runtime `7342f909`. Studio, the robot client and
-other inference workloads were stopped. Each model ran alone.
-
-| Model | ELF-cache-cold load | Immediate reload | Server peak RSS | Fixture client peak RSS | Free CMA during requests |
-|---|---:|---:|---:|---:|---:|
-| ACT | 1.86 s | 1.37 s | 79 MiB | 38 MiB | 142–144 MiB |
-| GR00T N1.6 | 8.24 s | 5.85 s | 99 MiB | 40 MiB | 27–36 MiB |
-| GR00T N1.7 | 9.23 s | 9.52 s | 179 MiB | 47 MiB | 12–21 MiB |
-| Pi0.5 | not retained | not retained | not retained | not retained | not retained |
-
-The cold-load test evicted only the inactive bundle's ELF pages; it was not a
-full reboot. CMA is shared with the system, so free CMA is a system snapshot,
-not model memory consumption. The client values come from fixture inference
-without camera capture or motor control; full robot-client memory was not
-measured. Pi0.5 resource snapshots were not retained for this series.
-
-<details>
-<summary>Execution-stage profile</summary>
-
-Stage profiling used the sixth request after five warm-ups. It disables normal
-accelerator queuing, so these diagnostic values should not be added to the
-headline latency table.
+These values are medians over ten diagnostic runs after five warm-ups, using
+the same bundles and SDK 3 runtime as the model-latency measurements above.
+Stage profiling runs each compiled graph separately and therefore disables the
+normal accelerator queue. The values identify where accelerator execution time
+is spent; do not add them to or directly compare them with the queued p50/p95/p99
+table. Host preparation and transport are not assigned to a neural-network
+stage.
 
 | Model | Vision | Language | Action policy |
 |---|---:|---:|---:|
-| ACT | 6.39 ms | not applicable | 6.34 ms |
-| GR00T N1.6 | 163.22 ms | 44.42 ms | 115.76 ms |
-| GR00T N1.7 | 76.54 ms | 29.18 ms | 131.08 ms |
-| Pi0.5 | 202.39 ms combined prefill | included in prefill | 155.26 ms |
+| ACT | 5.85 ms | not applicable | 5.52 ms |
+| GR00T N1.6 | 155.27 ms | 42.61 ms | 108.95 ms |
+| GR00T N1.7 | 70.40 ms | 27.45 ms | 123.78 ms |
+| Pi0.5 | 197.65 ms combined prefill | included in prefill | 148.49 ms |
 
-Vision includes both camera views. GR00T action time includes K/V projection
-and four denoising passes. Pi0.5 retained one combined vision-language prefill
-time; its action time includes all ten denoising steps.
-
-</details>
+Vision includes both camera views. ACT has no language stage; its action-policy
+time includes its transformer encoder and decoder. GR00T action time includes
+the action-head adapters, K/V projection and four denoising passes. Pi0.5
+exposes one combined vision-language prefill rather than independently timed
+vision and language stages; its action time includes all ten expert denoising
+steps.
 
 ## Reproduce on a DevKit
 
@@ -275,14 +243,25 @@ Replace the repository and revision with the ACT, N1.6 or Pi0.5 value in the
 artifact table. These commands validate inference without moving a robot.
 Studio **Performance** provides the same hardware-free benchmark workflow.
 
-For native p50/p95/p99 and stage output, open the runtime CLI on the DevKit:
+For native p50/p95/p99, open the runtime CLI on the DevKit:
 
 ```bash
 polima_cli --models-dir /media/nvme/polima/models \
   --interactive --bundle <bundle-id> --exclusive-control
 bench 30 5
-stages
 check
+quit
+```
+
+Run diagnostic stage profiling in a separate process so it cannot change the
+queued latency measurement. At the prompt, run `stages` 15 times and discard
+the first five profiles:
+
+```bash
+POLIMA_PROFILE_PHASES=1 POLIMA_PROFILE_STAGES=1 \
+  polima_cli --models-dir /media/nvme/polima/models \
+  --interactive --bundle <bundle-id> --exclusive-control
+stages
 quit
 ```
 
@@ -300,5 +279,4 @@ Compilation, numerical validation and robot operation are separate results:
 | Held-out comparison | Compiled outputs match PyTorch on the tested dataset frames. |
 | Physical run | The stated robot and setup completed the observed task trials. |
 
-This benchmark series did not record full robot-client memory, per-graph
-compiled accuracy, live-camera p95/p99, or a controlled physical success rate.
+Use Studio **Performance** to benchmark a bundle on its deployed hardware.

@@ -158,7 +158,8 @@ def build_plan(spec: PolicySpec, context: Any = None) -> RuntimePlan:
         form = runtime.get("expert_form", "nhwc")
         if form == "nchw" and not runtime.get("expert_inputs"):
             order = NCHW_EXPERT_INPUTS
-        return build_llima_plan(cameras, action_dim, order, form, runtime.get("denoise", "host"))
+        return build_llima_plan(cameras, action_dim, order, form, runtime.get("denoise", "host"),
+                                int(runtime.get("vision_layers", 1)))
     return RuntimePlan(
         buffers=buffers(cameras, action_dim),
         steps=tuple(build_steps(cameras, action_dim, order)),
@@ -182,6 +183,9 @@ def build_plan(spec: PolicySpec, context: Any = None) -> RuntimePlan:
 
 LLIMA_TOKENS = 1024
 FREQS = 128  # rotary frequencies (head_dim / 2), cos table then sin table
+#: SigLIP So400m width between vision layers. LLiMa 0.6 compiles the vision tower one
+#: layer per ELF (the last adds the 2048-wide projector); LLiMa 0.4 compiles one ELF.
+VISION_WIDTH = 1152
 
 
 LLIMA_GROUP_ALIGN = 128
@@ -204,6 +208,11 @@ def llima_pre(layer: int) -> str:
 
 def llima_post(layer: int) -> str:
     return f"post_{layer:02d}"
+
+
+def llima_vision(layer: int, layers: int) -> str:
+    """The bundle graph of one vision layer; a one-ELF tower keeps its name `vision`."""
+    return "vision" if layers == 1 else f"vision_{layer:02d}"
 
 
 #: Per-step adaRMS modulation of the NCHW expert: [scale|shift|gate] of every layer's
@@ -245,14 +254,17 @@ def _device_denoise(expert_inputs: tuple[str, ...], layout: dict[str, tuple[int,
 
 
 def build_llima_plan(cameras: int, action_dim: int, expert_inputs: tuple[str, ...] = EXPERT_INPUTS,
-                     expert_form: str = "nhwc", denoise: str = "host") -> RuntimePlan:
+                     expert_form: str = "nhwc", denoise: str = "host", vision_layers: int = 1) -> RuntimePlan:
     """`expert_form` "nchw": the GR00T-DiT-form expert (blocks.ExpertStepNchw) taking the
     precomputed per-step adaRMS modulation (sidecars ada_XX) and RoPE as [50][cos|sin].
 
     `denoise` "device" (NCHW only): the expert ELF is blocks.ExpertEulerNchw with one
     persistent binding per input, so the ten steps are one device program -- x ping-pongs
     between two device buffers, each step binds its own (cached) adaRMS buffer and the
-    prefill's K/V buffer, and the APU uploads the noise and downloads x once."""
+    prefill's K/V buffer, and the APU uploads the noise and downloads x once.
+
+    `vision_layers` > 1: one vision ELF per layer (LLiMa 0.6); each camera's tokens
+    ping-pong between two device buffers and the last layer writes the hidden rows."""
     nchw = expert_form == "nchw"
     on_device = denoise == "device"
     if on_device and not nchw:
@@ -299,8 +311,17 @@ def build_llima_plan(cameras: int, action_dim: int, expert_inputs: tuple[str, ..
         {"dst": "freq_imag", "count": p * FREQS, "sidecar": "freq_imag", "cache": True},
         {"dst": "mask", "count": p * p, "src": "mask"},
     ]
-    calls = [{"graph": "vision", "in": [[f"pixels{k}", 0, image]],
-              "out": [["hidden_a", k * IMAGE_TOKENS * WIDTH, IMAGE_TOKENS * WIDTH]]} for k in range(cameras)]
+    tokens = IMAGE_TOKENS * VISION_WIDTH
+    if vision_layers > 1:
+        device.update({"vision_a": tokens, "vision_b": tokens})
+    calls = []
+    for k in range(cameras):
+        source = [f"pixels{k}", 0, image]
+        for layer in range(vision_layers):
+            target = (["hidden_a", k * IMAGE_TOKENS * WIDTH, IMAGE_TOKENS * WIDTH] if layer + 1 == vision_layers
+                      else [("vision_a", "vision_b")[layer % 2], 0, tokens])
+            calls.append({"graph": llima_vision(layer, vision_layers), "in": [source], "out": [target]})
+            source = target
     hidden = ["hidden_a", "hidden_b"]
     kv = p * ROW
     for layer in range(PREFIX_LAYERS):

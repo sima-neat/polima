@@ -1,4 +1,5 @@
 """Pi0.5 policy: spec, runtime plan, client request building and the static graphs."""
+import itertools
 import json
 from pathlib import Path
 
@@ -163,10 +164,17 @@ def test_rope_rows_match_the_graph_tables():
     torch = pytest.importorskip("torch")
     from polima.policies.pi05 import modules
 
-    cos, sin = modules.rope_tables(torch.arange(900, 950))
-    rows = client.rope_rows(900)
-    np.testing.assert_allclose(rows[:50], cos.numpy(), atol=1e-5)
-    np.testing.assert_allclose(rows[50:], sin.numpy(), atol=1e-5)
+    positions = np.arange(900, 950)
+    inv_freq = 1.0 / (client.THETA ** (np.arange(0, client.HEAD_DIM, 2) / client.HEAD_DIM))
+    angles = np.tile(positions[:, None] * inv_freq, 2)
+    exact = np.concatenate([np.cos(angles), np.sin(angles)])
+    # Both tables are float32: one ULP of a frequency moves a 950-rad angle by 1.1e-4,
+    # and NumPy and PyTorch round differently on different CPUs. A wrong table is off
+    # by more than 0.1, so compare each with the exact values at float32 precision.
+    tolerance = 4 * np.spacing(np.float32(positions[-1]))
+    cos, sin = modules.rope_tables(torch.from_numpy(positions))
+    np.testing.assert_allclose(client.rope_rows(900), exact, atol=tolerance)
+    np.testing.assert_allclose(np.concatenate([cos.numpy(), sin.numpy()]), exact, atol=tolerance)
 
 
 def test_quantile_round_trip_and_identity_without_stats():
@@ -432,6 +440,54 @@ def test_device_denoise_needs_the_nchw_expert():
         rt.build_llima_plan(3, 32, rt.EXPERT_INPUTS, "nhwc", "device")
 
 
+def test_per_layer_vision_chains_each_camera_into_its_hidden_rows():
+    """LLiMa 0.6 compiles one vision ELF per layer: each camera runs them in order through
+    two device buffers, and the last layer writes the same hidden rows as the one-ELF tower."""
+    from polima.bundle.pack import _plan_dict
+
+    layers = 27
+    spec = build_spec(Geometry.base(), {**get_policy("pi05").runtime_context, "vision_layers": layers})
+    graphs = {g.name: g for g in spec.compile.graphs}
+    chain_names = [rt.llima_vision(n, layers) for n in range(layers)]
+    assert "vision" not in graphs and set(chain_names) <= set(graphs)
+    tokens = rt.IMAGE_TOKENS * rt.VISION_WIDTH
+    assert graphs["vision_00"].inputs[0].elements == rt.IMAGE_SIZE * rt.IMAGE_SIZE * 3
+    assert graphs["vision_13"].inputs[0].elements == graphs["vision_13"].outputs[0].elements == tokens
+    assert graphs["vision_26"].outputs[0].elements == rt.IMAGE_TOKENS * rt.WIDTH
+    plan = _plan_dict(spec.build_runtime_plan())
+    prefill = next(s for s in plan["steps"] if s["op"] == "run_device_chain")["args"]
+    vision = [c for c in prefill["calls"] if c["graph"].startswith("vision")]
+    cameras = int(spec.runtime_context["cameras"])
+    assert [c["graph"] for c in vision] == chain_names * cameras
+    for k in range(cameras):
+        chain = vision[k * layers:(k + 1) * layers]
+        assert chain[0]["in"] == [[f"pixels{k}", 0, rt.IMAGE_SIZE * rt.IMAGE_SIZE * 3]]
+        assert chain[-1]["out"] == [["hidden_a", k * rt.IMAGE_TOKENS * rt.WIDTH, rt.IMAGE_TOKENS * rt.WIDTH]]
+        assert all(call["in"] == prior["out"] for prior, call in itertools.pairwise(chain))
+    devices = plan["device_buffers"]
+    assert devices["vision_a"] == devices["vision_b"] == tokens
+    for call in prefill["calls"]:  # every span is inside a declared device buffer
+        for buffer, offset, count in (*call["in"], *call["out"]):
+            assert offset + count <= devices[buffer]
+
+
+def test_llima_vision_form_is_read_from_its_mpks(tmp_path):
+    from polima.compile.pi05 import LLIMA_MODEL, StageError, llima_elf_names, llima_vision_layers
+
+    tower, layered, empty = (tmp_path / name for name in ("tower", "layered", "empty"))
+    for folder in (tower, layered, empty):
+        folder.mkdir()
+    (tower / f"{LLIMA_MODEL}_vision_mpk.tar.gz").touch()
+    for n in range(3):
+        (layered / f"{LLIMA_MODEL}_vision_layer{n}_mpk.tar.gz").touch()
+    assert llima_vision_layers(tower) == 1 and llima_vision_layers(layered) == 3
+    with pytest.raises(StageError, match="no vision ELF"):
+        llima_vision_layers(empty)
+    assert llima_elf_names(768)["vision"] == f"{LLIMA_MODEL}_vision"
+    names = llima_elf_names(768, vision_layers=3)
+    assert "vision" not in names and names["vision_02"] == f"{LLIMA_MODEL}_vision_layer2"
+
+
 def test_euler_expert_returns_the_next_x():
     torch = pytest.importorskip("torch")
     from polima.policies.pi05 import blocks
@@ -518,6 +574,7 @@ def test_llima_export_converts_every_fixture_in_the_set(tmp_path):
 def test_check_judges_the_mean_of_the_fixture_set(tmp_path, monkeypatch):
     from polima.compile import pi05 as builder
     from polima.config import devkits
+    from polima.deploy import ssh
 
     bundle = tmp_path / "bundle"
     (bundle / "plan.json").parent.mkdir(parents=True)
@@ -543,21 +600,38 @@ def test_check_judges_the_mean_of_the_fixture_set(tmp_path, monkeypatch):
 
     commands = []
 
-    def run(argv, check=False):
-        commands.append(argv)
-        if argv[0] == "rsync" and argv[-1].endswith("actions/"):
-            for name, value in got.items():
-                value.astype("<f4").tofile(Path(argv[-1]) / f"{name}.f32")
-        return type("Done", (), {"returncode": 0})()
+    class Session:
+        def __init__(self, _board):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def mkdirs(self, *paths):
+            commands.append(("mkdirs", *paths))
+
+        def rsync(self, source, destination, **_kwargs):
+            commands.append(("copy", str(source), destination))
+
+        def run(self, command, **_kwargs):
+            commands.append(("run", command))
+            return type("Done", (), {"returncode": 0})()
+
+        def fetch(self, remote, local):
+            name = Path(remote).stem
+            got[name].astype("<f4").tofile(local)
 
     monkeypatch.setattr(devkits, "apply", lambda target: None)
-    monkeypatch.setattr(builder.subprocess, "run", run)
+    monkeypatch.setattr(ssh, "BoardSession", Session)
     build = FakeBuild()
     report = builder.board_check(build, "sima@devkit")
     assert report["fixtures"] == 4 and report["ok"]
     assert report["mean_abs"] == pytest.approx(0.02, abs=1e-6)
     assert report["worst"]["fixture"] == "s00" and report["worst"]["mean_abs"] == pytest.approx(0.05, abs=1e-6)
-    assert sum(cmd.count("--input-dir") for cmd in (" ".join(c) for c in commands)) == 4
+    assert sum(item[-1].count("--input-dir") for item in commands if item[0] == "run") == 4
     assert "worst s00" in build.lines[-1]
 
 

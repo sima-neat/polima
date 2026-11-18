@@ -1,7 +1,7 @@
-"""SSH and rsync to the DevKit, over one multiplexed connection.
+"""SSH file transfer to the DevKit, over one multiplexed connection.
 
 BoardSession opens one ControlMaster socket and runs every step -- mkdir, each
-rsync, the build, the launch, the health poll -- through it, rather than paying
+transfer, the build, the launch, the health poll -- through it, rather than paying
 a TCP handshake and key exchange per step. A deploy either has a working
 connection or fails immediately, rather than dying halfway through with half
 the bundle transferred.
@@ -13,8 +13,10 @@ import atexit
 import shlex
 import subprocess
 import tempfile
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from shutil import which
 from typing import TypeVar
 
 from polima.config.base import BoardConfig
@@ -37,6 +39,7 @@ class BoardSession:
         self.dry_run = dry_run
         self._control_path: str | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
+        self._remote_rsync: bool | None = None
 
     # ------------------------------------------------------------ lifecycle
 
@@ -98,6 +101,22 @@ class BoardSession:
         """The -e argument for rsync, so it reuses the same master socket."""
         return " ".join(shlex.quote(part) for part in self._ssh_prefix())
 
+    def _scp_prefix(self) -> list[str]:
+        options = list(self.board.ssh_options)
+        if self._control_path:
+            options += ["-o", f"ControlPath={self._control_path}"]
+        return ["scp", *options]
+
+    def _has_remote_rsync(self) -> bool:
+        if self._remote_rsync is None:
+            self._remote_rsync = bool(
+                which("rsync")
+                and self.run(
+                    "command -v rsync", check=False, echo=False, merge_stderr=False
+                ).returncode == 0
+            )
+        return self._remote_rsync
+
     # ---------------------------------------------------------------- public
 
     def run(
@@ -148,6 +167,9 @@ class BoardSession:
         excludes: tuple[str, ...] = (), echo: bool = True,
     ) -> Result:
         source = str(source)
+        if not self._has_remote_rsync():
+            return self._copy_archive(source, destination, delete=delete, excludes=excludes,
+                                      echo=echo)
         # A trailing slash means "contents of", which is what we always want.
         if Path(source).is_dir() and not source.endswith("/"):
             source += "/"
@@ -159,7 +181,69 @@ class BoardSession:
         argv += [source, f"{self.board.host}:{destination}"]
         return run(argv, check=True, echo=echo, dry_run=self.dry_run)
 
+    def _copy_archive(
+        self, source: str, destination: str, *, delete: bool,
+        excludes: tuple[str, ...], echo: bool,
+    ) -> Result:
+        """Copy a directory when the SDK image does not provide rsync.
+
+        Extraction happens in a sibling staging directory. The destination is
+        swapped only after transfer and extraction succeed, so a failed copy
+        leaves the installed bundle or runtime intact.
+        """
+        root = Path(source.rstrip("/"))
+        if not root.is_dir():
+            return self.push_file(root, destination)
+        destination = destination.rstrip("/")
+        parent = str(Path(destination).parent)
+        name = Path(destination).name
+        token = uuid.uuid4().hex
+        stage = f"{parent}/.{name}.polima-stage-{token}"
+        previous = f"{parent}/.{name}.polima-previous-{token}"
+        remote_archive = f"{parent}/.{name}.polima-transfer-{token}.tar"
+        with tempfile.TemporaryDirectory(prefix="polima-copy-") as temporary:
+            archive = Path(temporary) / "payload.tar"
+            command = ["tar", *[f"--exclude={pattern}" for pattern in excludes],
+                       "-C", str(root), "-cf", str(archive), "."]
+            run(command, check=True, echo=False, dry_run=self.dry_run)
+            self.mkdirs(parent)
+            run(
+                [*self._scp_prefix(), str(archive), f"{self.board.host}:{remote_archive}"],
+                check=True, echo=echo, dry_run=self.dry_run,
+            )
+            seed = "" if delete else (
+                f"if [ -d {shlex.quote(destination)} ]; then "
+                f"cp -a {shlex.quote(destination)}/. {shlex.quote(stage)}/; fi; "
+            )
+            replace = (
+                "set -eu; "
+                f"rm -rf -- {shlex.quote(stage)} {shlex.quote(previous)}; "
+                f"mkdir -p {shlex.quote(stage)}; {seed}"
+                f"tar -xf {shlex.quote(remote_archive)} -C {shlex.quote(stage)}; "
+                f"if [ -e {shlex.quote(destination)} ]; then "
+                f"mv -- {shlex.quote(destination)} {shlex.quote(previous)}; fi; "
+                f"if mv -- {shlex.quote(stage)} {shlex.quote(destination)}; then "
+                f"rm -rf -- {shlex.quote(previous)}; "
+                "else "
+                f"if [ -e {shlex.quote(previous)} ]; then "
+                f"mv -- {shlex.quote(previous)} {shlex.quote(destination)}; fi; exit 1; fi; "
+                f"rm -f -- {shlex.quote(remote_archive)}"
+            )
+            return self.run(replace, echo=False)
+
     def push_file(self, source: str | Path, destination: str) -> Result:
+        if not self._has_remote_rsync():
+            destination = destination.rstrip("/")
+            parent = str(Path(destination).parent)
+            temporary = f"{destination}.polima-transfer-{uuid.uuid4().hex}"
+            self.mkdirs(parent)
+            run(
+                [*self._scp_prefix(), str(source), f"{self.board.host}:{temporary}"],
+                check=True, echo=False, dry_run=self.dry_run,
+            )
+            return self.run(
+                f"mv -f -- {shlex.quote(temporary)} {shlex.quote(destination)}", echo=False
+            )
         return run(
             ["rsync", "-a", "-e", self._rsh(), str(source),
              f"{self.board.host}:{destination}"],
@@ -168,6 +252,11 @@ class BoardSession:
 
     def fetch(self, remote_path: str, local_path: str | Path) -> Result:
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+        if not self._has_remote_rsync():
+            return run(
+                [*self._scp_prefix(), f"{self.board.host}:{remote_path}", str(local_path)],
+                check=True, echo=False, dry_run=self.dry_run,
+            )
         return run(
             ["rsync", "-a", "-e", self._rsh(),
              f"{self.board.host}:{remote_path}", str(local_path)],

@@ -23,6 +23,7 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+#include "polima/compatibility.hpp"
 #include "polima/plan.hpp"
 #include "polima/repl.hpp"
 #include "polima/robot.hpp"
@@ -228,6 +229,7 @@ int device_command(int argc, char** argv, const polima::Args& args) {
     const bool start = args.has("--start") ||
                        (guided && confirm("Start the selected bundle's policy server now?"));
     if (start) {
+      polima::require_runtime_compatibility();
       const fs::path active_bundle = store / active;
       const auto description = polima::read_robot_description(active_bundle);
       const int port = args.get_int("--port", description.default_port);
@@ -272,6 +274,7 @@ int device_command(int argc, char** argv, const polima::Args& args) {
       return 0;
     }
     if (action == "start") {
+      polima::require_runtime_compatibility();
       [[maybe_unused]] const int control_lock = acquire_control_lock(root);
       if (!args.has("--bundle")) {
         const fs::path store = args.get("--models-dir", (root / "models").string());
@@ -347,6 +350,8 @@ int device_command(int argc, char** argv, const polima::Args& args) {
   }
   if (action != "run" && action != "start")
     throw std::runtime_error("usage: polima robot [status|preview|run]");
+
+  polima::require_runtime_compatibility();
 
   if (args.has("--fast") && args.has("--slow"))
     throw std::runtime_error("choose either --fast or --slow");
@@ -459,6 +464,7 @@ int main(int argc, char** argv) {
   try {
     if (argc >= 2) {
       const std::string command = argv[1];
+      if (command == "--runtime-info") return polima::print_runtime_info(std::cout);
       // These robot actions are Python; the rest drive the arm natively.
       const bool robot_python = command == "robot" &&
           std::any_of(argv + 2, argv + argc, [](const char* value) {
@@ -486,6 +492,7 @@ int main(int argc, char** argv) {
         "  --verbose           per-step timings\n"
         "  --models-dir DIR    the DevKit's model store\n"
         "                      (default: $POLIMA_ROOT/models or /media/nvme/polima/models)\n"
+        "  --runtime-info      show native build and installed runtime identities\n"
         "  -h, --help          this message\n\n"
         "Device lifecycle:\n"
         "  polima activate [n|bundle-id] [--start] [--port N] [--models-dir DIR]\n"
@@ -504,6 +511,8 @@ int main(int argc, char** argv) {
 
     const int controlled = device_command(argc, argv, args);
     if (controlled >= 0) return controlled;
+
+    polima::require_runtime_compatibility();
 
     // Studio uses this for fixture benchmarks. Holding the same advisory lock
     // as robot/preview commands makes a benchmark mutually exclusive with all

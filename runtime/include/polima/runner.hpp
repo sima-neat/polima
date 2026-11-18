@@ -158,10 +158,9 @@ inline double since_ms(std::chrono::steady_clock::time_point start) {
       .count();
 }
 
-// sima_lmm 0.4.0 (SDK 2.1.3) added byte-range MLABuffer::flush_cache/invalidate_cache;
-// 0.3.0 (SDK 2.1.2, the robot DevKit) has only the whole-buffer forms. Every CPU
-// write into an MLA buffer is flushed right after it is written, so no dirty line is
-// outstanding when a whole-buffer invalidate runs: the fallback moves the same bytes.
+// LLiMa releases differ in whether MLABuffer exposes byte-range or whole-buffer
+// cache operations. Every CPU write is flushed immediately, so the fallback is
+// equivalent when building against an older supported header.
 template <class Buffer>
 inline void flush_range(const Buffer& buffer, size_t offset, size_t size) {
   if constexpr (requires { buffer.flush_cache(offset, size); }) buffer.flush_cache(offset, size);

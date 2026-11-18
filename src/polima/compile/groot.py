@@ -33,6 +33,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -661,27 +662,41 @@ def board_check(build: Build, board: str) -> dict:
     from polima.config import devkits
     from polima.config.base import BoardConfig
     from polima.deploy.smoke import compare_normalized_actions
+    from polima.deploy.ssh import BoardSession
 
     bundle = Path(build.settings["bundle"])
     target = BoardConfig(host=board)
     devkits.apply(target)
-    host, ssh = target.host, ["ssh", *target.ssh_options]
+    host = target.host
     workdir = f"{target.root}/compile-check"
     remote, out = f"{workdir}/bundles/{bundle.name}", f"{workdir}/results/{bundle.name}.f32"
     local = build.path("check", "actions.f32")
     local.parent.mkdir(exist_ok=True)
-    steps = (
-        ([*ssh, host, f"mkdir -p {workdir}/bundles {workdir}/results"], "could not reach {host}"),
-        (["rsync", "-a", "-e", " ".join(ssh), f"{bundle}/", f"{host}:{remote}/"], "could not copy the bundle to {host}"),
-        ([*ssh, host, (f"flock /tmp/polima-bench.lock {target.root}/bin/polima_cli --bundle {remote} "
-                       f"--input-dir {remote}/fixtures/inputs --output {out}")],
-         ("the bundle did not run on {host}; PoLiMa must be installed there and the model server "
-          "stopped while checking (`polima server stop`)")),
-        (["rsync", "-a", "-e", " ".join(ssh), f"{host}:{out}", str(local)], "could not read the result from {host}"),
-    )
-    for argv, problem in steps:
-        if subprocess.run(argv, check=False).returncode:
-            raise StageError(problem.format(host=host))
+    try:
+        with BoardSession(target) as session:
+            session.mkdirs(f"{workdir}/bundles", f"{workdir}/results")
+            try:
+                session.rsync(bundle, remote, delete=True)
+            except (OSError, RuntimeError) as error:
+                raise StageError(f"could not copy the bundle to {host}") from error
+            command = (
+                f"flock /tmp/polima-bench.lock {shlex.quote(target.root + '/bin/polima_cli')} "
+                f"--bundle {shlex.quote(remote)} --input-dir "
+                f"{shlex.quote(remote + '/fixtures/inputs')} --output {shlex.quote(out)}"
+            )
+            if session.run(command, check=False).returncode:
+                raise StageError(
+                    f"the bundle did not run on {host}; PoLiMa must be installed there and the "
+                    "model server stopped while checking (`polima server stop`)"
+                )
+            try:
+                session.fetch(out, local)
+            except (OSError, RuntimeError) as error:
+                raise StageError(f"could not read the result from {host}") from error
+    except StageError:
+        raise
+    except (OSError, RuntimeError) as error:
+        raise StageError(f"could not reach {host}") from error
     plan = json.loads((bundle / "plan.json").read_text())
     horizon, width = plan["wire"]["response_shape"]
     actual = np.fromfile(local, "<f4").reshape(horizon, width)

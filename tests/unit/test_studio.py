@@ -443,6 +443,7 @@ def test_reset_clears_the_lease_so_recovery_is_not_blocked_by_it(tmp_path, monke
     from polima.studio.runtime import StudioRuntime
 
     engine = StudioRuntime(tmp_path)
+    monkeypatch.setattr(engine, "reset_unavailable_reason", lambda: None)
     engine.claim_lease(owner="a-dead-tab")
     monkeypatch.setattr(mla, "reset", lambda *a, **k: mla.ResetReport(True, "recovery-script"))
     monkeypatch.setattr(engine, "server_status", lambda: {"running": False})
@@ -490,6 +491,7 @@ def test_failed_accelerator_reset_is_reported(tmp_path, monkeypatch):
     from polima.deploy import mla
 
     engine = StudioRuntime(tmp_path)
+    monkeypatch.setattr(engine, "reset_unavailable_reason", lambda: None)
     monkeypatch.setattr(engine, "server_status", lambda: {"running": False})
     monkeypatch.setattr(mla, "reset", lambda *a, **k: mla.ResetReport(False, "recovery-script", detail="reset: rc=1"))
     with pytest.raises(RuntimeError, match="Accelerator reset failed"):
@@ -530,11 +532,15 @@ def test_reset_under_service_restrictions_does_not_stop_running_process(tmp_path
     def read(path, *args, **kwargs):
         if str(path) == "/proc/self/status":
             return "Name:\tpython\nNoNewPrivs:\t1\n"
+        if str(path) == "/etc/buildinfo":
+            return "DISTRO_VERSION=3.0.0\n"
         return original(path, *args, **kwargs)
     monkeypatch.setattr(Path, "read_text", read)
     monkeypatch.setattr(engine, "server_status", lambda: pytest.fail("must reject before touching server"))
-    with pytest.raises(RuntimeError, match="authorized terminal"):
+    with pytest.raises(RuntimeError, match="authorized terminal") as error:
         engine.reset()
+    assert "reboot the DevKit" in str(error.value)
+    assert "fix_devkit_runtime" not in str(error.value)
 
 
 def test_child_logs_use_writable_studio_root(tmp_path, monkeypatch):

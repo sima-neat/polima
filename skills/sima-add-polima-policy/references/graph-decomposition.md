@@ -22,6 +22,12 @@ Study the maintained implementations before choosing a form:
 - GR00T: `src/polima/policies/groot/graphs.py`, `dit.py`, and `runtime.py`
 - Pi0.5: `src/polima/policies/pi05/graphs.py`, `profile.py`, and `runtime.py`
 
+Palette SDK 3.0 and LLiMa 0.6 add two relevant precedents. Pi0.5 compiles its
+vision transformer one layer per ELF to keep intermediate allocation bounded.
+GR00T N1.7 splits the vision block's fused QKV projection into equivalent Q, K
+and V projections when the fused allocation exceeds the compiler limit. Reuse
+those established decompositions before adding a policy-specific workaround.
+
 ## Verify modules before export
 
 For each static module:

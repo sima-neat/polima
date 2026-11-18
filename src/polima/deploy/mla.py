@@ -1,4 +1,4 @@
-"""Modalix accelerator recovery.
+"""Modalix accelerator recovery, selected by installed platform version.
 
 Loading a model can fail even though the ELF is perfect and the board is
 otherwise healthy. The MLA allocates from a reserved CMA pool, and a process
@@ -16,14 +16,16 @@ corrupt ELF. It is not: the same bundle loaded fine an hour earlier. Only the
 `dmesg` line names the real cause, so a deploy that just retries the load, or a
 human reading the error, both draw the wrong conclusion.
 
-The ladder below is taken from neat-genai-studio's ``run.sh``
+The SDK 2.1 ladder below is taken from neat-genai-studio's ``run.sh``
 (``reset_mla_dispatcher``), which resets the dispatcher on every launch and
 again whenever a load fails. The ordering matters and is not obvious:
 ``fix_devkit_runtime.sh`` re-inits the MLA memory pool via
 ``mla_init_modalix.elf`` *before* restarting the services, and it is that step,
 not the service restart, that defragments CMA. Restarting
 ``simaai-appcomplex.service`` alone leaves the pool exactly as fragmented as it
-was found.
+was found. On SDK 3.0 the accelerator frees a stopped process's memory itself,
+so PoLiMa runs no ladder there; ``POLIMA_MLA_RESET_CMD`` still runs your own
+recovery command.
 """
 
 from __future__ import annotations
@@ -66,6 +68,11 @@ SUDO_PASSWORD_ENV = "POLIMA_MLA_SUDO_PASSWORD"
 SUDO_HINT = (
     f"MLA reset failed; if sudo needed a password, set {SUDO_PASSWORD_ENV} or allow "
     f"passwordless sudo for {RECOVERY_SCRIPTS[0]} and {INIT_MLA_MEMORY} on the board."
+)
+PLATFORM_3_RECOVERY = (
+    "SDK {version} frees accelerator memory when a model stops, so PoLiMa does not reset it. "
+    "Stop the server and start it again; if the model still fails to load, reboot the DevKit. "
+    f"Set {RESET_COMMAND_ENV} to run your own recovery command instead."
 )
 
 
@@ -112,6 +119,14 @@ def cma_free_kb(session: BoardSession) -> int | None:
     return None
 
 
+def platform_version(session: BoardSession) -> str:
+    """Return Modalix ``DISTRO_VERSION`` from the platform build identity."""
+    return session.capture(
+        "sed -n 's/^[[:space:]]*DISTRO_VERSION[[:space:]]*=[[:space:]]*//p' "
+        "/etc/buildinfo 2>/dev/null | head -n 1"
+    ).strip()
+
+
 def _sudo(command: str, password: str | None) -> str:
     """`command` under sudo, without ever blocking on a prompt.
 
@@ -136,7 +151,7 @@ def reset(
     password: str | None = None,
     timeout: float = 180.0,
 ) -> ResetReport:
-    """Reset the accelerator, following neat-genai-studio's ladder.
+    """Run the recovery contract supported by the installed platform.
 
     Best-effort by design: a failed reset must not mask the load error that
     prompted it, so every rung reports rather than raises.
@@ -151,6 +166,13 @@ def reset(
         result = session.run(override, check=False, timeout=timeout)
         steps.append(f"{RESET_COMMAND_ENV}: rc={result.returncode}")
         return _finish(session, result.returncode == 0, "override", steps, before)
+
+    version = platform_version(session)
+    if not version.startswith("2.1"):
+        detail = PLATFORM_3_RECOVERY.format(version=version or "(unknown)")
+        steps.append(detail)
+        log.warning(detail)
+        return _finish(session, False, "none", steps, before)
 
     for script in RECOVERY_SCRIPTS:
         if session.run(f"test -x {shlex.quote(script)}", check=False).returncode != 0:

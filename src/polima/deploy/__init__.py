@@ -13,7 +13,7 @@ from pathlib import Path
 from polima.bundle.layout import Bundle
 from polima.config.base import BoardConfig
 from polima.deploy import board as board_ops
-from polima.deploy.build import BuildResult, build_native, link_onto_path
+from polima.deploy.build import BuildResult, build_native, link_onto_path, packaged_runtime
 from polima.deploy.service import ServiceStatus, start
 from polima.deploy.ssh import BoardError, BoardSession
 from polima.util.logging import get
@@ -101,8 +101,16 @@ def deploy(
     remote_bundle = f"{board_config.bundles_dir}/{bundle.bundle_id}"
 
     with BoardSession(board_config, dry_run=dry_run) as session:
+        has_packaged_runtime = bool(
+            build and not force and packaged_runtime(session, board_config)
+        )
         # --- preflight: fail before transferring 100+ MiB ------------------
-        checks = board_ops.preflight(session, board_config, bundle)
+        checks = board_ops.preflight(
+            session,
+            board_config,
+            bundle,
+            require_build_tools=build and not has_packaged_runtime,
+        )
         report.record("preflight", "ok" if checks.ok else "failed", **checks.to_dict())
         if not checks.ok:
             raise BoardError(
@@ -119,9 +127,9 @@ def deploy(
         # --- sync: content-addressed on the ELFs, so an identical bundle is
         # a no-op. But the id covers ELFs ONLY: plan.json, the wire description
         # and the fixtures can all change without moving it, so skipping on
-        # "the directory exists" would leave an edited plan behind. rsync is
-        # cheap when the ELFs match, so compare the small files and let rsync
-        # decide about the big ones.
+        # "the directory exists" would leave an edited plan behind. Compare
+        # the small files first, then let the selected transport update the
+        # bundle atomically when anything changed.
         already = session.exists(f"{remote_bundle}/bundle.json") and _metadata_matches(
             session, bundle, remote_bundle
         )
@@ -149,8 +157,10 @@ def deploy(
         else:
             report.record("python-runtime", "skipped", reason="bundle uses standalone client")
 
-        # --- build: skipped when runtime/ is unchanged ----------------------
-        if build:
+        # --- build: skipped when runtime/ is unchanged or prebuilt ---------
+        if has_packaged_runtime:
+            report.record("build", "skipped", reason="packaged runtime (use --force to rebuild)")
+        elif build:
             result = build_native(session, board_config, force=force)
             report.build = result
             report.record(

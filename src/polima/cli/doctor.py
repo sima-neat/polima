@@ -16,6 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from polima.compatibility import LLIMA_VERSION, MODELSDK_VERSION
 from polima.compile import toolchain
 from polima.config.base import NO_BOARD_MESSAGE
 from polima.config.loader import load
@@ -269,7 +270,6 @@ def check_import_matrix(doc: Doctor, config, *, include_compiler: bool = True) -
 # -------------------------------------------------------------- compiler venv
 
 #: The ModelSDK release docs/install.md names for this version of PoLiMa.
-DOCUMENTED_MODELSDK = "2.1.3"
 
 
 def _older_than(version: str, reference: str) -> bool:
@@ -307,32 +307,42 @@ def check_compiler(doc: Doctor, config) -> None:
     version = _capture([python, "-c", "import sys;print(sys.version.split()[0])"]).strip()
     doc.record(table.OK if version else table.FAIL, "compiler python", version or "unusable")
 
+    # Importing ``afe`` loads TensorFlow and JAX before it can return a version;
+    # on a compiler host that can take minutes and makes a health check appear
+    # hung. Package metadata establishes the installed release without loading
+    # the compiler stack. An actual compile remains the capability test.
     afe = _capture(
         [python, "-c",
-         "from afe.apis.release_v1 import get_model_sdk_version as v;print(v())"]
+         "import importlib.metadata as m;print(m.version('sima-frontend'))"]
     ).strip()
-    if afe and _older_than(afe, DOCUMENTED_MODELSDK):
+    if afe and _older_than(afe, MODELSDK_VERSION):
         # An install left behind by an earlier SDK is found before a newer one
         # elsewhere on the search path, and nothing else would say so.
         doc.record(
             table.WARN, "afe / ModelSDK",
-            f"{afe} -- older than {DOCUMENTED_MODELSDK}, the version docs/install.md names; "
+            f"{afe} -- older than {MODELSDK_VERSION}, the version docs/install.md names; "
             "set MODEL_COMPILER_BIN if a newer compiler is installed elsewhere",
         )
     else:
         doc.record(table.OK if afe else table.FAIL, "afe / ModelSDK", afe or "import failed")
 
-    # By IMPORT, never by exec: the llima-compile console script's shebang points
-    # at /sdk-extensions/..., which exists only inside the SDK container.
+    # Resolve the module without importing it: its top-level dependencies are
+    # another full compiler stack. The compile stage imports and exercises it.
     lmm = _capture(
-        [python, "-c",
-         ("import sima_lmm.host.compile_lmm as m;"
-          "print(','.join(n for n in ('main','gen_files') if hasattr(m,n)))")]
-    ).strip()
+        [python, "-c", (
+            "import importlib.metadata as m,importlib.util as u;"
+            "s=u.find_spec('sima_lmm.host.compile_lmm');"
+            "print(m.version('sima-lmm'));print(s.origin if s else '')"
+        )]
+    ).strip().splitlines()
+    lmm_version = lmm[0] if lmm else ""
+    lmm_module = lmm[1] if len(lmm) > 1 else ""
+    lmm_compatible = lmm_version.split("+", 1)[0] == LLIMA_VERSION
     doc.record(
-        table.OK if "gen_files" in lmm else table.FAIL,
+        table.OK if lmm_module and lmm_compatible else table.FAIL,
         "sima_lmm.host.compile_lmm",
-        f"importable ({lmm})" if lmm else "import failed",
+        (f"{lmm_version} at {lmm_module}" if lmm_module else "module unavailable")
+        + ("" if lmm_module and lmm_compatible else f" -- needs LLiMa {LLIMA_VERSION}"),
     )
 
     script = Path(compiler_bin) / "llima-compile"

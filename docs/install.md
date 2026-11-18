@@ -7,8 +7,8 @@ The Workbench host connects to the DevKit over SSH.
 | Task | Where it runs | Needs |
 |---|---|---|
 | Compile a checkpoint | x86_64 Linux computer | Python 3.12, the SiMa ModelSDK; for GR00T also NVIDIA's GR00T code ([your-own-model.md](your-own-model.md)) |
-| Deploy and check bundles, Workbench | Linux, macOS, or Windows with WSL | Python 3.10 to 3.12, `ssh`, `rsync` |
-| Run the model and the arm | Modalix DevKit | SiMa.ai SDK 2.1.2 or 2.1.3, internet access for the first install |
+| Deploy and check bundles, Workbench | Linux, macOS, or Windows with WSL | Python 3.10 to 3.12, `ssh`, `scp`, `tar`; `rsync` is used when available |
+| Run the model and the arm | Modalix DevKit | SiMa.ai Palette SDK 3.0.0 with LLiMa 0.6.0, internet access for the first install |
 
 You do not need the ModelSDK to deploy and run a bundle that is already
 compiled. See [examples/so101](../examples/so101/README.md) for the deployment workflow.
@@ -56,29 +56,40 @@ export MODEL_COMPILER_BIN=/path/to/model-compiler/bin   # the ModelSDK's bin fol
 polima doctor                                           # finds the compiler
 ```
 
-The ModelSDK (model compiler 2.1.3) is licensed separately; get it from the
+The ModelSDK 3.0.0 model compiler is licensed separately; get it from the
 SiMa.ai Developer Portal.
 
 ## 2. The DevKit
 
-Use the same release on both computers. Log in with the account configured
-on your DevKit (`ssh <username>@<devkit-address>`) and run:
+Use the same release on both computers. On a Palette SDK 3.0 DevKit, install
+the published package through `sima-cli`:
 
 ```bash
-mkdir -p ~/src
-cd ~/src
-git clone https://github.com/sima-neat/polima.git
-cd polima
+sima-cli neat install polima@main:latest
+polima --version
+polima doctor
+```
+
+This downloads the package, verifies its checksums and installs its prebuilt
+runtime. It does not require a source checkout, compiler or DevKit build tools.
+The installer uses `/media/nvme/polima` for PoLiMa and `/media/nvme/lerobot`
+for the robot environment. If either exact directory does not exist on a fresh
+image, the installer creates it for the current account. It never changes the
+ownership of `/media/nvme` itself. Run `sudo -v` first when the DevKit requires
+a password, then run `sima-cli` as the normal `sima` account; do not run the
+entire installer as root.
+
+Installing from a source checkout is for PoLiMa development only. It also
+requires the SDK C++ headers and build tools:
+
+```bash
+git clone https://github.com/sima-neat/polima.git ~/src/polima
+cd ~/src/polima
 ./scripts/install_polima_modalix.sh
 ```
 
-Keep the source checkout under your home directory. The installer uses
-`/media/nvme/polima` for the installed runtime, so do not use that path for the
-checkout.
-
-The DevKit must have its SDK build tools installed, writable installation
-directories and the privileges required to register a system service. The
-installer checks these prerequisites and reports missing requirements.
+Keep a development checkout under your home directory, not under
+`/media/nvme/polima`.
 
 The installer registers the Studio service with `sudo` and cannot answer a
 password prompt. If `sudo` asks for your password, run `sudo -v` right before
@@ -89,7 +100,8 @@ The installer:
 
 - creates the LeRobot 0.4.4 environment at `/media/nvme/lerobot` (or reuses it),
 - installs PoLiMa and PoLiMa Studio into it,
-- builds the runtime (`polima_server`, `polima_cli`) under `/media/nvme/polima`,
+- installs the PoLiMa runtime under `/media/nvme/polima`: the prebuilt runtime
+  from a PoLiMa package, or one built on the DevKit for a source installation,
 - puts the `polima` command on the `PATH`.
 
 If the LeRobot step adds your account to the `dialout` group (needed to open
@@ -97,11 +109,31 @@ the arm's serial port), log out and back in before using the arm.
 
 Supported DevKit software:
 
-| DevKit SDK | `sima_lmm` runtime |
+| Palette SDK | LLiMa runtime |
 |---|---|
-| 2.1.2 | 0.3.0 |
-| 2.1.3 | 0.4.0 |
-| 2.1.3 with LLiMa 0.5.0 | 0.5.0 |
+| 3.0.0 | 0.6.0 |
+
+PoLiMa runtimes built for SDK 2.1 or LLiMa 0.5 do not run on this release.
+Reinstall PoLiMa after upgrading the DevKit. The runtime checks the installed
+SDK and LLiMa versions before it loads a model.
+
+### Upgrade or roll back PoLiMa
+
+Stop robot control and Studio before replacing PoLiMa, then install the exact
+published artifact recorded in the release notes:
+
+```bash
+polima studio stop
+polima server stop
+sima-cli neat install polima@release-0.3:<12-character-source-commit>
+```
+
+Installing another PoLiMa artifact replaces the Python package and native
+runtime but preserves bundles under `/media/nvme/polima/models`, arm
+calibrations and customer configuration. To roll back, repeat the same command
+with the previous published artifact's commit. A rollback artifact must target
+the DevKit's installed Palette SDK and LLiMa versions; an SDK 2.1 / LLiMa 0.5
+binary cannot be used as a rollback on SDK 3.0 / LLiMa 0.6.
 
 ## 3. Connect your computer to the DevKit
 

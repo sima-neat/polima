@@ -106,15 +106,18 @@ def so101_roles(cameras: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
     return tuple(("wrist", "Wrist") if is_wrist else ("overhead", "Overhead") for is_wrist in wrist)
 
 
-def _llima_graphs(g: Geometry, expert_form: str = "nhwc") -> tuple[GraphSpec, ...]:
+def _llima_graphs(g: Geometry, expert_form: str = "nhwc", vision_layers: int = 1) -> tuple[GraphSpec, ...]:
     """LLiMa's ELFs (compiled by `llima-compile`, not from these specs) and the expert."""
     p, image = g.prefix_tokens, rt.IMAGE_SIZE
     llima = {"layout": "NHWC", "mla_tessellation": False, "external_dram_layout": "HWC",
              "calibration": CalibrationSource("random")}
     hidden = TensorSpec("hidden", (1, 1, p, rt.WIDTH))
-    graphs = [GraphSpec(name="vision", builder="llima:vision",
-                        inputs=(TensorSpec("image", (1, image, image, 3)),),
-                        outputs=(TensorSpec("tokens", (1, 1, rt.IMAGE_TOKENS, rt.WIDTH)),), **llima)]
+    between = TensorSpec("tokens", (1, 1, rt.IMAGE_TOKENS, rt.VISION_WIDTH))
+    graphs = [GraphSpec(name=rt.llima_vision(layer, vision_layers), builder="llima:vision",
+                        inputs=(TensorSpec("image", (1, image, image, 3)) if layer == 0 else between,),
+                        outputs=(TensorSpec("tokens", (1, 1, rt.IMAGE_TOKENS, rt.WIDTH))
+                                 if layer + 1 == vision_layers else between,), **llima)
+              for layer in range(vision_layers)]
     for layer in range(rt.PREFIX_LAYERS):
         graphs.append(GraphSpec(
             name=rt.llima_pre(layer), builder="llima:pre",
@@ -156,9 +159,9 @@ def _expert_graph(p: int, form: str = "nhwc") -> GraphSpec:
         calibration=CalibrationSource("npz"))
 
 
-def _graphs(g: Geometry, expert_form: str = "nhwc") -> tuple[GraphSpec, ...]:
+def _graphs(g: Geometry, expert_form: str = "nhwc", vision_layers: int = 1) -> tuple[GraphSpec, ...]:
     if g.backend == "llima":
-        return _llima_graphs(g, expert_form)
+        return _llima_graphs(g, expert_form, vision_layers)
     p = g.prefix_tokens
     common = {"layout": "NHWC", "mla_tessellation": False, "external_dram_layout": "HWC",
               "exit_on_stable_elf": True, "calibration": CalibrationSource("npz")}
@@ -203,7 +206,8 @@ def build_spec(g: Geometry, runtime_context: Mapping[str, Any] | None = None) ->
             camera_shape=g.camera_shape, fps=30, single_task=False,
             codebase_version=("v2.0", "v2.1", "v3.0")),
         compile=CompilePlan(
-            graphs=_graphs(g, str((runtime_context or {}).get("expert_form", "nhwc"))),
+            graphs=_graphs(g, str((runtime_context or {}).get("expert_form", "nhwc")),
+                           int((runtime_context or {}).get("vision_layers", 1))),
             export_entry="polima.policies.pi05.graphs:export_all",
             fixture_file="pi05_fixture.npz",
             verify_atol=1e-3, verify_rtol=1e-2),

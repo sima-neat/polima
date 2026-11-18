@@ -97,19 +97,20 @@ Every command has `--help`.
 
 ## Performance
 
-Reference model latency on a Modalix DevKit. ACT and GR00T use 30 measured
-plans after five warm-ups; Pi0.5 uses 20 after three.
+Reference model latency on a Modalix DevKit, measured over 30 plans after five
+warm-ups for each model.
 
-| Model | Precision | Actions per plan | Model latency, median | Camera to plan, median |
+| Model | Precision | Actions per plan | Model latency, median | Live observation to plan, median |
 |---|---|---:|---:|---:|
-| ACT | BF16 | 100 | 13.23 ms | 25 ms |
-| GR00T N1.6 | Mixed INT8/BF16 | 32 | 315.40 ms | 361 ms |
-| GR00T N1.7 | Mixed INT8/BF16 | 32 | 231.65 ms | 279 ms |
-| Pi0.5 | W8A16 with BF16 attention | 50 | 358.5 ms | not measured |
+| ACT | BF16 | 100 | 13.5 ms | 25 ms |
+| GR00T N1.6 | Mixed INT8/BF16 | 32 | 309.7 ms | 361 ms |
+| GR00T N1.7 | Mixed INT8/BF16 | 32 | 226.6 ms | 279 ms |
+| Pi0.5 | W8A16 with BF16 attention | 50 | 345.7 ms | 438 ms |
 
-Model latency is reported by the policy server. Camera to plan starts at the
-newer timestamp of the two camera frames and ends when the action plan is ready.
-The Pi0.5 release uses ten denoising steps. See the
+Model latency was measured with Palette 3.0.0 and LLiMa 0.6.0. Live observation
+to plan starts after the two-camera observation is captured and ends when the
+action plan is queued; those values come from the physical-robot series. The
+Pi0.5 release uses ten denoising steps. See the
 [reference benchmarks](docs/benchmarks.md) for p95/p99, architecture, compiled
 graphs, package size and numerical fidelity.
 
