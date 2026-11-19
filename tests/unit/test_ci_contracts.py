@@ -49,11 +49,13 @@ def test_release_versions_are_consistent_across_runtime_and_customer_guides():
     compatibility = (ROOT / "src/polima/compatibility.py").read_text()
     cmake = (ROOT / "runtime/CMakeLists.txt").read_text()
     guide = (ROOT / "src/polima/workbench/static/guide.html").read_text()
+    install = (ROOT / "docs/install.md").read_text()
 
     assert 'MODELSDK_VERSION = "3.0.0.2"' in compatibility
     assert 'LLIMA_VERSION = "0.6.2"' in compatibility
     assert 'set(POLIMA_PLATFORM_VERSION "3.0.1"' in cmake
     assert "ModelSDK 3.0.0.2 with LLiMa 0.6.2" in guide
+    assert "| 3.0.0.2 | 3.0.1 | 0.6.2 |" in install
 
 
 def test_every_action_is_pinned_and_every_shared_workflow_is_sima_neat():

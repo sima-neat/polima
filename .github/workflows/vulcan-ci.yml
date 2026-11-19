@@ -54,7 +54,7 @@ jobs:
       vulcan_env: ${{ vars.VULCAN_ENV || 'dev' }}
 
   build-release:
-    name: Build SDK 3.0.1 / LLiMa 0.6.2 release package
+    name: Build SDK 3.0.0.2 / LLiMa 0.6.2 release package
     needs: [resolve-vulcan-config, resolve-sysroot]
     uses: sima-neat/.github/.github/workflows/vulcan-build.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
     with:
