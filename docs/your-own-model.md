@@ -226,8 +226,8 @@ your checkpoint before selecting a precision.
 Pi0.5 checkpoints are LeRobot `pi05` policies: [`lerobot/pi05_base`](https://huggingface.co/lerobot/pi05_base)
 or a model fine-tuned from it with `lerobot-train`. The export runs in its own
 interpreter with PyTorch, Transformers 5 and LeRobot (0.6.1 tested) with the
-`[pi]` and `[dataset]` extras. The supported compiler stack is ModelSDK 3.0.0
-with LLiMa (`sima_lmm`) 0.6.0.
+`[pi]` and `[dataset]` extras. The supported compiler stack is ModelSDK 3.0.0.2
+with LLiMa (`sima_lmm`) 0.6.2.
 Save the interpreter once:
 
 ```bash

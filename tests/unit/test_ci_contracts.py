@@ -15,7 +15,7 @@ yaml = pytest.importorskip("yaml")
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
 SHARED = "sima-neat/.github/.github/workflows/"
-SHARED_REF = "473e2cc61c2b3720ef5c7488d70f3cf643887da6"
+SHARED_REF = "a1bdd92b98bc59ff68f5ad824f6881def3ab132b"
 RUN_DEVKIT = "needs.resolve-test-scope.outputs.run_devkit"
 
 
@@ -30,19 +30,30 @@ def triggers(data: dict) -> dict:
 def test_manifest_uses_the_formats_core_and_the_sysroot_resolver_accept():
     manifest = json.loads((ROOT / "deps/manifest.json").read_text())
     # sima-neat/.github scripts/resolve_sysroot.py
-    assert re.fullmatch(r"3\.0\.0_master_B[1-9][0-9]*", manifest["elxr_version"])
-    assert manifest["platform-version"] == "3.0.0"
-    assert manifest["sdk"] == {"channel": "develop", "sysroot-version": "3.0.0"}
+    assert re.fullmatch(r"3\.0\.1_master_B[1-9][0-9]*", manifest["elxr_version"])
+    assert manifest["platform-version"] == "3.0.1"
+    assert manifest["sdk"] == {"channel": "develop", "sysroot-version": "3.0.1"}
     # Core's manifest_dependency_spec: a ref pin, never an unsupported policy.
     assert set(manifest["llima"]) == {"ref", "spec"}
     assert re.fullmatch(r"v\d+\.\d+\.\d+", manifest["llima"]["ref"])
     assert re.fullmatch(r"[0-9a-f]{12}", manifest["llima"]["spec"])
     compiler = manifest["model-compiler"]
     assert compiler["repository"] == "model-compiler/arm64"
-    assert compiler["release"] == {"ref": "v3.0.0", "spec": "6cb61a63992f"}
+    assert compiler["release"] == {"ref": "v3.0.0.2", "spec": "6b2d138d1927"}
     assert compiler["develop"] == {"ref": "develop", "spec": "latest"}
     project = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(), re.MULTILINE)
     assert manifest["package-version"] == project.group(1)
+
+
+def test_release_versions_are_consistent_across_runtime_and_customer_guides():
+    compatibility = (ROOT / "src/polima/compatibility.py").read_text()
+    cmake = (ROOT / "runtime/CMakeLists.txt").read_text()
+    guide = (ROOT / "src/polima/workbench/static/guide.html").read_text()
+
+    assert 'MODELSDK_VERSION = "3.0.0.2"' in compatibility
+    assert 'LLIMA_VERSION = "0.6.2"' in compatibility
+    assert 'set(POLIMA_PLATFORM_VERSION "3.0.1"' in cmake
+    assert "ModelSDK 3.0.0.2 with LLiMa 0.6.2" in guide
 
 
 def test_every_action_is_pinned_and_every_shared_workflow_is_sima_neat():
