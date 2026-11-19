@@ -8,7 +8,7 @@ The Workbench host connects to the DevKit over SSH.
 |---|---|---|
 | Compile a checkpoint | x86_64 Linux computer | Python 3.12, the SiMa ModelSDK; for GR00T also NVIDIA's GR00T code ([your-own-model.md](your-own-model.md)) |
 | Deploy and check bundles, Workbench | Linux, macOS, or Windows with WSL | Python 3.10 to 3.12, `ssh`, `scp`, `tar`; `rsync` is used when available |
-| Run the model and the arm | Modalix DevKit | SiMa.ai Palette SDK 3.0.0 with LLiMa 0.6.0, internet access for the first install |
+| Run the model and the arm | Modalix DevKit | SiMa.ai Palette SDK 3.0.0.2, eLxr platform 3.0.1 and LLiMa 0.6.2; internet access for the first install |
 
 You do not need the ModelSDK to deploy and run a bundle that is already
 compiled. See [examples/so101](../examples/so101/README.md) for the deployment workflow.
@@ -56,7 +56,7 @@ export MODEL_COMPILER_BIN=/path/to/model-compiler/bin   # the ModelSDK's bin fol
 polima doctor                                           # finds the compiler
 ```
 
-The ModelSDK 3.0.0 model compiler is licensed separately; get it from the
+The ModelSDK 3.0.0.2 model compiler is licensed separately; get it from the
 SiMa.ai Developer Portal.
 
 ## 2. The DevKit
@@ -109,9 +109,9 @@ the arm's serial port), log out and back in before using the arm.
 
 Supported DevKit software:
 
-| Palette SDK | LLiMa runtime |
-|---|---|
-| 3.0.0 | 0.6.0 |
+| Palette SDK | eLxr platform | LLiMa runtime |
+|---|---|---|
+| 3.0.0.2 | 3.0.1 | 0.6.2 |
 
 PoLiMa runtimes built for SDK 2.1 or LLiMa 0.5 do not run on this release.
 Reinstall PoLiMa after upgrading the DevKit. The runtime checks the installed
@@ -133,7 +133,8 @@ runtime but preserves bundles under `/media/nvme/polima/models`, arm
 calibrations and customer configuration. To roll back, repeat the same command
 with the previous published artifact's commit. A rollback artifact must target
 the DevKit's installed Palette SDK and LLiMa versions; an SDK 2.1 / LLiMa 0.5
-binary cannot be used as a rollback on SDK 3.0 / LLiMa 0.6.
+binary cannot be used as a rollback on Palette SDK 3.0.0.2 / eLxr 3.0.1 /
+LLiMa 0.6.2.
 
 ## 3. Connect your computer to the DevKit
 

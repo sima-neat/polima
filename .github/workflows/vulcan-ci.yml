@@ -43,20 +43,20 @@ jobs:
 
   resolve-sysroot:
     name: Resolve sysroot
-    uses: sima-neat/.github/.github/workflows/resolve-sysroot.yml@473e2cc61c2b3720ef5c7488d70f3cf643887da6
+    uses: sima-neat/.github/.github/workflows/resolve-sysroot.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
     with:
-      shared_workflow_ref: 473e2cc61c2b3720ef5c7488d70f3cf643887da6
+      shared_workflow_ref: a1bdd92b98bc59ff68f5ad824f6881def3ab132b
 
   resolve-vulcan-config:
     name: Resolve Vulcan configuration
-    uses: sima-neat/.github/.github/workflows/vulcan-resolve-config.yml@473e2cc61c2b3720ef5c7488d70f3cf643887da6
+    uses: sima-neat/.github/.github/workflows/vulcan-resolve-config.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
     with:
       vulcan_env: ${{ vars.VULCAN_ENV || 'dev' }}
 
   build-release:
-    name: Build SDK 3.0 / LLiMa 0.6 release package
+    name: Build SDK 3.0.0.2 / LLiMa 0.6.2 release package
     needs: [resolve-vulcan-config, resolve-sysroot]
-    uses: sima-neat/.github/.github/workflows/vulcan-build.yml@473e2cc61c2b3720ef5c7488d70f3cf643887da6
+    uses: sima-neat/.github/.github/workflows/vulcan-build.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
     with:
       vulcan_env: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
       sdk_cache: ${{ needs.resolve-vulcan-config.outputs.sdk_cache }}
@@ -83,7 +83,7 @@ jobs:
     name: Build against LLiMa develop
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     needs: [resolve-vulcan-config, resolve-sysroot]
-    uses: sima-neat/.github/.github/workflows/vulcan-build.yml@473e2cc61c2b3720ef5c7488d70f3cf643887da6
+    uses: sima-neat/.github/.github/workflows/vulcan-build.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
     with:
       vulcan_env: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
       sdk_cache: ${{ needs.resolve-vulcan-config.outputs.sdk_cache }}
@@ -112,7 +112,7 @@ jobs:
       fail-fast: false
       matrix:
         lane: [release, develop]
-    uses: sima-neat/.github/.github/workflows/vulcan-build.yml@473e2cc61c2b3720ef5c7488d70f3cf643887da6
+    uses: sima-neat/.github/.github/workflows/vulcan-build.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
     with:
       vulcan_env: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
       runner_profile: model-compiler
@@ -133,7 +133,7 @@ jobs:
     name: Publish exact package
     if: ${{ github.event_name == 'push' }}
     needs: [resolve-vulcan-config, build-release, compiler]
-    uses: sima-neat/.github/.github/workflows/vulcan-publish-artifacts.yml@473e2cc61c2b3720ef5c7488d70f3cf643887da6
+    uses: sima-neat/.github/.github/workflows/vulcan-publish-artifacts.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
     with:
       aws_region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
       environment_name: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
@@ -156,10 +156,10 @@ jobs:
         (github.event_name != 'push' || needs.publish-vulcan-artifacts.result == 'success')
       }}
     needs: [resolve-test-scope, resolve-vulcan-config, build-release, publish-vulcan-artifacts]
-    uses: sima-neat/.github/.github/workflows/vulcan-resolve-modalix-runner.yml@473e2cc61c2b3720ef5c7488d70f3cf643887da6
+    uses: sima-neat/.github/.github/workflows/vulcan-resolve-modalix-runner.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
     with:
       manifest_path: deps/manifest.json
-      shared_workflow_ref: 473e2cc61c2b3720ef5c7488d70f3cf643887da6
+      shared_workflow_ref: a1bdd92b98bc59ff68f5ad824f6881def3ab132b
       allow-version-fallback: false
       runner-labels: >-
         ["self-hosted", "Linux", "ARM64", "modalix", "modalix-som-16gig", "vulcan-${{ needs.resolve-vulcan-config.outputs.vulcan_env == 'prod' && 'production' || needs.resolve-vulcan-config.outputs.vulcan_env }}"]
@@ -271,7 +271,7 @@ jobs:
         needs.test-devkit.result == 'success'
       }}
     needs: [resolve-vulcan-config, publish-vulcan-artifacts, test-devkit]
-    uses: sima-neat/.github/.github/workflows/vulcan-update-latest-artifacts.yml@473e2cc61c2b3720ef5c7488d70f3cf643887da6
+    uses: sima-neat/.github/.github/workflows/vulcan-update-latest-artifacts.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
     with:
       aws_region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
       environment_name: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
