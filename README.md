@@ -110,7 +110,8 @@ warm-ups for each model.
 Model latency was measured with Palette 3.0.0.2, LLiMa 0.6.2 and eLxr platform
 3.0.1. Live observation to plan starts after the two-camera observation is
 captured and ends when the action plan is queued; those values come from an
-earlier physical-robot series and were not remeasured for this runtime update.
+earlier ModelSDK 2.1.3 physical-robot series and were not remeasured with the
+current 3.0.0.2 bundles. Physical acceptance of the current bundles is pending.
 The Pi0.5 release uses ten denoising steps. See the
 [reference benchmarks](docs/benchmarks.md) for p95/p99, architecture, compiled
 graphs, package size and numerical fidelity.
