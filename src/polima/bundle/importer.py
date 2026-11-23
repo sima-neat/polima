@@ -46,6 +46,7 @@ class BuildTree:
     dataset_root: str = ""
     graphs: tuple[str, ...] = ()
     precisions: dict[str, str] = dataclass_field(default_factory=dict)
+    tool_versions: dict[str, str] = dataclass_field(default_factory=dict)
     verification: dict | None = None
 
     @property
@@ -95,6 +96,9 @@ def detect(build_dir: str | Path) -> BuildTree:
         dataset_root=contract.get("dataset_root", ""),
         graphs=tuple(_declared_graphs(contract)),
         precisions=_compiled_precisions(manifest),
+        tool_versions=manifest.get("tool_versions") or (
+            {"model_sdk": manifest["sdk_version"]} if manifest.get("sdk_version") else {}
+        ),
         verification=report,
     )
 
@@ -604,7 +608,7 @@ def import_build(
     constants = collect_sidecars(build, spec)
     robot_files = collect_robot_files(spec, build)
 
-    tool_versions = {"source_format": build.format}
+    tool_versions = {**build.tool_versions, "source_format": build.format}
     if build.verification:
         tool_versions["onnx_max_abs"] = build.verification.get("max_abs")
 

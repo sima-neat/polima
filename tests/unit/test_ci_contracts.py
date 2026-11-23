@@ -165,7 +165,9 @@ def test_devkit_job_tests_the_published_artifact_and_never_builds():
 def test_devkit_qualification_serializes_accelerator_measurements():
     script = (ROOT / "scripts/ci/devkit_test.sh").read_text()
     lock = 'flock -x 9\n'
-    assert 'exec 9>"${POLIMA_CI_BENCH_LOCK:-/tmp/polima-bench.lock}"' in script
+    assert 'bench_lock="${POLIMA_CI_BENCH_LOCK:-/tmp/polima-bench.lock}"' in script
+    assert "os.O_RDONLY | os.O_CREAT" in script
+    assert 'exec 9<"$bench_lock"' in script
     assert lock in script
     assert script.index(lock) < script.index('"$cli" --runtime-info')
 
@@ -182,7 +184,8 @@ def test_devkit_qualification_does_not_replace_shared_installations():
 def test_model_compiler_release_and_develop_lanes_are_vulcan_jobs():
     job = workflow("vulcan-ci.yml")["jobs"]["compiler"]
     assert job["strategy"]["matrix"]["lane"] == ["release", "develop"]
-    assert job["with"]["runner_profile"] == "model-compiler"
+    assert job["with"]["runner_profile"] == "ubuntu"
+    assert job["with"]["architecture"] == "arm64"
     assert "scripts/ci/compiler_lane.sh" in job["with"]["build_command"]
     lane = (ROOT / "scripts/ci/compiler_lane.sh").read_text()
     assert "python -m polima doctor" in lane

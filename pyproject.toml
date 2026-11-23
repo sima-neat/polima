@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "polima"
-version = "0.3.0"
+version = "0.4.0"
 description = "PoLiMa - unified compile/deploy/control framework for robot policies on SiMa.ai Modalix"
 readme = "README.md"
 requires-python = ">=3.10"

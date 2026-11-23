@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "package-version": "0.3.0",
+  "package-version": "0.4.0",
   "sdk": {
     "channel": "develop",
     "sysroot-version": "3.0.1"

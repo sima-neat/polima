@@ -23,7 +23,48 @@ from polima.compile.tensor import (
     mpk_only_failure,
     promote_rank3_hwc,
 )
+from polima.compile.toolchain import compiler_versions
 from polima.policies.registry import get_policy
+
+
+def test_compiler_versions_records_exact_components(monkeypatch):
+    from polima.util import proc
+
+    payload = {
+        "sima_frontend": "3.0.0.dev0+master.403",
+        "sima_mlc": "3.0.0.dev0+master.195",
+        "sima_lmm": "0.6.2",
+    }
+    monkeypatch.setattr(
+        proc,
+        "capture",
+        lambda *args, **kwargs: proc.Result(list(args[0]), 0, 0.1, json.dumps(payload)),
+    )
+
+    assert compiler_versions("/compiler/bin/python", model_sdk="3.0.0") == {
+        "model_sdk": "3.0.0",
+        **payload,
+    }
+
+
+def test_build_tree_retains_compiler_versions(tmp_path):
+    from polima.bundle.importer import detect
+
+    versions = {"model_sdk": "3.0.0", "sima_lmm": "0.6.2"}
+    (tmp_path / "artifact_manifest.json").write_text(json.dumps({
+        "format": "act-modalix-build-v1",
+        "tool_versions": versions,
+    }))
+
+    assert detect(tmp_path).tool_versions == versions
+
+
+def test_stage_key_tracks_compiler_components(tmp_path):
+    graph = get_policy("act").compile.graphs[0]
+    first = _driver(tmp_path, sdk_version="3.0.0", tool_versions={"sima_mlc": "3.0.0.1"})
+    second = _driver(tmp_path, sdk_version="3.0.0", tool_versions={"sima_mlc": "3.0.0.2"})
+    assert first.stage_key(graph) != second.stage_key(graph)
+
 
 # --------------------------------------------------------------- calibration
 
@@ -800,6 +841,7 @@ def test_a_compile_recompiles_by_default(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("polima.compile.toolchain.require_compiler_python",
                         lambda *a, **k: tmp_path / "python")
     monkeypatch.setattr("polima.compile.toolchain.compiler_env", lambda *a, **k: {})
+    monkeypatch.setattr("polima.compile.toolchain.compiler_versions", lambda *a, **k: {})
 
     (tmp_path / "retained").mkdir()
     compile_cli.run(["--build-dir", str(tmp_path), "--stop-after", "compile"])
@@ -945,6 +987,7 @@ def test_failed_compile_explains_reusing_finished_graphs(monkeypatch, tmp_path, 
     monkeypatch.setattr("polima.compile.toolchain.require_compiler_python",
                         lambda *a, **k: tmp_path / "python")
     monkeypatch.setattr("polima.compile.toolchain.compiler_env", lambda *a, **k: {})
+    monkeypatch.setattr("polima.compile.toolchain.compiler_versions", lambda *a, **k: {})
     (tmp_path / "retained").mkdir()
     assert compile_cli.run(["--build-dir", str(tmp_path), "--stop-after", "compile"]) == 1
     error = capsys.readouterr().err

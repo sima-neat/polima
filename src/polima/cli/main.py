@@ -122,7 +122,7 @@ def _version() -> str:
 
         return version("polima")
     except Exception:  # noqa: BLE001
-        return "0.3.0+src"
+        return "0.4.0+src"
 
 
 if __name__ == "__main__":

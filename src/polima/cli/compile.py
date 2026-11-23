@@ -141,7 +141,7 @@ def _groot_build(argv: list[str]) -> bool:
 
 def _compile(args, config, output_root: Path, dry_run: bool) -> int:
     from polima.compile.driver import CompileError, Driver, sdk_version
-    from polima.compile.toolchain import compiler_env, require_compiler_python
+    from polima.compile.toolchain import compiler_env, compiler_versions, require_compiler_python
 
     spec = get_policy(args.policy)
     build_dir = Path(args.build_dir).resolve()
@@ -185,6 +185,7 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
     # and (lazily) afe only, both of which the venv has.
     env = compiler_env(compiler_python.parent, source_root=_src_root())
     version = sdk_version(compiler_python, env) if not dry_run else ""
+    versions = compiler_versions(compiler_python, env, model_sdk=version) if not dry_run else {}
 
     # Preflight the compiler rather than discovering it is broken one graph in.
     # The interpreter existing is not the same as afe working: the model-compiler
@@ -215,6 +216,7 @@ def _compile(args, config, output_root: Path, dry_run: bool) -> int:
 
     driver = Driver(spec=spec, build_dir=build_dir, compiler_python=compiler_python,
                     env=env, dry_run=dry_run, force=not args.reuse, sdk_version=version,
+                    tool_versions=versions,
                     jobs=max(1, args.jobs), precision_profile=args.precision_profile)
 
     print(table.section(f"compile {spec.name} in {build_dir.name}"))

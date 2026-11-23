@@ -18,6 +18,14 @@ python="${POLIMA_CI_PYTHON:?set POLIMA_CI_PYTHON to the candidate environment Py
 mkdir -p "$results" "$cache"
 results="$(cd -- "$results" && pwd)"
 
+bench_lock="${POLIMA_CI_BENCH_LOCK:-/tmp/polima-bench.lock}"
+python3 - "$bench_lock" <<'PY'
+import os, sys
+os.close(os.open(sys.argv[1], os.O_RDONLY | os.O_CREAT, 0o666))
+PY
+exec 9<"$bench_lock"
+flock -x 9
+
 work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/polima-devkit.XXXXXX")"
 server_pid=""
 cleanup() {

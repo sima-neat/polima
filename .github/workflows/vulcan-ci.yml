@@ -115,7 +115,7 @@ jobs:
     uses: sima-neat/.github/.github/workflows/vulcan-build.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
     with:
       vulcan_env: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
-      runner_profile: model-compiler
+      runner_profile: ubuntu
       architecture: arm64
       capacity: ${{ needs.resolve-vulcan-config.outputs.capacity }}
       fetch_depth: 0
