@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 import urllib.error
@@ -9,6 +10,7 @@ import pytest
 
 from polima.workbench.app import (
     Workbench,
+    board,
     checkpoint,
     latest_evidence,
     latest_robot_runs,
@@ -17,6 +19,15 @@ from polima.workbench.app import (
     serve,
     walk,
 )
+
+
+def test_non_http_devkit_response_is_reported_offline(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise http.client.BadStatusLine("not http")
+
+    monkeypatch.setattr("polima.workbench.app.fetch", fail)
+
+    assert board("127.0.0.1") == {"address": "http://127.0.0.1:8080", "online": False}
 
 
 def save(folder, config):

@@ -45,6 +45,21 @@ def test_manifest_uses_the_formats_core_and_the_sysroot_resolver_accept():
     assert manifest["package-version"] == project.group(1)
 
 
+def test_release_version_is_consistent_and_does_not_reuse_v030():
+    project = re.search(
+        r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(), re.MULTILINE
+    ).group(1)
+    ui = json.loads((ROOT / "src/polima/studio/ui/package.json").read_text())
+    ui_lock = json.loads((ROOT / "src/polima/studio/ui/package-lock.json").read_text())
+    main = (ROOT / "src/polima/cli/main.py").read_text()
+
+    assert project == "0.4.0"
+    assert ui["version"] == project
+    assert ui_lock["version"] == project
+    assert ui_lock["packages"][""]["version"] == project
+    assert f'return "{project}+src"' in main
+
+
 def test_release_versions_are_consistent_across_runtime_and_customer_guides():
     compatibility = (ROOT / "src/polima/compatibility.py").read_text()
     cmake = (ROOT / "runtime/CMakeLists.txt").read_text()
@@ -145,6 +160,14 @@ def test_devkit_job_tests_the_published_artifact_and_never_builds():
     assert "scripts/ci/devkit_test.sh" in commands
     for forbidden in ("cmake", "build_runtime.sh", "vulcan_build.sh"):
         assert forbidden not in commands
+
+
+def test_devkit_qualification_serializes_accelerator_measurements():
+    script = (ROOT / "scripts/ci/devkit_test.sh").read_text()
+    lock = 'flock -x 9\n'
+    assert 'exec 9>"${POLIMA_CI_BENCH_LOCK:-/tmp/polima-bench.lock}"' in script
+    assert lock in script
+    assert script.index(lock) < script.index('"$cli" --runtime-info')
 
 
 def test_devkit_qualification_does_not_replace_shared_installations():
