@@ -147,13 +147,17 @@ def device_denoise(settings: dict) -> bool:
 def compile_all(build: Build) -> list[str]:
     import threading
 
-    from polima.compile.toolchain import compiler_env
+    from polima.compile.driver import sdk_version
+    from polima.compile.toolchain import compiler_env, compiler_versions
 
     sdk = Path(build.settings["sdk"])
     out = build.path("compiled")
     (out / "tmp").mkdir(parents=True, exist_ok=True)
     env = compiler_env(sdk.parent, source_root=SRC)
     env.update(CUDA_VISIBLE_DEVICES="", TMPDIR=str(out / "tmp"))
+    tools = compiler_versions(sdk, env, model_sdk=sdk_version(sdk, env))
+    build.settings["tool_versions"] = tools
+    build.path("build.json").write_text(json.dumps(build.settings, indent=2) + "\n")
     shim = str(SRC / "polima/compile/compile_onnx.py")
     results_path = out / "compile_results.json"
     results = json.loads(results_path.read_text()) if results_path.is_file() else {}
@@ -165,7 +169,7 @@ def compile_all(build: Build) -> list[str]:
     def key(job) -> dict:
         return {"source_sha256": _sha(job["onnx"]), "calibration_sha256": _sha(job["calibration"]),
                 "activation": job["activation"], "weights": job["weights"], "layout": job["layout"],
-                "flags": job["flags"], "persistent": job.get("persistent", False)}
+                "flags": job["flags"], "persistent": job.get("persistent", False), "tool_versions": tools}
 
     def one(job) -> dict:
         name, work = job["name"], out / job["name"]
@@ -283,7 +287,8 @@ def make_bundle(build: Build) -> Path:
         spec=spec, elfs=elfs, dataset=s["label"], steps=0, checkpoint=str(checkpoint), fixtures=fixtures,
         constants=constants, robot_files=robot_files, precisions=precisions, source="polima-compile-pi05",
         task_label=s["label"], plan_rewrite=rewrite, extra_graphs=extra, precision_label=s["precision"],
-        tool_versions={"onnx_vs_lerobot": json.loads((export / "verification.json").read_text())["onnx_vs_lerobot"]},
+        tool_versions={**s.get("tool_versions", {}),
+                       "onnx_vs_lerobot": json.loads((export / "verification.json").read_text())["onnx_vs_lerobot"]},
     ), work)
     final = build.path("bundles")
     shutil.rmtree(final, ignore_errors=True)
@@ -299,7 +304,8 @@ def stage_bundle(build: Build) -> None:
             work=build.path("bundles-work-llima"),
             output=build.path("bundles"), precision=build.settings["precision"], label=build.settings["label"],
             checkpoint=build.settings["checkpoint"], known_orders=build.settings.get("input_orders") or {},
-            expert_weights=build.settings.get("expert_weights", "int8"), dataset=Path(build.settings["dataset"]))
+            expert_weights=build.settings.get("expert_weights", "int8"), dataset=Path(build.settings["dataset"]),
+            tool_versions=build.settings.get("tool_versions", {}))
     else:
         bundle = make_bundle(build)
     build.settings["bundle"] = str(bundle)
@@ -709,7 +715,8 @@ def pi05_robot_files(spec, export: Path, dataset: Path | None) -> dict[str, Path
 
 def make_llima_bundle(*, export: Path, llima_mpk: Path, expert_dir: Path, work: Path, output: Path,
                       precision: str, label: str, checkpoint: str, known_orders: dict | None = None,
-                      expert_weights: str = "int8", dataset: Path | None = None) -> Path:
+                      expert_weights: str = "int8", dataset: Path | None = None,
+                      tool_versions: dict | None = None) -> Path:
     """One device-resident Pi0.5 bundle: LLiMa's vision + prefill ELFs and PoLiMa's expert ELF."""
     from dataclasses import replace
 
@@ -773,7 +780,8 @@ def make_llima_bundle(*, export: Path, llima_mpk: Path, expert_dir: Path, work: 
     bundle = build_bundle(BundleInputs(
         spec=spec, elfs=elfs, dataset=label, steps=0, checkpoint=checkpoint, fixtures=fixtures,
         constants=constants, robot_files=robot_files, precisions=precisions, source="polima-compile-pi05-llima",
-        task_label=label, extra_graphs=extra, precision_label=precision), work / "bundles-work")
+        task_label=label, extra_graphs=extra, precision_label=precision,
+        tool_versions=tool_versions or {}), work / "bundles-work")
     output.mkdir(parents=True, exist_ok=True)
     final = output / bundle.root.name
     shutil.rmtree(final, ignore_errors=True)

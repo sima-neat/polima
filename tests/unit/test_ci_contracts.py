@@ -15,7 +15,7 @@ yaml = pytest.importorskip("yaml")
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
 SHARED = "sima-neat/.github/.github/workflows/"
-SHARED_REF = "473e2cc61c2b3720ef5c7488d70f3cf643887da6"
+SHARED_REF = "a1bdd92b98bc59ff68f5ad824f6881def3ab132b"
 RUN_DEVKIT = "needs.resolve-test-scope.outputs.run_devkit"
 
 
@@ -30,19 +30,47 @@ def triggers(data: dict) -> dict:
 def test_manifest_uses_the_formats_core_and_the_sysroot_resolver_accept():
     manifest = json.loads((ROOT / "deps/manifest.json").read_text())
     # sima-neat/.github scripts/resolve_sysroot.py
-    assert re.fullmatch(r"3\.0\.0_master_B[1-9][0-9]*", manifest["elxr_version"])
-    assert manifest["platform-version"] == "3.0.0"
-    assert manifest["sdk"] == {"channel": "develop", "sysroot-version": "3.0.0"}
+    assert re.fullmatch(r"3\.0\.1_master_B[1-9][0-9]*", manifest["elxr_version"])
+    assert manifest["platform-version"] == "3.0.1"
+    assert manifest["sdk"] == {"channel": "develop", "sysroot-version": "3.0.1"}
     # Core's manifest_dependency_spec: a ref pin, never an unsupported policy.
     assert set(manifest["llima"]) == {"ref", "spec"}
     assert re.fullmatch(r"v\d+\.\d+\.\d+", manifest["llima"]["ref"])
     assert re.fullmatch(r"[0-9a-f]{12}", manifest["llima"]["spec"])
     compiler = manifest["model-compiler"]
     assert compiler["repository"] == "model-compiler/arm64"
-    assert compiler["release"] == {"ref": "v3.0.0", "spec": "6cb61a63992f"}
+    assert compiler["release"] == {"ref": "v3.0.0.2", "spec": "6b2d138d1927"}
     assert compiler["develop"] == {"ref": "develop", "spec": "latest"}
     project = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(), re.MULTILINE)
     assert manifest["package-version"] == project.group(1)
+
+
+def test_release_version_is_consistent_and_does_not_reuse_v030():
+    project = re.search(
+        r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(), re.MULTILINE
+    ).group(1)
+    ui = json.loads((ROOT / "src/polima/studio/ui/package.json").read_text())
+    ui_lock = json.loads((ROOT / "src/polima/studio/ui/package-lock.json").read_text())
+    main = (ROOT / "src/polima/cli/main.py").read_text()
+
+    assert project == "0.4.0"
+    assert ui["version"] == project
+    assert ui_lock["version"] == project
+    assert ui_lock["packages"][""]["version"] == project
+    assert f'return "{project}+src"' in main
+
+
+def test_release_versions_are_consistent_across_runtime_and_customer_guides():
+    compatibility = (ROOT / "src/polima/compatibility.py").read_text()
+    cmake = (ROOT / "runtime/CMakeLists.txt").read_text()
+    guide = (ROOT / "src/polima/workbench/static/guide.html").read_text()
+    install = (ROOT / "docs/install.md").read_text()
+
+    assert 'MODELSDK_VERSION = "3.0.0.2"' in compatibility
+    assert 'LLIMA_VERSION = "0.6.2"' in compatibility
+    assert 'set(POLIMA_PLATFORM_VERSION "3.0.1"' in cmake
+    assert "ModelSDK 3.0.0.2 with LLiMa 0.6.2" in guide
+    assert "| 3.0.0.2 | 3.0.1 | 0.6.2 |" in install
 
 
 def test_every_action_is_pinned_and_every_shared_workflow_is_sima_neat():
@@ -134,6 +162,16 @@ def test_devkit_job_tests_the_published_artifact_and_never_builds():
         assert forbidden not in commands
 
 
+def test_devkit_qualification_serializes_accelerator_measurements():
+    script = (ROOT / "scripts/ci/devkit_test.sh").read_text()
+    lock = 'flock -x 9\n'
+    assert 'bench_lock="${POLIMA_CI_BENCH_LOCK:-/tmp/polima-bench.lock}"' in script
+    assert "os.O_RDONLY | os.O_CREAT" in script
+    assert 'exec 9<"$bench_lock"' in script
+    assert lock in script
+    assert script.index(lock) < script.index('"$cli" --runtime-info')
+
+
 def test_devkit_qualification_does_not_replace_shared_installations():
     steps = workflow("vulcan-ci.yml")["jobs"]["test-devkit"]["steps"]
     commands = "\n".join(step.get("run", "") for step in steps)
@@ -146,7 +184,8 @@ def test_devkit_qualification_does_not_replace_shared_installations():
 def test_model_compiler_release_and_develop_lanes_are_vulcan_jobs():
     job = workflow("vulcan-ci.yml")["jobs"]["compiler"]
     assert job["strategy"]["matrix"]["lane"] == ["release", "develop"]
-    assert job["with"]["runner_profile"] == "model-compiler"
+    assert job["with"]["runner_profile"] == "ubuntu"
+    assert job["with"]["architecture"] == "arm64"
     assert "scripts/ci/compiler_lane.sh" in job["with"]["build_command"]
     lane = (ROOT / "scripts/ci/compiler_lane.sh").read_text()
     assert "python -m polima doctor" in lane
@@ -157,8 +196,17 @@ def test_model_compiler_release_and_develop_lanes_are_vulcan_jobs():
 def test_reference_bundles_are_the_revisions_the_benchmarks_document():
     bundles = json.loads((ROOT / "scripts/ci/reference_bundles.json").read_text())["bundles"]
     benchmarks = (ROOT / "docs/benchmarks.md").read_text()
+    assert {bundle["name"]: bundle["revision"] for bundle in bundles} == {
+        "act": "36f6e012b20d7c486600207ad10df62fa9ffeb8d",
+        "groot-n1.6": "7279862b80b1ed906546d33eed74c5e6ac781a7d",
+        "groot-n1.7": "af7076f74e189bd05b1a6200a94fe27d31ff8b11",
+        "pi05": "fcb19a410a00c0c00566a83cb5e278b80cf43b79",
+    }
     for bundle in bundles:
         assert f"https://huggingface.co/{bundle['repo']}/tree/{bundle['revision']}" in benchmarks
+    assert re.search(r"Palette 3\.0\.0\.2,\s+LLiMa 0\.6\.2", benchmarks)
+    assert "PoLiMa runtime `faa710b`" in benchmarks
+    assert "Pi0.5 | PaliGemma" in benchmarks and "| 64 |" in benchmarks
 
 
 def test_customer_documentation_has_no_broken_local_links():

@@ -111,7 +111,7 @@ restriction is checked before stopping any running process.
 Server shutdown waits up to 30 seconds for a clean exit. If the server does not
 exit, the stop reports "did not stop cleanly" and leaves the server running.
 
-On Palette SDK 3.0.0, the accelerator frees a stopped model's memory itself, so
+On Palette SDK 3.x, the accelerator frees a stopped model's memory itself, so
 PoLiMa does not reset it. If a model fails to load, save the server log, stop
 the server and start it again:
 

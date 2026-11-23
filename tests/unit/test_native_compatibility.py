@@ -37,8 +37,8 @@ int main(int argc, char** argv) {
             "-Wall",
             "-Wextra",
             "-Werror",
-            '-DPOLIMA_EXPECTED_PLATFORM="3.0.0"',
-            '-DPOLIMA_EXPECTED_LLIMA="0.6.0"',
+            '-DPOLIMA_EXPECTED_PLATFORM="3.0.1"',
+            '-DPOLIMA_EXPECTED_LLIMA="0.6.2"',
             f"-I{ROOT / 'runtime/include'}",
             str(source),
             str(ROOT / "runtime/src/compatibility.cpp"),
@@ -50,10 +50,10 @@ int main(int argc, char** argv) {
     return binary
 
 
-def files(tmp_path, *, platform="3.0.0", llima="0.6.0"):
+def files(tmp_path, *, platform="3.0.1", llima="0.6.2"):
     buildinfo = tmp_path / "buildinfo"
     status = tmp_path / "status"
-    # This is the spacing used by the released Modalix 3.0 B2501 image.
+    # This is the spacing used by released Modalix 3.x images.
     buildinfo.write_text(f"MACHINE = modalix\nDISTRO_VERSION = {platform}\n")
     status.write_text(
         "Package: unrelated\nVersion: 1\n\n"
@@ -80,9 +80,9 @@ def test_matching_platform_and_llima_are_accepted(checker, tmp_path):
 @pytest.mark.parametrize(
     "platform, llima, reason",
     [
-        ("2.1.3", "0.6.0", "installed platform 2.1.3"),
-        ("3.0.0", "0.5.0", "sima-lmm-core 0.5.0"),
-        ("3.0.0", "0.6.0+develop.9ab65e87d04c", "sima-lmm-core 0.6.0+develop"),
+        ("2.1.3", "0.6.2", "installed platform 2.1.3"),
+        ("3.0.1", "0.5.0", "sima-lmm-core 0.5.0"),
+        ("3.0.1", "0.6.2+develop.9ab65e87d04c", "sima-lmm-core 0.6.2+develop"),
     ],
 )
 def test_a_different_platform_or_llima_is_refused(checker, tmp_path, platform, llima, reason):

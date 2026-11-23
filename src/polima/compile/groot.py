@@ -335,13 +335,17 @@ def compile_all(build: Build) -> list[str]:
     import shutil
     import threading
 
-    from polima.compile.toolchain import compiler_env
+    from polima.compile.driver import sdk_version
+    from polima.compile.toolchain import compiler_env, compiler_versions
 
     sdk = Path(build.settings["sdk"])
     out = build.path("compiled")
     (out / "tmp").mkdir(parents=True, exist_ok=True)
     env = compiler_env(sdk.parent, source_root=SRC)
     env.update(CUDA_VISIBLE_DEVICES="", TMPDIR=str(out / "tmp"))
+    tools = compiler_versions(sdk, env, model_sdk=sdk_version(sdk, env))
+    build.settings["tool_versions"] = tools
+    build.path("build.json").write_text(json.dumps(build.settings, indent=2) + "\n")
     shim = str(SRC / "polima/compile/compile_onnx.py")
     results_path = out / "compile_results.json"
     results = json.loads(results_path.read_text()) if results_path.is_file() else {}
@@ -354,7 +358,7 @@ def compile_all(build: Build) -> list[str]:
     def key(job) -> dict:
         return {"source_sha256": _sha(job["onnx"]), "calibration_sha256": _sha(job["calibration"]),
                 "activation": job["activation"], "weights": job["weights"], "layout": job["layout"],
-                "flags": job["flags"], "persistent": job["persistent"]}
+                "flags": job["flags"], "persistent": job["persistent"], "tool_versions": tools}
 
     def one(job) -> dict:
         name, work = job["name"], out / job["name"]
@@ -635,7 +639,7 @@ def make_bundle(build: Build) -> Path:
         spec=spec, elfs=elfs, dataset=s["label"], steps=steps, checkpoint=str(checkpoint), fixtures=fixtures,
         constants=constants, robot_files=robot_files, precisions=precisions, source="polima-compile-groot",
         model_version=family[1:], task_label=s["label"], plan_rewrite=rewrite, extra_graphs=extra,
-        precision_label=label), work)
+        precision_label=label, tool_versions=s.get("tool_versions", {})), work)
     plan = json.loads(bundle.plan_path.read_text())
     sizes = {i["name"]: i["elements"] for g in extra.values() for i in g["persistent_bindings"]["inputs"]}
     for step in plan["steps"]:

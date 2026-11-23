@@ -95,6 +95,7 @@ class Driver:
     dry_run: bool = False
     force: bool = False
     sdk_version: str = ""
+    tool_versions: dict[str, str] = field(default_factory=dict)
     #: Graphs compiled at once. afe is single-threaded per graph -- measured at
     #: ~100% of one core and ~1.6 GB RSS for ACT -- so a 6-graph policy uses one
     #: core of a 20-core host and takes the sum of its parts. Independent graphs
@@ -150,6 +151,7 @@ class Driver:
             f"compiler={graph.compiler}",
             f"llima_args={','.join(graph.llima_args)}",
             f"sdk={self.sdk_version}",
+            f"tools={json.dumps(self.tool_versions, sort_keys=True)}",
         ]
         onnx = self.onnx_path(graph.name)
         parts.append(f"onnx={sha256_file(onnx) if onnx.exists() else 'missing'}")
@@ -535,6 +537,7 @@ class Driver:
             "policy": getattr(self.spec, "name", "?"),
             "build_dir": str(self.build_dir),
             "sdk_version": self.sdk_version,
+            "tool_versions": self.tool_versions,
             "precision_profile": self.precision_profile,
             "compiled_at": time.time(),
             "graphs": merged,

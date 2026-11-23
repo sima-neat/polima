@@ -25,7 +25,7 @@ if(POLIMA_REQUIRED_LLIMA_VERSION AND
                       "this build requires ${POLIMA_REQUIRED_LLIMA_VERSION}")
 endif()
 
-set(POLIMA_PLATFORM_VERSION "3.0.0" CACHE STRING "Target Modalix platform version")
+set(POLIMA_PLATFORM_VERSION "3.0.1" CACHE STRING "Target Modalix platform version")
 set(POLIMA_LLIMA_PACKAGE_VERSION "${SimaLMM_VERSION}" CACHE STRING
     "Exact sima-lmm-core package version expected at runtime")
 set(POLIMA_SOURCE_COMMIT "unknown" CACHE STRING "PoLiMa source commit")
