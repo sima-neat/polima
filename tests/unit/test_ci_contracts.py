@@ -196,8 +196,17 @@ def test_model_compiler_release_and_develop_lanes_are_vulcan_jobs():
 def test_reference_bundles_are_the_revisions_the_benchmarks_document():
     bundles = json.loads((ROOT / "scripts/ci/reference_bundles.json").read_text())["bundles"]
     benchmarks = (ROOT / "docs/benchmarks.md").read_text()
+    assert {bundle["name"]: bundle["revision"] for bundle in bundles} == {
+        "act": "36f6e012b20d7c486600207ad10df62fa9ffeb8d",
+        "groot-n1.6": "7279862b80b1ed906546d33eed74c5e6ac781a7d",
+        "groot-n1.7": "af7076f74e189bd05b1a6200a94fe27d31ff8b11",
+        "pi05": "fcb19a410a00c0c00566a83cb5e278b80cf43b79",
+    }
     for bundle in bundles:
         assert f"https://huggingface.co/{bundle['repo']}/tree/{bundle['revision']}" in benchmarks
+    assert re.search(r"Palette 3\.0\.0\.2,\s+LLiMa 0\.6\.2", benchmarks)
+    assert "PoLiMa runtime `faa710b`" in benchmarks
+    assert "Pi0.5 | PaliGemma" in benchmarks and "| 64 |" in benchmarks
 
 
 def test_customer_documentation_has_no_broken_local_links():

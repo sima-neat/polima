@@ -2,12 +2,12 @@
   "schema_version": 1,
   "bundles": [
     {"name": "act", "repo": "simaai/ACT-SO101-PickPlace",
-     "revision": "307e6dbccc32d8e52ea0a4a983dd9c024c157643", "p50_ms_max": 15.0},
+     "revision": "36f6e012b20d7c486600207ad10df62fa9ffeb8d", "p50_ms_max": 14.1},
     {"name": "groot-n1.6", "repo": "simaai/GR00T-N1.6-SO101-PickPlace",
-     "revision": "97b01c04d4c1751476184d13105df4f6d5670ec9", "p50_ms_max": 326.0},
+     "revision": "7279862b80b1ed906546d33eed74c5e6ac781a7d", "p50_ms_max": 267.6},
     {"name": "groot-n1.7", "repo": "simaai/GR00T-N1.7-SO101-PickPlace",
-     "revision": "f0b5a25148f1d41d625043dcf8191d8ff7658feb", "p50_ms_max": 239.0},
+     "revision": "af7076f74e189bd05b1a6200a94fe27d31ff8b11", "p50_ms_max": 223.0},
     {"name": "pi05", "repo": "simaai/Pi0.5-SO101-PickPlace",
-     "revision": "308b18cf2d32e28004a8ce2ca1b60ac4fa4c952d", "p50_ms_max": 364.0}
+     "revision": "fcb19a410a00c0c00566a83cb5e278b80cf43b79", "p50_ms_max": 350.9}
   ]
 }

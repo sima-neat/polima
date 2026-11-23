@@ -161,28 +161,30 @@ overridden for one run with an environment variable ([robot.md](robot.md#motion-
 ## Performance
 
 The published mixed-precision bundles produce one 32-action plan. Fixture-only
-model latency was measured on a Modalix DevKit with Palette 3.0.0, LLiMa 0.6.0
-and PoLiMa runtime `7ca990f`, over 30 plans after five warm-ups.
+model latency was measured on a Modalix DevKit with Palette 3.0.0.2, LLiMa
+0.6.2, eLxr platform 3.0.1 and PoLiMa runtime `faa710b`, over 30 plans after
+five warm-ups.
 
 | Normal queued model latency | GR00T N1.6 | GR00T N1.7 |
 |---|---|---|
-| p50 | 309.7 ms | 226.6 ms |
-| p95 | 309.9 ms | 227.1 ms |
-| p99 | 310.0 ms | 227.4 ms |
+| p50 | 254.8 ms | 212.3 ms |
+| p95 | 254.9 ms | 212.5 ms |
+| p99 | 255.0 ms | 219.9 ms |
 
-Diagnostic stage profiling runs compiled graphs individually instead of using
-the normal accelerator queue. These medians come from ten profiles after five
-warm-ups and should not be added to or compared directly with queued latency.
+Diagnostic stage profiling reports accelerator execution separately from the
+clean latency run. These medians come from 30 plans after five warm-ups; host
+and unassigned graph overhead is excluded, so the sections should not be added
+to or compared directly with queued latency.
 
 | Diagnostic accelerator stage | GR00T N1.6 | GR00T N1.7 |
 |---|---:|---:|
-| Vision, both camera views | 155.27 ms | 70.40 ms |
-| Language backbone | 42.61 ms | 27.45 ms |
-| Action policy, four denoising passes | 108.95 ms | 123.78 ms |
+| Vision, both camera views | 124.43 ms | 67.97 ms |
+| Language backbone | 28.30 ms | 24.00 ms |
+| Action policy, four denoising passes | 100.07 ms | 115.92 ms |
 
-The physical-robot series measured live observation to plan at 361 ms for N1.6
-and 279 ms for N1.7. This spans the completed two-camera observation through
-queueing the action plan.
+An earlier physical-robot series measured live observation to plan at 361 ms
+for N1.6 and 279 ms for N1.7. This spans the completed two-camera observation
+through queueing the action plan; it was not repeated for this runtime update.
 
 These are reference-setup measurements. A newly compiled bundle needs its own
 fidelity check and benchmark; model geometry, precision and runtime version

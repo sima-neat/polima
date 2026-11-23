@@ -40,10 +40,10 @@ targets; the released bundle exposes 32 actions. Pi0.5 uses checkpoint step
 These public packages contain compiled models, not training checkpoints or
 datasets. Downloading them does not require a Hugging Face login.
 
-Validated revisions: [ACT `307e6dbc`](https://huggingface.co/simaai/ACT-SO101-PickPlace/commit/307e6dbccc32d8e52ea0a4a983dd9c024c157643),
-[N1.6 `97b01c04`](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace/commit/97b01c04d4c1751476184d13105df4f6d5670ec9),
-[N1.7 `f0b5a251`](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace/commit/f0b5a25148f1d41d625043dcf8191d8ff7658feb) and
-[Pi0.5 `308b18cf`](https://huggingface.co/simaai/Pi0.5-SO101-PickPlace/commit/308b18cf2d32e28004a8ce2ca1b60ac4fa4c952d).
+Validated revisions: [ACT `36f6e012`](https://huggingface.co/simaai/ACT-SO101-PickPlace/commit/36f6e012b20d7c486600207ad10df62fa9ffeb8d),
+[N1.6 `7279862b`](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace/commit/7279862b80b1ed906546d33eed74c5e6ac781a7d),
+[N1.7 `af7076f7`](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace/commit/af7076f74e189bd05b1a6200a94fe27d31ff8b11) and
+[Pi0.5 `fcb19a41`](https://huggingface.co/simaai/Pi0.5-SO101-PickPlace/commit/fcb19a410a00c0c00566a83cb5e278b80cf43b79).
 
 ## Reference dataset
 
@@ -97,7 +97,7 @@ python -m pip install "huggingface_hub>=0.34,<1"
 mkdir -p ~/polima-models
 cd ~/polima-models
 hf download simaai/ACT-SO101-PickPlace \
-  --revision 307e6dbccc32d8e52ea0a4a983dd9c024c157643 \
+  --revision 36f6e012b20d7c486600207ad10df62fa9ffeb8d \
   --local-dir ACT-SO101-PickPlace
 cd ACT-SO101-PickPlace
 sha256sum --check SHA256SUMS
@@ -107,9 +107,9 @@ For another model, use its corresponding immutable repository revision:
 
 | Repository | Revision |
 |---|---|
-| `simaai/GR00T-N1.6-SO101-PickPlace` | `97b01c04d4c1751476184d13105df4f6d5670ec9` |
-| `simaai/GR00T-N1.7-SO101-PickPlace` | `f0b5a25148f1d41d625043dcf8191d8ff7658feb` |
-| `simaai/Pi0.5-SO101-PickPlace` | `308b18cf2d32e28004a8ce2ca1b60ac4fa4c952d` |
+| `simaai/GR00T-N1.6-SO101-PickPlace` | `7279862b80b1ed906546d33eed74c5e6ac781a7d` |
+| `simaai/GR00T-N1.7-SO101-PickPlace` | `af7076f74e189bd05b1a6200a94fe27d31ff8b11` |
+| `simaai/Pi0.5-SO101-PickPlace` | `fcb19a410a00c0c00566a83cb5e278b80cf43b79` |
 
 Use the repository name as the local directory name, as in the ACT example.
 The deployable bundle is the **`bundle/` subdirectory**, not the download root.
