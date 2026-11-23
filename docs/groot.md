@@ -185,7 +185,7 @@ to or compared directly with queued latency.
 An earlier ModelSDK 2.1.3 physical-robot series measured live observation to
 plan at 361 ms for N1.6 and 279 ms for N1.7. This spans the completed two-camera
 observation through queueing the action plan. It was not repeated with the
-current 3.0.0.2 bundles; physical acceptance of those bundles is pending.
+current 3.0.0.2 bundles.
 
 These are reference-setup measurements. A newly compiled bundle needs its own
 fidelity check and benchmark; model geometry, precision and runtime version

@@ -11,7 +11,7 @@ Model latency was measured on eLxr 26.04.02 / platform 3.0.1 with Palette 3.0.0.
 LLiMa 0.6.2 and PoLiMa runtime `faa710b`. Live observation-to-plan latency comes
 from the earlier ModelSDK 2.1.3 reference bundles on a robot setup with two
 640 × 480 cameras at 30 FPS. It was not repeated with the current 3.0.0.2
-bundles; physical acceptance of the current bundles is pending.
+bundles.
 
 | Model | Precision | Actions per plan | Model p50 / p95 / p99 | Live observation to plan, median |
 |---|---|---:|---:|---:|
