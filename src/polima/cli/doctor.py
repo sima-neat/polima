@@ -16,7 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from polima.compatibility import LLIMA_VERSION, MODELSDK_VERSION
+from polima.compatibility import COMPILER_LLIMA_VERSION, MODELSDK_VERSION
 from polima.compile import toolchain
 from polima.config.base import NO_BOARD_MESSAGE
 from polima.config.loader import load
@@ -337,12 +337,13 @@ def check_compiler(doc: Doctor, config) -> None:
     ).strip().splitlines()
     lmm_version = lmm[0] if lmm else ""
     lmm_module = lmm[1] if len(lmm) > 1 else ""
-    lmm_compatible = lmm_version.split("+", 1)[0] == LLIMA_VERSION
+    lmm_compatible = lmm_version.split("+", 1)[0] == COMPILER_LLIMA_VERSION
     doc.record(
         table.OK if lmm_module and lmm_compatible else table.FAIL,
         "sima_lmm.host.compile_lmm",
         (f"{lmm_version} at {lmm_module}" if lmm_module else "module unavailable")
-        + ("" if lmm_module and lmm_compatible else f" -- needs LLiMa {LLIMA_VERSION}"),
+        + ("" if lmm_module and lmm_compatible
+           else f" -- compiler needs LLiMa {COMPILER_LLIMA_VERSION}"),
     )
 
     script = Path(compiler_bin) / "llima-compile"
