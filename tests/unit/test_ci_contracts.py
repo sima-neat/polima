@@ -150,6 +150,9 @@ def test_workflows_create_no_environments_and_use_only_org_secrets():
 def test_devkit_job_tests_the_published_artifact_and_never_builds():
     jobs = workflow("vulcan-ci.yml")["jobs"]
     steps = jobs["test-devkit"]["steps"]
+    install = next(step for step in steps
+                   if step.get("name") == "Install exact published package in an isolated layout")
+    assert install["env"]["SIMA_CLI_CHECK_FOR_UPDATE"] == "0"
     commands = "\n".join(step.get("run", "") for step in steps)
     assert "verify_package.py" in commands
     assert "publish-vulcan-artifacts" in jobs["test-devkit"]["needs"]

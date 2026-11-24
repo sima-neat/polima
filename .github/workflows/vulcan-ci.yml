@@ -204,6 +204,7 @@ jobs:
         if: ${{ github.event_name == 'push' }}
         env:
           NEAT_VULCAN_ENV: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+          SIMA_CLI_CHECK_FOR_UPDATE: "0"
         run: |
           set -euo pipefail
           mkdir -p "$PACKAGE_DIR" "$CANDIDATE_DIR" "$RESULTS_DIR"
