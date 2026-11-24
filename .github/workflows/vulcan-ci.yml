@@ -182,6 +182,8 @@ jobs:
       group: ${{ needs.resolve-test-runner.outputs.modalix_runner_group }}
       labels: ${{ fromJSON(needs.resolve-test-runner.outputs.runner_labels) }}
     timeout-minutes: 120
+    env:
+      SIMA_CLI_CHECK_FOR_UPDATE: "0"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
