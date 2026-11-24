@@ -105,6 +105,9 @@ class GraphArtifact:
     #: Element counts of the separately bound inputs of a persistent-DiT ELF
     #: (hidden, timestep embedding, backbone features, mask), consumed by run_dit_chain.
     persistent_input_elements: list[int] = field(default_factory=list)
+    #: Element counts of separately bound outputs, in compiler order, for a
+    #: run_device_chain graph with several outputs (LLiMa's q/K/V graph).
+    persistent_output_elements: list[int] = field(default_factory=list)
     #: Named persistent MLA bindings ({"inputs": [...], "outputs": [...]}, each {name, elements,
     #: binding}) of a run_bound_chain graph; read by the native Plan, carried through unchanged.
     persistent_bindings: dict | None = None
@@ -130,6 +133,8 @@ class GraphArtifact:
             result["logical_channels"] = self.logical_channels
         if self.persistent_input_elements:
             result["persistent_input_elements"] = self.persistent_input_elements
+        if self.persistent_output_elements:
+            result["persistent_output_elements"] = self.persistent_output_elements
         if self.persistent_bindings is not None:
             result["persistent_bindings"] = self.persistent_bindings
         return result

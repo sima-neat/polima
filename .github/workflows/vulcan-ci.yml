@@ -1,0 +1,317 @@
+name: Vulcan CI
+
+# Untrusted pull requests are handled by source-ci.yml on GitHub-hosted runners.
+# This workflow runs only for trusted refs or an explicit maintainer dispatch.
+run-name: ${{ github.event.head_commit.message || github.ref_name || 'Vulcan CI' }} (${{ vars.VULCAN_ENV || 'dev' }})
+
+on:
+  push:
+    branches: [develop, main, "release-**"]
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+  packages: read
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  resolve-test-scope:
+    name: Resolve test scope
+    runs-on: ubuntu-24.04
+    outputs:
+      run_devkit: ${{ steps.scope.outputs.run_devkit }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: scope
+        run: |
+          python3 scripts/ci/devkit_scope.py --event "$GITHUB_EVENT_NAME" \
+            --ref-type "$GITHUB_REF_TYPE" --ref "$GITHUB_REF_NAME" \
+            --github-output "$GITHUB_OUTPUT" --github-summary "$GITHUB_STEP_SUMMARY"
+
+  resolve-sysroot:
+    name: Resolve sysroot
+    uses: sima-neat/.github/.github/workflows/resolve-sysroot.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
+    with:
+      shared_workflow_ref: a1bdd92b98bc59ff68f5ad824f6881def3ab132b
+
+  resolve-vulcan-config:
+    name: Resolve Vulcan configuration
+    uses: sima-neat/.github/.github/workflows/vulcan-resolve-config.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
+    with:
+      vulcan_env: ${{ vars.VULCAN_ENV || 'dev' }}
+
+  build-release:
+    name: Build SDK 3.0.0.2 / LLiMa 0.6.2 release package
+    needs: [resolve-vulcan-config, resolve-sysroot]
+    uses: sima-neat/.github/.github/workflows/vulcan-build.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
+    with:
+      vulcan_env: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+      sdk_cache: ${{ needs.resolve-vulcan-config.outputs.sdk_cache }}
+      capacity: ${{ needs.resolve-vulcan-config.outputs.capacity }}
+      fetch_depth: 0
+      checkout_submodules: "false"
+      ensure_sdk_container: false
+      artifact_name: polima-release-dist
+      artifact_path: dist/release/*
+      artifact_retention_days: 7
+      pre_build_command: scripts/ci/sdk_setup.sh
+      build_command: |
+        set -euo pipefail
+        export SYSROOT_VERSION="${{ needs.resolve-sysroot.outputs.sysroot_version }}"
+        export NEAT_VULCAN_ENV="${{ needs.resolve-vulcan-config.outputs.vulcan_env }}"
+        scripts/ci/vulcan_host_build.sh release
+      post_build_command: |
+        set -euo pipefail
+        python3 scripts/ci/verify_package.py dist/release \
+          --commit "${GITHUB_SHA}" --branch "${GITHUB_REF_NAME}"
+        python3 scripts/ci/lane_summary.py dist/release | tee -a "${GITHUB_STEP_SUMMARY}"
+
+  build-develop:
+    name: Build against LLiMa develop
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    needs: [resolve-vulcan-config, resolve-sysroot]
+    uses: sima-neat/.github/.github/workflows/vulcan-build.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
+    with:
+      vulcan_env: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+      sdk_cache: ${{ needs.resolve-vulcan-config.outputs.sdk_cache }}
+      capacity: ${{ needs.resolve-vulcan-config.outputs.capacity }}
+      fetch_depth: 0
+      checkout_submodules: "false"
+      ensure_sdk_container: false
+      artifact_name: polima-llima-develop-evidence
+      artifact_path: dist/develop/*
+      artifact_retention_days: 30
+      pre_build_command: scripts/ci/sdk_setup.sh
+      build_command: |
+        set -euo pipefail
+        export SYSROOT_VERSION="${{ needs.resolve-sysroot.outputs.sysroot_version }}"
+        export NEAT_VULCAN_ENV="${{ needs.resolve-vulcan-config.outputs.vulcan_env }}"
+        scripts/ci/vulcan_host_build.sh develop
+      post_build_command: |
+        set -euo pipefail
+        (cd dist/develop && sha256sum --check --strict ./*.sha256)
+        python3 scripts/ci/lane_summary.py dist/develop | tee -a "${GITHUB_STEP_SUMMARY}"
+
+  compiler:
+    name: Model Compiler ${{ matrix.lane }}
+    needs: [resolve-vulcan-config]
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [release, develop]
+    uses: sima-neat/.github/.github/workflows/vulcan-build.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
+    with:
+      vulcan_env: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+      runner_profile: ubuntu
+      architecture: arm64
+      capacity: ${{ needs.resolve-vulcan-config.outputs.capacity }}
+      fetch_depth: 0
+      checkout_submodules: "false"
+      ensure_sdk_container: false
+      artifact_name: polima-compiler-${{ matrix.lane }}-evidence
+      artifact_path: dist/compiler/${{ matrix.lane }}/**
+      artifact_retention_days: 30
+      build_command: |
+        set -euo pipefail
+        export NEAT_VULCAN_ENV="${{ needs.resolve-vulcan-config.outputs.vulcan_env }}"
+        scripts/ci/compiler_lane.sh "${{ matrix.lane }}" "dist/compiler/${{ matrix.lane }}"
+
+  publish-vulcan-artifacts:
+    name: Publish exact package
+    if: ${{ github.event_name == 'push' }}
+    needs: [resolve-vulcan-config, build-release, compiler]
+    uses: sima-neat/.github/.github/workflows/vulcan-publish-artifacts.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
+    with:
+      aws_region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
+      environment_name: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+      bucket: ${{ needs.resolve-vulcan-config.outputs.artifact_bucket }}
+      role_to_assume: ${{ needs.resolve-vulcan-config.outputs.artifact_publisher_role_arn }}
+      sse_kms_key_id: ${{ needs.resolve-vulcan-config.outputs.artifact_kms_key_id }}
+      cloudfront_distribution_id: ${{ needs.resolve-vulcan-config.outputs.artifact_cloudfront_distribution_id }}
+      artifact_folder: "."
+      artifact_pattern: polima-release-dist
+      artifact_glob: "**/*"
+      min_artifact_count: 8
+      publish_manifest: true
+
+  resolve-test-runner:
+    name: Resolve exact DevKit
+    if: >-
+      ${{
+        always() && needs.resolve-test-scope.outputs.run_devkit == 'true' &&
+        needs.build-release.result == 'success' &&
+        (github.event_name != 'push' || needs.publish-vulcan-artifacts.result == 'success')
+      }}
+    needs: [resolve-test-scope, resolve-vulcan-config, build-release, publish-vulcan-artifacts]
+    uses: sima-neat/.github/.github/workflows/vulcan-resolve-modalix-runner.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
+    with:
+      manifest_path: deps/manifest.json
+      shared_workflow_ref: a1bdd92b98bc59ff68f5ad824f6881def3ab132b
+      allow-version-fallback: false
+      runner-labels: >-
+        ["self-hosted", "Linux", "ARM64", "modalix", "modalix-som-16gig", "vulcan-${{ needs.resolve-vulcan-config.outputs.vulcan_env == 'prod' && 'production' || needs.resolve-vulcan-config.outputs.vulcan_env }}"]
+    secrets:
+      app_id: ${{ secrets.NEAT_RELEASES_APP_ID }}
+      app_private_key: ${{ secrets.NEAT_RELEASES_APP_PRIVATE_KEY }}
+
+  test-devkit:
+    name: Qualify exact package on DevKit
+    if: >-
+      ${{
+        always() && needs.resolve-test-scope.outputs.run_devkit == 'true' &&
+        needs.build-release.result == 'success' &&
+        needs.resolve-test-runner.result == 'success' &&
+        (github.event_name != 'push' || needs.publish-vulcan-artifacts.result == 'success')
+      }}
+    needs: [resolve-test-scope, resolve-vulcan-config, resolve-test-runner, build-release,
+            publish-vulcan-artifacts]
+    runs-on:
+      group: ${{ needs.resolve-test-runner.outputs.modalix_runner_group }}
+      labels: ${{ fromJSON(needs.resolve-test-runner.outputs.runner_labels) }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Prepare run-specific paths
+        run: |
+          set -euo pipefail
+          run="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "PACKAGE_DIR=${RUNNER_TEMP}/polima-package-${run}"
+            echo "CANDIDATE_DIR=${RUNNER_TEMP}/polima-candidate-${run}"
+            echo "RESULTS_DIR=${RUNNER_TEMP}/polima-results-${run}"
+            echo "LLIMA_LOCK=${RUNNER_TEMP}/polima-package-${run}/resolved-dependencies.lock.json"
+          } >> "$GITHUB_ENV"
+      - if: ${{ github.event_name != 'push' }}
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4
+        with:
+          name: polima-release-dist
+          path: ${{ runner.temp }}/polima-package-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Download the exact published package
+        if: ${{ github.event_name == 'push' }}
+        env:
+          NEAT_VULCAN_ENV: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+          SIMA_CLI_CHECK_FOR_UPDATE: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p "$PACKAGE_DIR" "$CANDIDATE_DIR" "$RESULTS_DIR"
+          target="polima@${GITHUB_REF_NAME}:${GITHUB_SHA:0:12}"
+          resolution="$RESULTS_DIR/package-resolution.json"
+          sima-cli neat install --env "$NEAT_VULCAN_ENV" --json "$target" > "$resolution"
+          metadata_url="$(PYTHONPATH="$GITHUB_WORKSPACE/scripts/ci" python3 -c \
+            'from pathlib import Path; import sys; from resolve_llima import parse_resolution; print(parse_resolution(Path(sys.argv[1]).read_text())["metadata_url"])' \
+            "$resolution")"
+          curl -fsSL "$metadata_url" -o "$PACKAGE_DIR/metadata.json"
+          # The package's installer refuses a DevKit whose LLiMa differs, so read the lock first.
+          sima-cli neat install --env "$NEAT_VULCAN_ENV" --download-only \
+            -d "$CANDIDATE_DIR/published" "$target"
+          echo "LLIMA_LOCK=$CANDIDATE_DIR/published/resolved-dependencies.lock.json" >> "$GITHUB_ENV"
+      - name: Install the exact LLiMa the package was built against
+        run: scripts/ci/install_exact_llima.sh "$LLIMA_LOCK" "$CANDIDATE_DIR/devkit-deps"
+      - name: Install exact published package in an isolated layout
+        if: ${{ github.event_name == 'push' }}
+        env:
+          NEAT_VULCAN_ENV: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+          SIMA_CLI_CHECK_FOR_UPDATE: "0"
+        run: |
+          set -euo pipefail
+          target="polima@${GITHUB_REF_NAME}:${GITHUB_SHA:0:12}"
+          scripts/ci/prepare_lerobot.sh "$CANDIDATE_DIR/lerobot"
+          POLIMA_ROOT="$CANDIDATE_DIR/polima" \
+          LEROBOT_VENV="$CANDIDATE_DIR/lerobot" \
+          POLIMA_INSTALL_LINKS=0 POLIMA_INSTALL_SERVICE=0 SKIP_LEROBOT=1 \
+            sima-cli neat install --env "$NEAT_VULCAN_ENV" -d "$PACKAGE_DIR" \
+              "$target"
+          {
+            echo "POLIMA_CI_PYTHON=$CANDIDATE_DIR/lerobot/bin/python"
+            echo "POLIMA_ROOT=$CANDIDATE_DIR/polima"
+          } >> "$GITHUB_ENV"
+      - name: Create isolated validation layout
+        if: ${{ github.event_name != 'push' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RESULTS_DIR"
+          wheel=("$PACKAGE_DIR"/polima-*.whl)
+          scripts/ci/prepare_lerobot.sh "$CANDIDATE_DIR/lerobot"
+          # Into the venv itself: devkit_test.sh imports polima with -I, which ignores PYTHONPATH.
+          "$CANDIDATE_DIR/lerobot/bin/python" -m pip install --no-deps --force-reinstall \
+            "${wheel[0]}"
+          echo "POLIMA_CI_PYTHON=$CANDIDATE_DIR/lerobot/bin/python" >> "$GITHUB_ENV"
+      - name: Verify firmware, package and installed LLiMa identity
+        env:
+          EXPECTED_FIRMWARE: ${{ needs.resolve-test-runner.outputs.devkit_firmware }}
+          VERSION_FALLBACK: ${{ needs.resolve-test-runner.outputs.version_fallback }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION_FALLBACK" == false ]]
+          actual="$(sed -n 's/^[[:space:]]*SIMA_BUILD_VERSION[[:space:]]*=[[:space:]]*//p' /etc/buildinfo)"
+          [[ "$actual" == "$EXPECTED_FIRMWARE" ]]
+          python3 scripts/ci/verify_package.py "$PACKAGE_DIR" --commit "$GITHUB_SHA" --branch "$GITHUB_REF_NAME"
+          expected="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["llima"]["version"])' "$PACKAGE_DIR/resolved-dependencies.lock.json")"
+          installed="$(dpkg-query -W -f='${Version}' sima-lmm-core)"
+          [[ "$installed" == "$expected" ]] || { echo "installed LLiMa $installed != package $expected" >&2; exit 1; }
+      - name: Smoke-test installed Studio and Workbench
+        run: python3 scripts/ci/web_smoke.py --python "$POLIMA_CI_PYTHON" --output "$RESULTS_DIR/web.json"
+      - name: Run kernels, fixtures, latency and robot-client dry runs
+        run: scripts/ci/devkit_test.sh "$PACKAGE_DIR" "$RESULTS_DIR"
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: polima-devkit-results
+          path: ${{ env.RESULTS_DIR }}
+          if-no-files-found: warn
+      - if: ${{ always() }}
+        run: rm -rf -- "$CANDIDATE_DIR" "$RESULTS_DIR" "$PACKAGE_DIR"
+
+  promote-latest-tag:
+    name: Promote trusted latest tag
+    if: >-
+      ${{
+        always() && github.event_name == 'push' &&
+        needs.publish-vulcan-artifacts.result == 'success' &&
+        needs.test-devkit.result == 'success'
+      }}
+    needs: [resolve-vulcan-config, publish-vulcan-artifacts, test-devkit]
+    uses: sima-neat/.github/.github/workflows/vulcan-update-latest-artifacts.yml@a1bdd92b98bc59ff68f5ad824f6881def3ab132b
+    with:
+      aws_region: ${{ needs.resolve-vulcan-config.outputs.aws_region }}
+      environment_name: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+      bucket: ${{ needs.resolve-vulcan-config.outputs.artifact_bucket }}
+      role_to_assume: ${{ needs.resolve-vulcan-config.outputs.artifact_publisher_role_arn }}
+      sse_kms_key_id: ${{ needs.resolve-vulcan-config.outputs.artifact_kms_key_id }}
+      artifact_folder: "."
+
+  required:
+    name: Required trusted qualification
+    if: ${{ always() }}
+    needs: [resolve-test-scope, resolve-sysroot, resolve-vulcan-config, build-release,
+            build-develop, compiler, publish-vulcan-artifacts, resolve-test-runner,
+            test-devkit, promote-latest-tag]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Require every applicable result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          publish=()
+          [[ "$GITHUB_EVENT_NAME" == push ]] && publish=(--publish)
+          devkit=()
+          [[ '${{ needs.resolve-test-scope.outputs.run_devkit }}' == true ]] && devkit=(--devkit)
+          python3 scripts/ci/check_ci_results.py "$RESULTS" "${publish[@]}" "${devkit[@]}"

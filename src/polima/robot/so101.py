@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import runpy
 import sys
+from collections import deque
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import numpy as np
@@ -14,14 +17,14 @@ import numpy as np
 from polima.bundle.contract import spec_from_bundle
 from polima.bundle.layout import Bundle
 from polima.policies.registry import get_policy
-from polima.robot import reset_ease, smoothing, substeps
+from polima.robot import crossfade, reset_ease, smoothing, substeps
 from polima.robot.policy import CompiledPolicyAdapter
 from polima.util.jsonio import read_json
 
-AGGREGATES = ("weighted_average", "latest_only", "average", "conservative")
+AGGREGATES = ("weighted_average", "latest_only", "average", "conservative", crossfade.NAME)
 
 
-SUPPORTED_POLICIES = ("groot", "act")
+SUPPORTED_POLICIES = ("groot", "act", "pi05")
 
 
 ACT_INSTRUCTION = "ACT (no language input)"
@@ -33,6 +36,11 @@ RECIPES = {
               "POLIMA_AUTO_COMPLETE": "0"},
     "act": {"fps": 30, "POLIMA_SMOOTH_MOVES": "10", "POLIMA_SUBSTEPS": "1",
             "POLIMA_CHUNK_THRESHOLD": "0.5"},
+    # Pi0.5: overlap plans and smooth arm targets within each plan.
+    "pi05": {"fps": 30, "POLIMA_SMOOTH_MOVES": "0", "POLIMA_SUBSTEPS": "1",
+             "POLIMA_CHUNK_THRESHOLD": "0.5", "POLIMA_GROOT_NOISE": "fixed",
+             "POLIMA_CHUNK_FILTER": "fir3", "POLIMA_AGGREGATE": "crossfade",
+             "POLIMA_AUTO_COMPLETE": "0"},
 }
 
 COMMON_RECIPE = {
@@ -89,7 +97,7 @@ def load_contract(root: Path, task: str | int = 0):
         or len(spec.robot.camera_keys) != 2
         or set(spec.robot.camera_keys) not in ({"front", "wrist"}, {"overhead", "wrist"})
     ):
-        raise ValueError("This launcher requires a two-camera SO101 GR00T or ACT bundle")
+        raise ValueError("This launcher requires a two-camera SO101 GR00T, ACT or Pi0.5 bundle")
     if spec.name == "act" and not bundle.tasks:
 
         if str(task) != "0":
@@ -152,6 +160,12 @@ class SO101PolicyClient:
             spec, bundle, address, task_id=task_id, timeout=timeout,
             noise=(os.environ.get("POLIMA_GROOT_NOISE", "").strip() or "random"),
         )
+        self.chunk_filter = smoothing.chunk_filter_from_env()
+        if spec.name == "pi05":
+            # Pi0.5 reads its instruction as text, so any instruction works; the
+            # bundle's compiled-in task is only the default.
+            self.adapter.task = (os.environ.get("POLIMA_PI05_TASK", "").strip()
+                                 or instruction(bundle, task_id))
         self.host = self.adapter.client.host
         self.port = self.adapter.client.port
 
@@ -167,7 +181,7 @@ class SO101PolicyClient:
         expected = tuple(self.adapter.spec.wire.response_shape)
         if actions.shape != expected or not np.isfinite(actions).all():
             raise ValueError(f"Expected finite actions shaped {expected}, got {actions.shape}")
-        return actions, latency
+        return smoothing.filter_chunk(actions, self.chunk_filter), latency
 
 
 DEVKIT_CALIBRATION = Path.home() / ".cache/huggingface/lerobot/calibration/robots/so_follower"
@@ -235,6 +249,7 @@ def client_configuration(root, spec, task_id, instruction, args):
     smooth_moves = smoothing.moves_from_env()
 
     smoothing.shape_from_env()
+    smoothing.chunk_filter_from_env()
     substeps.substeps_from_env()
     reset_ease.ease_from_env()
     aggregate = (os.environ.get("POLIMA_AGGREGATE", "").strip()
@@ -278,7 +293,7 @@ def record(kind: str, **fields) -> None:
     global _RUN_STATUS
     if kind == "action_sent" and not fields.get("positions"):
         return
-    if kind == "error":
+    if kind in ("error", "camera_fault"):
         _RUN_STATUS = "failed"
     elif kind == "operator_stop" and _RUN_STATUS != "failed":
         _RUN_STATUS = "interrupted"
@@ -289,7 +304,34 @@ def record(kind: str, **fields) -> None:
             pass
 
 
+def bound_queue_history(client) -> None:
+    """Keep only the recent queue-size samples used by LeRobot's optional plot."""
+    client.action_queue_size = deque(maxlen=900)
+
+
+def configure_run_logging(logger=None) -> None:
+    """Replace LeRobot's unlimited debug file with a bounded warning/error log."""
+    logger = logging.getLogger() if logger is None else logger
+    for handler in list(logger.handlers):
+        if isinstance(handler, logging.FileHandler):
+            logger.removeHandler(handler)
+            handler.close()
+    folder = Path(os.environ.get("POLIMA_ROOT", "/media/nvme/polima")) / "var/log"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(folder / "robot-errors.log", maxBytes=2 * 1024 * 1024,
+                                      backupCount=2, encoding="utf-8")
+    except OSError as error:
+        print(f"Error log unavailable: {error}", file=sys.stderr)
+        return
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
+
+
 def start_record(root, bundle, spec, task_id, args):
+    if os.environ.get("POLIMA_RECORD_RUN", "0") != "1":
+        return None
     from polima.robot.evidence import RunRecorder
     from polima.util.hashing import sha256_file
 
@@ -346,12 +388,22 @@ def main(argv=None):
             os.environ[f"ACT_{name}"] = os.environ[f"POLIMA_{name}"]
     if os.environ.get("POLIMA_NO_AUTO_COMPLETE"):
         os.environ["ACT_AUTO_COMPLETE"] = "0"
+    aggregate = next(
+        (
+            value.split("=", 1)[1]
+            for value in client_args
+            if value.startswith("--aggregate_fn_name=")
+        ),
+        os.environ.get("POLIMA_AGGREGATE", "weighted_average"),
+    )
     smooth_moves = smoothing.moves_from_env()
     substep_count = substeps.substeps_from_env()
     ease = reset_ease.ease_from_env()
-    if smooth_moves or substep_count > 1:
-
+    if aggregate == crossfade.NAME or smooth_moves or substep_count > 1:
         from lerobot.async_inference.robot_client import RobotClient
+        if aggregate == crossfade.NAME:
+            import lerobot.async_inference.configs as lerobot_configs
+            crossfade.install(lerobot_configs, RobotClient)
         if smooth_moves:
             smoothing.install(RobotClient, smooth_moves, shape=smoothing.shape_from_env())
         if substep_count > 1:

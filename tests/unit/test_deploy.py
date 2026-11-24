@@ -7,13 +7,17 @@ otherwise fail only on hardware.
 from __future__ import annotations
 
 import inspect
+import json
+import sys
 
 import numpy as np
 import pytest
 
+from polima.cli import deploy as deploy_cli
+from polima.cli import run as run_cli
 from polima.config.base import BoardConfig
 from polima.deploy import deploy
-from polima.deploy.build import source_hash
+from polima.deploy.build import packaged_runtime, source_hash, toolchain_identity
 from polima.deploy.smoke import (
     DEFAULT_COSINE_MIN,
     DEFAULT_MEAN_ABS_MAX,
@@ -60,6 +64,86 @@ def test_deploy_directory_is_configurable():
 def test_default_build_jobs_uses_the_devkit_cores():
     """The DevKit has 16 cores; the build must not default to -j2."""
     assert BoardConfig().build_jobs > 2
+
+
+@pytest.mark.parametrize("resolver", [deploy_cli._resolve_bundle, run_cli._resolve_bundle])
+def test_bundle_path_expands_quoted_home(resolver, tmp_path, monkeypatch):
+    """The shell does not expand ``~`` inside a quoted --bundle value."""
+    bundle_dir = tmp_path / "downloads" / "model" / "bundle"
+    bundle_dir.mkdir(parents=True)
+    (bundle_dir / "bundle.json").write_text(
+        json.dumps({"bundle_id": "groot-test-0-deadbeef", "policy": "groot"})
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    bundle = resolver("~/downloads/model/bundle", None)
+
+    assert bundle.root == bundle_dir
+
+
+def test_board_capture_keeps_remote_stderr_out_of_parsed_stdout(monkeypatch):
+    """A remote shell warning must not become a filename or a df value."""
+    from polima.deploy import ssh
+    from polima.util.proc import Result
+
+    def fake_run(argv, **kwargs):
+        assert kwargs["merge_stderr"] is False
+        return Result(
+            list(argv),
+            0,
+            0.01,
+            stdout="407000000000\n",
+            stderr="bash: warning: setlocale: cannot change locale\n",
+        )
+
+    monkeypatch.setattr(ssh, "run", fake_run)
+    session = ssh.BoardSession(BoardConfig(host="sima@example", control_master=False))
+
+    assert session.capture("df --output=avail /media/nvme | tail -1") == "407000000000"
+    assert session.free_bytes("/media/nvme/polima") == 407000000000
+
+
+def test_board_transfer_falls_back_to_scp_and_atomic_tar_swap(tmp_path, monkeypatch):
+    from polima.deploy import ssh
+    from polima.util.proc import Result
+
+    source = tmp_path / "bundle"
+    source.mkdir()
+    (source / "bundle.json").write_text("{}")
+    calls = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        return Result(list(argv), 0, 0.0)
+
+    monkeypatch.setattr(ssh, "run", fake_run)
+    session = ssh.BoardSession(BoardConfig(host="sima@example", control_master=False))
+    session._remote_rsync = False
+    session.rsync(source, "/media/nvme/polima/models/test", delete=True)
+
+    assert any(command[0] == "tar" and "bundle.json" not in command for command in calls)
+    assert any(command[0] == "scp" and command[-1].startswith("sima@example:")
+               for command in calls)
+    remote = "\n".join(" ".join(command) for command in calls if command[0] == "ssh")
+    assert "polima-stage-" in remote and "polima-previous-" in remote
+    assert "mv --" in remote
+
+
+def test_process_runner_can_capture_stdout_and_stderr_separately():
+    from polima.util.proc import run
+
+    result = run(
+        [
+            sys.executable,
+            "-c",
+            "import os; print('407000000000'); os.write(2, b'locale warning: \\xff\\n')",
+        ],
+        echo=False,
+        merge_stderr=False,
+    )
+
+    assert result.stdout == "407000000000\n"
+    assert result.stderr == "locale warning: �\n"
 
 
 # -------------------------------------------------------------- build hashing
@@ -200,11 +284,12 @@ class _FakeSession:
     """Records commands and answers `test -x` from a set of present paths."""
 
     def __init__(self, present: tuple[str, ...] = (), cma: tuple[int, ...] = (100, 200),
-                 fail: tuple[str, ...] = ()) -> None:
+                 fail: tuple[str, ...] = (), platform: str = "2.1.3") -> None:
         self.present = present
         self.commands: list[str] = []
         self._cma = list(cma)
         self._fail = fail
+        self._platform = platform
 
     def run(self, command: str, *, check: bool = True, echo: bool = False,
             timeout: float | None = None) -> _FakeResult:
@@ -219,6 +304,8 @@ class _FakeSession:
         self.commands.append(command)
         if "CmaFree" in command:
             return f"CmaFree: {self._cma.pop(0) if self._cma else 0} kB"
+        if "DISTRO_VERSION" in command:
+            return self._platform
         return ""
 
 
@@ -304,6 +391,18 @@ def test_mla_reset_reports_reclaimed_cma():
     assert report.reclaimed_kb == 716_800
 
 
+@pytest.mark.parametrize("platform", ["3.0.0", ""])
+def test_mla_reset_never_runs_the_sdk_2_1_ladder_on_other_platforms(platform):
+    from polima.deploy import mla
+
+    session = _FakeSession(present=("/usr/bin/fix_devkit_runtime.sh",
+                                    "/usr/bin/init_mla_memory.sh"), platform=platform)
+    report = mla.reset(session, BoardConfig())
+
+    assert report.ok is False and report.method == "none"
+    assert not any(c.startswith("sudo") or "systemctl" in c for c in session.commands)
+
+
 def test_mla_reset_reports_failure_rather_than_raising():
     """A failed reset must not mask the load error that prompted it."""
     from polima.deploy import mla
@@ -360,6 +459,28 @@ def test_service_start_reraises_the_load_error_when_the_reset_fails(monkeypatch)
 
 def _raise_mla_wedge(session, board, **kwargs):
     raise RuntimeError("errCode=1001 name=MLA_LOAD_FAILED")
+
+
+@pytest.mark.parametrize("runtime_json, packaged", [
+    ('{"schema_version": 2, "llima": {"ref": "v0.6.0"}}', True),
+    ('{"schema_version": 1}', False),
+    ("", False),
+])
+def test_deploy_keeps_a_packaged_runtime(runtime_json, packaged):
+    class Session(_FakeSession):
+        def capture(self, command: str) -> str:
+            return runtime_json if "runtime.json" in command else ""
+
+    assert packaged_runtime(Session(), BoardConfig()) is packaged
+
+
+def test_build_needs_the_llima_packages_on_the_devkit():
+    class Session(_FakeSession):
+        def run(self, command: str, **_) -> _FakeResult:
+            return _FakeResult(1)
+
+    with pytest.raises(RuntimeError, match="LLiMa 0.6"):
+        toolchain_identity(Session())
 
 
 def test_there_is_no_default_board_address(monkeypatch):

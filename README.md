@@ -4,7 +4,7 @@
 
 # PoLiMa: Running Robot Policies on SiMa.ai Modalix
 
-**Po**licy + Si**Ma**: compile robot policies (ACT, NVIDIA GR00T) for the SiMa.ai
+**Po**licy + Si**Ma**: compile robot policies (ACT, NVIDIA GR00T, Pi0.5) for the SiMa.ai
 Modalix DevKit and drive a robot arm with them.
 
 </div>
@@ -25,6 +25,7 @@ and PoLiMa starts from the checkpoint.
 | ACT (LeRobot) | yes | yes | yes |
 | GR00T N1.6 | yes | yes | yes (mixed precision) |
 | GR00T N1.7 | yes | yes | yes (mixed precision) |
+| Pi0.5 (LeRobot) | yes | yes | yes (W8A16) |
 
 ## Start here
 
@@ -39,8 +40,11 @@ After installation, run `polima workbench start` and open its printed URL.
 ## Compiled models
 
 Download the SO-101 pick-and-place bundles from Hugging Face:
-[GR00T N1.6](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace) and
-[GR00T N1.7](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace). Both produce 32 actions per plan.
+[ACT](https://huggingface.co/simaai/ACT-SO101-PickPlace),
+[GR00T N1.6](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace),
+[GR00T N1.7](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace) and
+[Pi0.5](https://huggingface.co/simaai/Pi0.5-SO101-PickPlace). GR00T produces
+32 actions per plan; Pi0.5 produces 50.
 Follow the [download and setup instructions](examples/so101/README.md#2-download-and-deploy-the-bundle).
 If repository access is restricted, sign in with an authorized Hugging Face account.
 
@@ -93,18 +97,27 @@ Every command has `--help`.
 
 ## Performance
 
-Reference measurements on a Modalix DevKit, mixed precision, one 32-move plan:
+Reference model latency on a Modalix DevKit, measured over 30 plans after five
+warm-ups for each model.
 
-| Model | Model time on the DevKit | Camera picture to plan |
-|---|---|---|
-| GR00T N1.6 | 317 ms | 364 ms |
-| GR00T N1.7 | 233 ms | 285 ms |
+| Model | Precision | Actions per plan | Model latency, median | Live observation to plan, median |
+|---|---|---:|---:|---:|
+| ACT | BF16 | 100 | 13.4 ms | 25 ms |
+| GR00T N1.6 | Mixed INT8/BF16 | 32 | 254.8 ms | 361 ms |
+| GR00T N1.7 | Mixed INT8/BF16 | 32 | 212.3 ms | 279 ms |
+| Pi0.5 | W8A16 with BF16 attention | 50 | 334.1 ms | 438 ms |
 
-These measurements describe the reference setup, not a guaranteed latency for
-every checkpoint or release bundle. Use the model card for artifact-specific
-validation and benchmark your deployed bundle in Studio.
+Model latency was measured with Palette 3.0.0.2, LLiMa 0.6.2 and eLxr platform
+3.0.1. Live observation to plan starts after the two-camera observation is
+captured and ends when the action plan is queued; those values come from an
+earlier ModelSDK 2.1.3 physical-robot series and were not remeasured with the
+current 3.0.0.2 bundles. The Pi0.5 release uses ten denoising steps. See the
+[reference benchmarks](docs/benchmarks.md) for p95/p99, architecture, compiled
+graphs, package size and numerical fidelity.
 
-The arm keeps moving while the next plan is computed.
+These measurements describe the reference setup and exact release bundles;
+they are not guarantees for other checkpoints. The arm can continue executing
+the current plan while the next plan is computed.
 
 ## Repository
 
@@ -113,7 +126,8 @@ The arm keeps moving while the next plan is computed.
 | `src/polima/` | The `polima` command: compile, deploy, robot client, Studio, Workbench. |
 | `runtime/` | The C++ model server that runs on the DevKit ([README](runtime/README.md)). |
 | `examples/so101/` | Our SO-101 setup, and arm and teleoperation tools. |
-| `docs/` | Reference guides: [install](docs/install.md), [your own model](docs/your-own-model.md), [GR00T](docs/groot.md), [deploy](docs/deploy.md), [robot](docs/robot.md). |
+| `docs/` | Reference guides: [install](docs/install.md), [your own model](docs/your-own-model.md), [GR00T](docs/groot.md), [Pi0.5](docs/pi05.md), [benchmarks](docs/benchmarks.md), [deploy](docs/deploy.md), [robot](docs/robot.md). |
+| `skills/` | Coding-agent skills; [`sima-add-polima-policy`](skills/sima-add-polima-policy/SKILL.md) brings a new robot policy into PoLiMa. See [AGENTS.md](AGENTS.md). |
 
 ## Licence
 

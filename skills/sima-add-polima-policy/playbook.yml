@@ -1,0 +1,17 @@
+id: sima-add-polima-policy
+name: Assess, Add, or Optimize a PoLiMa Policy
+version: 0.1.0
+agents: [codex, claude]
+description: Assess an SO-101 VLA or robot policy for PoLiMa on Modalix and add only the support it needs (compile only, profile, new policy, or optimization).
+compatibility:
+  env_types: [host, sdk]
+  env_subtypes: [linux, palette]
+  min_cli_version: 2.1.2
+runtime:
+  requires:
+    - git
+    - python3
+interface:
+  display_name: "Assess, Add, or Optimize a PoLiMa Policy"
+  short_description: "Bring an SO-101 policy into PoLiMa on Modalix"
+  default_prompt: "Use $sima-add-polima-policy to assess this robot policy for PoLiMa on Modalix and add only the support that is actually missing."

@@ -1,10 +1,95 @@
 """Customer installation assets remain complete and relocatable."""
+import json
 import re
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_devkit_installer_includes_pi05_tokenizer_runtime():
+    installer = (ROOT / "scripts/install_polima_modalix.sh").read_text()
+    project = (ROOT / "pyproject.toml").read_text()
+    assert 'TOKENIZERS_VERSION="${TOKENIZERS_VERSION:-0.22.2}"' in installer
+    assert '"tokenizers==$TOKENIZERS_VERSION"' in installer
+    assert 'import lerobot, cv2, flask, tokenizers, waitress, torch, polima.studio' in installer
+    assert '"tokenizers==0.22.2"' in project
+
+
+@pytest.mark.parametrize("metadata, accepted", [
+    ({"schema_version": 2, "polima_version": "0.3.0", "source_commit": "609100f",
+      "platform_version": "3.0.0", "llima_package_version": "0.6.0", "llima": {"ref": "v0.6.0"}}, True),
+    ({"schema_version": 1, "polima_version": "0.3.0", "source_commit": "609100f",
+      "platform_version": "3.0.0", "llima_package_version": "0.6.0"}, False),
+    ({"schema_version": 2, "polima_version": "", "source_commit": "609100f",
+      "platform_version": "3.0.0", "llima_package_version": "0.6.0", "llima": {}}, False),
+])
+def test_devkit_installer_accepts_only_a_complete_packaged_runtime(tmp_path, metadata, accepted):
+    installer = (ROOT / "scripts/install_polima_modalix.sh").read_text()
+    assert 'sha256sum -c "$(basename -- "$RUNTIME_ARCHIVE").sha256"' in installer
+    assert 'extractall(sys.argv[2], filter="data")' in installer
+    check = installer.split("<<'PY_METADATA'\n", 1)[1].split("\nPY_METADATA", 1)[0]
+    path = tmp_path / "runtime.json"
+    path.write_text(json.dumps(metadata))
+    result = subprocess.run([sys.executable, "-", str(path)], input=check, text=True,
+                            capture_output=True, check=False)
+    assert (result.returncode == 0) is accepted, result.stderr
+
+
+def test_source_install_embeds_the_exact_installed_runtime_identity():
+    installer = (ROOT / "scripts/install_polima_modalix.sh").read_text()
+    assert "dpkg-query -W -f='${Version}' sima-lmm-core" in installer
+    assert "dpkg-query -W -f='${Version}' sima-lmm-dev" in installer
+    assert '[[ -n "$llima_core" && "$llima_core" == "$llima_dev" ]]' in installer
+    assert "DISTRO_VERSION[[:space:]]*=" in installer
+    assert '-DPOLIMA_PLATFORM_VERSION="$platform_version"' in installer
+    assert '-DPOLIMA_LLIMA_PACKAGE_VERSION="$llima_core"' in installer
+
+
+def test_installer_escalates_only_exact_installation_directories():
+    installer = (ROOT / "scripts/install_polima_modalix.sh").read_text()
+    assert 'fail "do not run the entire installer with sudo' in installer
+    assert 'sudo -n install -d -o "$STUDIO_USER"' in installer
+    assert 'ensure_install_root "$ROOT"' in installer
+    assert 'ensure_install_root "$LEROBOT_VENV"' in installer
+    assert "chown -R" not in installer
+
+
+def test_customer_source_package_excludes_untracked_worktree_files():
+    packager = (ROOT / "scripts/ci/package_polima.sh").read_text()
+    assert "git -C \"$root\" ls-files -z --cached" in packager
+    assert "--others" not in packager
+
+
+def test_published_installer_removes_auto_extracted_package_trees(tmp_path):
+    installer = tmp_path / "install_polima.sh"
+    installer.write_bytes((ROOT / "scripts/ci/install_polima.sh").read_bytes())
+    installer.chmod(0o755)
+    (tmp_path / "polima-runtime-0.3.0-modalix.tar.gz").touch()
+    (tmp_path / "polima-0.3.0-py3-none-any.whl").touch()
+    source = tmp_path / "polima-source-0.3.0.tar.gz"
+    payload = tmp_path / "payload/scripts"
+    payload.mkdir(parents=True)
+    inner = payload / "install_polima_modalix.sh"
+    inner.write_text("#!/usr/bin/env bash\nset -euo pipefail\ntouch \"$1\"\n")
+    with tarfile.open(source, "w:gz") as archive:
+        archive.add(inner, arcname="scripts/install_polima_modalix.sh")
+
+    extracted = [tmp_path / "polima-runtime-0.3.0-modalix", tmp_path / "polima-source-0.3.0"]
+    for path in extracted:
+        path.mkdir()
+        (path / "automatic-extraction").touch()
+    marker = tmp_path / "installed"
+    subprocess.run([str(installer), str(marker)], check=True)
+
+    assert marker.exists()
+    assert not (tmp_path / "polima-source").exists()
+    assert all(not path.exists() for path in extracted)
+    assert source.exists()
 
 
 def test_studio_service_uses_selected_installation(tmp_path):
@@ -51,3 +136,8 @@ def test_upgrade_replaces_shadow_package_and_keeps_backup(tmp_path):
     assert (backups[0] / "__init__.py").read_text() == "old version"
     subprocess.run([sys.executable, "-", str(root), str(installed)], input=migration, text=True, check=True)
     assert len(list((root / "var/backups").glob("python-polima-*"))) == 1
+
+
+def test_published_package_installs_its_wheel_and_records_llima():
+    installer = (ROOT / "scripts/install_polima_modalix.sh").read_text()
+    assert '"${POLIMA_WHEEL:-$POLIMA_SOURCE}"' in installer

@@ -110,6 +110,9 @@ class PathsConfig:
     groot16_source: Path | None = None
     groot17_python: Path | None = None
     groot17_source: Path | None = None
+    # Pi0.5 compile (`polima compile --policy pi05`): an interpreter with torch,
+    # transformers >= 5 and LeRobot's pi05 policy. $POLIMA_PI05_PYTHON.
+    pi05_python: Path | None = None
     groot17_backbone: str = ""             # Hub repository id or local directory
 
 

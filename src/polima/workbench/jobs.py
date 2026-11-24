@@ -70,6 +70,11 @@ def compile_command(checkpoint: dict, dataset: str, output: Path) -> list[str]:
             raise ValueError('Select a calibration dataset for GR00T.')
         argv += ['groot', '--checkpoint', checkpoint['path'], '--dataset', dataset,
                  '--output', str(output / 'build'), '--jobs', '3']
+    elif policy == 'Pi0.5':
+        if not dataset or not Path(dataset).is_dir():
+            raise ValueError('Select a calibration dataset with the checkpoint\'s cameras for Pi0.5.')
+        argv += ['pi05', '--checkpoint', checkpoint['path'], '--dataset', dataset,
+                 '--output', str(output / 'build'), '--jobs', '3']
     else:
         raise ValueError(f'Compilation is unavailable for {policy}.')
     return argv

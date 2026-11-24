@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "package-version": "0.4.0",
+  "sdk": {
+    "channel": "develop",
+    "sysroot-version": "3.0.1"
+  },
+  "llima": {
+    "ref": "v0.6.2",
+    "spec": "a5aa79a33322"
+  },
+  "neat-core": {
+    "ref": "v0.6.2",
+    "spec": "b1f9556caec1"
+  },
+  "model-compiler": {
+    "repository": "model-compiler/arm64",
+    "release": {
+      "ref": "v3.0.0.2",
+      "spec": "6b2d138d1927"
+    },
+    "develop": {
+      "ref": "develop",
+      "spec": "latest"
+    }
+  },
+  "platform-version": "3.0.1",
+  "elxr_version": "3.0.1_master_B2796"
+}

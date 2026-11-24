@@ -46,6 +46,7 @@ class BuildTree:
     dataset_root: str = ""
     graphs: tuple[str, ...] = ()
     precisions: dict[str, str] = dataclass_field(default_factory=dict)
+    tool_versions: dict[str, str] = dataclass_field(default_factory=dict)
     verification: dict | None = None
 
     @property
@@ -95,6 +96,9 @@ def detect(build_dir: str | Path) -> BuildTree:
         dataset_root=contract.get("dataset_root", ""),
         graphs=tuple(_declared_graphs(contract)),
         precisions=_compiled_precisions(manifest),
+        tool_versions=manifest.get("tool_versions") or (
+            {"model_sdk": manifest["sdk_version"]} if manifest.get("sdk_version") else {}
+        ),
         verification=report,
     )
 
@@ -246,6 +250,7 @@ def collect_fixtures(build: BuildTree, spec: PolicySpec) -> dict[str, Path]:
         state = direct / "state.f32"
         if state.is_file():
             fixtures["inputs/state.f32"] = state
+        fixtures.update(_uint8_frame_fixtures(build, spec, direct))
 
         expected = direct / "expected_normalized_actions.f32"
         if expected.is_file():
@@ -361,6 +366,45 @@ def collect_fixtures(build: BuildTree, spec: PolicySpec) -> dict[str, Path]:
     return fixtures
 
 
+def _uint8_frame_fixtures(build: BuildTree, spec: PolicySpec, direct: Path) -> dict[str, Path]:
+    """`inputs/<tensor>.u8` for each uint8 camera tensor: the raw frame the wire sends.
+
+    A build exported for uint8 transport writes `vision_input_<i>.u8`. An older
+    build has only the normalized `.f32`; its frame is recovered exactly, or
+    packing stops (see `polima.wire.protocol.frame_from_normalized`).
+    """
+    images = [t for t in spec.wire.request_tensors if t.name.startswith("image")]
+    if not any(t.dtype == "uint8" for t in images):
+        return {}
+    import numpy as np
+
+    from polima.wire.protocol import frame_from_normalized
+
+    fixtures: dict[str, Path] = {}
+    materialized = build.root / ".polima_fixtures"
+    for index, tensor in enumerate(images):
+        if tensor.dtype != "uint8":
+            continue
+        raw = direct / f"vision_input_{index}.u8"
+        if raw.is_file():
+            fixtures[f"inputs/{tensor.name}.u8"] = raw
+            continue
+        normalized = direct / f"vision_input_{index}.f32"
+        stats_path = build.root / spec.wire.stats_file
+        if not (normalized.is_file() and stats_path.is_file()):
+            continue
+        with np.load(stats_path, allow_pickle=False) as stats:
+            eps = np.float32(stats["eps"]) if "eps" in stats.files else np.float32(1e-8)
+            decode = {"scale": 255.0, "mean": stats[f"camera{index}_mean"].reshape(-1),
+                      "std": stats[f"camera{index}_std"].reshape(-1).astype(np.float32) + eps}
+        frame = frame_from_normalized(np.fromfile(normalized, dtype="<f4"), decode)
+        materialized.mkdir(parents=True, exist_ok=True)
+        destination = materialized / f"{tensor.name}.u8"
+        frame.tofile(destination)
+        fixtures[f"inputs/{tensor.name}.u8"] = destination
+    return fixtures
+
+
 def collect_sidecars(build: BuildTree, spec: PolicySpec) -> dict[str, Path]:
     """Collect runtime constants from a hand-built policy tree.
 
@@ -436,7 +480,7 @@ def collect_robot_files(
     `source` is the build being packed (its dataset gives ACT its rest pose) or the
     tree that already holds ``robot_client/robot_rest_position.json`` (GR00T).
     """
-    if not _is_so101(spec) or spec.name not in ("act", "groot"):
+    if not _is_so101(spec) or spec.name not in ("act", "groot", "pi05"):
         return {}
     build = source if isinstance(source, BuildTree) else None
     asset_root = build.root if build is not None else source
@@ -451,9 +495,9 @@ def collect_robot_files(
         files["robot_rest_position.json"] = write_rest_pose(
             Path(build.dataset_root), build.root / "robot_rest_position.json",
             spec.robot.joint_names, spec.robot.calibration_id)
-    elif spec.name == "groot":
-        raise FileNotFoundError("an SO-101 GR00T bundle needs robot_client/robot_rest_position.json "
-                                "from its training dataset")
+    elif spec.name in ("groot", "pi05"):
+        raise FileNotFoundError(f"an SO-101 {spec.display_name} bundle needs "
+                                "robot_client/robot_rest_position.json from its training dataset")
     else:
         log.warning("no training dataset recorded; the bundle needs a rest pose "
                     "(robot_client/robot_rest_position.json) before it can drive the arm")
@@ -564,7 +608,7 @@ def import_build(
     constants = collect_sidecars(build, spec)
     robot_files = collect_robot_files(spec, build)
 
-    tool_versions = {"source_format": build.format}
+    tool_versions = {**build.tool_versions, "source_format": build.format}
     if build.verification:
         tool_versions["onnx_max_abs"] = build.verification.get("max_abs")
 
@@ -582,7 +626,20 @@ def import_build(
             source_dir=str(build.root),
             tool_versions=tool_versions,
             precisions=build.precisions,
+            plan_rewrite=_device_chain_rewrite(spec),
         ),
         output_root,
     )
     return bundle
+
+
+def _device_chain_rewrite(spec: PolicySpec):
+    """The spec's `device_chain` levels as a pack-time plan rewrite, or None."""
+    if not spec.device_chain:
+        return None
+    from polima.bundle.device_chain import rewrite
+
+    graphs = [{"name": g.name, "input_elements": sum(t.elements for t in g.inputs),
+               "output_elements": sum(t.elements for t in g.outputs),
+               "dram_layout": g.outputs[0].dram_layout} for g in spec.compile.graphs]
+    return lambda plan: rewrite(plan, graphs, spec.device_chain)

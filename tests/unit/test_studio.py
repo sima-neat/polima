@@ -443,6 +443,7 @@ def test_reset_clears_the_lease_so_recovery_is_not_blocked_by_it(tmp_path, monke
     from polima.studio.runtime import StudioRuntime
 
     engine = StudioRuntime(tmp_path)
+    monkeypatch.setattr(engine, "reset_unavailable_reason", lambda: None)
     engine.claim_lease(owner="a-dead-tab")
     monkeypatch.setattr(mla, "reset", lambda *a, **k: mla.ResetReport(True, "recovery-script"))
     monkeypatch.setattr(engine, "server_status", lambda: {"running": False})
@@ -490,6 +491,7 @@ def test_failed_accelerator_reset_is_reported(tmp_path, monkeypatch):
     from polima.deploy import mla
 
     engine = StudioRuntime(tmp_path)
+    monkeypatch.setattr(engine, "reset_unavailable_reason", lambda: None)
     monkeypatch.setattr(engine, "server_status", lambda: {"running": False})
     monkeypatch.setattr(mla, "reset", lambda *a, **k: mla.ResetReport(False, "recovery-script", detail="reset: rc=1"))
     with pytest.raises(RuntimeError, match="Accelerator reset failed"):
@@ -530,11 +532,15 @@ def test_reset_under_service_restrictions_does_not_stop_running_process(tmp_path
     def read(path, *args, **kwargs):
         if str(path) == "/proc/self/status":
             return "Name:\tpython\nNoNewPrivs:\t1\n"
+        if str(path) == "/etc/buildinfo":
+            return "DISTRO_VERSION=3.0.0\n"
         return original(path, *args, **kwargs)
     monkeypatch.setattr(Path, "read_text", read)
     monkeypatch.setattr(engine, "server_status", lambda: pytest.fail("must reject before touching server"))
-    with pytest.raises(RuntimeError, match="authorized terminal"):
+    with pytest.raises(RuntimeError, match="authorized terminal") as error:
         engine.reset()
+    assert "reboot the DevKit" in str(error.value)
+    assert "fix_devkit_runtime" not in str(error.value)
 
 
 def test_child_logs_use_writable_studio_root(tmp_path, monkeypatch):
@@ -569,3 +575,41 @@ def test_run_config_refuses_motion_limits_the_robot_would_refuse(value):
         RunConfig.from_json({"bundle": "b", "task": "t", "robot_port": "/dev/arm",
                              "overhead_camera": "/dev/o", "wrist_camera": "/dev/w",
                              "max_relative_target": value})
+
+
+def test_the_chosen_task_reaches_the_robot_run_as_its_catalog_index(tmp_path, monkeypatch):
+    """Studio used to pass the task only as POLIMA_TASK, which nothing reads, so every
+    run used task 0. The robot client resolves --task against bundle.json `tasks`."""
+    tasks = ["Place the grey eraser in the white basket", "Place the red cube in the white basket"]
+    bundle = tmp_path / "models" / "b"
+    bundle.mkdir(parents=True)
+    (bundle / "bundle.json").write_text(json.dumps({"policy": "groot", "tasks": tasks, "default_task": 0}))
+    engine = StudioRuntime(tmp_path)
+    captured: dict = {}
+    monkeypatch.setattr(engine, "_spawn", lambda *a, **k: captured.update(args=a[1]))
+    monkeypatch.setattr(engine.store, "begin_run", lambda *a, **k: 1)
+    for index, task in enumerate(tasks):
+        run = _run_config(bundle="b", task=task)
+        engine._arm_tokens["t"] = (time.time() + 60, json.dumps(run.to_json(), sort_keys=True))
+        engine.start_robot(run, "t")
+        args = captured["args"]
+        assert args[args.index("--task") + 1] == str(index)
+
+
+def test_a_task_the_bundle_was_not_compiled_for_fails_preflight(tmp_path: Path) -> None:
+    runtime = StudioRuntime(tmp_path, command=tmp_path / "polima")
+    runtime.command.touch()
+    runtime.command.chmod(0o755)
+    run = config(tmp_path)  # task "Pick up the block."
+    (tmp_path / "models/demo/bundle.json").write_text(json.dumps({"policy": "groot", "tasks": ["Something else"]}))
+    checks = {item["name"]: item["ok"] for item in runtime.preflight(run)}
+    assert checks["task is one the bundle was compiled for"] is False
+    with pytest.raises(ValueError, match="task is one the bundle was compiled for"):
+        runtime.arm(run)
+
+
+def test_a_bundle_without_a_task_catalog_runs_task_0_whatever_the_label(tmp_path, monkeypatch):
+    """ACT has no task catalog: the Studio text is only a label, and --task must stay 0."""
+    started = _started_env(tmp_path, monkeypatch, _run_config(bundle="b", task="Place the object in the basket."),
+                           policy="act")
+    assert "--task" not in started["args"]

@@ -8,7 +8,7 @@ PoLiMa spans two machines with incompatible dependency sets:
     polima compile  export (torch)      polima run     serve the policy
                     + compile (afe),    polima robot   drive the arm
                     two separate venvs                 (lerobot venv)
-    polima deploy   ssh, rsync
+    polima deploy   ssh plus rsync, or scp and tar
 
 The host builds; the board runs. Nothing on the host drives a robot and nothing
 on the board compiles. The robot client sits with the server because it sends
@@ -101,7 +101,7 @@ class Capabilities:
         needs = {
             "compile": "the SiMa model-compiler venv (afe, onnx, onnxsim); "
                        "set MODEL_COMPILER_BIN=/path/to/model-compiler/bin",
-            "deploy": "ssh and rsync on PATH",
+            "deploy": "ssh plus either rsync, or both scp and tar, on PATH",
             "run": "numpy (always available) -- this should not fail",
             "robot": "flask + opencv + lerobot; install with polima[robot]",
             "studio": "flask + waitress; install with polima[robot]",
@@ -157,7 +157,7 @@ def detect() -> Capabilities:
         config = None
     can_compile = (find_compiler_bin(config) is not None
                    or (_installed("afe") and _installed("onnx")))
-    can_deploy = bool(which("ssh") and which("rsync"))
+    can_deploy = bool(which("ssh") and (which("rsync") or (which("scp") and which("tar"))))
     can_robot = _installed("flask") and _installed("cv2")
 
     if board:

@@ -147,3 +147,29 @@ def compiler_env(compiler_bin: str | Path, source_root: str | Path | None = None
         existing = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{source_root}:{existing}" if existing else str(source_root)
     return env
+
+
+def compiler_versions(
+    compiler_python: str | Path,
+    env: dict[str, str] | None = None,
+    *,
+    model_sdk: str = "",
+) -> dict[str, str]:
+    """Return exact compiler component versions for artifact provenance."""
+    import json
+
+    from polima.util import proc
+
+    packages = {"sima_frontend": "sima-frontend", "sima_mlc": "sima-mlc", "sima_lmm": "sima-lmm"}
+    script = (
+        "import importlib.metadata as m, json; "
+        f"print(json.dumps({{{', '.join(f'{key!r}: m.version({package!r})' for key, package in packages.items())}}}))"
+    )
+    result = proc.capture([str(compiler_python), "-c", script], env=env)
+    if not result.ok:
+        raise RuntimeError(f"could not read compiler component versions: {result.tail(3)}")
+    try:
+        versions = json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as error:
+        raise RuntimeError("compiler returned invalid component versions") from error
+    return ({"model_sdk": model_sdk} if model_sdk else {}) | versions

@@ -81,10 +81,13 @@ compiler failures still stop the build. These are PoLiMa export thresholds, not
 ModelSDK settings or task-accuracy percentages. Device validation below is a
 separate check with its own precision-specific thresholds.
 
-**Precision.** `mixed` (default) stores the transformer weights as 8-bit
-integers and computes in 16-bit floating point. It is the precision tested on
-the arm. `bf16` uses 16-bit floating point. Measure numerical fidelity and latency
-for the checkpoint and target device to compare the two.
+**Precision.** `mixed` (default) stores transformer weights as symmetric INT8
+values per output channel and keeps activations between graphs in BF16. Inside
+an INT8-weight linear operation, the accelerator dynamically quantizes its BF16
+input to INT8 per token. The remaining graphs use BF16 weights and activations.
+This is the precision tested on the arm. `bf16` keeps both weights and
+activations in BF16. Measure numerical fidelity and latency for the checkpoint
+and target device to compare the two.
 
 **Pass marks** for the device check, over the complete action chunk:
 
@@ -157,13 +160,32 @@ overridden for one run with an environment variable ([robot.md](robot.md#motion-
 
 ## Performance
 
-Measured on a Modalix DevKit driving an SO-101 arm with two USB cameras, mixed
-precision, one 32-move plan:
+The published mixed-precision bundles produce one 32-action plan. Fixture-only
+model latency was measured on a Modalix DevKit with Palette 3.0.0.2, LLiMa
+0.6.2, eLxr platform 3.0.1 and PoLiMa runtime `faa710b`, over 30 plans after
+five warm-ups.
 
-| | GR00T N1.6 | GR00T N1.7 |
+| Normal queued model latency | GR00T N1.6 | GR00T N1.7 |
 |---|---|---|
-| Model time on the accelerator | 317 ms | 233 ms |
-| Camera picture to plan ready | 364 ms | 285 ms |
+| p50 | 254.8 ms | 212.3 ms |
+| p95 | 254.9 ms | 212.5 ms |
+| p99 | 255.0 ms | 219.9 ms |
+
+Diagnostic stage profiling reports accelerator execution separately from the
+clean latency run. These medians come from 30 plans after five warm-ups; host
+and unassigned graph overhead is excluded, so the sections should not be added
+to or compared directly with queued latency.
+
+| Diagnostic accelerator stage | GR00T N1.6 | GR00T N1.7 |
+|---|---:|---:|
+| Vision, both camera views | 124.43 ms | 67.97 ms |
+| Language backbone | 28.30 ms | 24.00 ms |
+| Action policy, four denoising passes | 100.07 ms | 115.92 ms |
+
+An earlier ModelSDK 2.1.3 physical-robot series measured live observation to
+plan at 361 ms for N1.6 and 279 ms for N1.7. This spans the completed two-camera
+observation through queueing the action plan. It was not repeated with the
+current 3.0.0.2 bundles.
 
 These are reference-setup measurements. A newly compiled bundle needs its own
 fidelity check and benchmark; model geometry, precision and runtime version
@@ -173,7 +195,7 @@ affect the result. Published model cards describe the exact artifact tested.
 
 | What you see | What to do |
 |---|---|
-| The server fails to start; its log says `MLA_LOAD_FAILED` | Follow [accelerator recovery](deploy.md#accelerator-reset-and-sudo); recovery affects shared DevKit services. |
+| The server fails to start; its log says `MLA_LOAD_FAILED` | Stop robot motion and follow [accelerator recovery](deploy.md#accelerator-recovery). Recovery is platform-version specific. |
 | The arm consistently moves the wrong way | Check camera roles and framing, joint order, action units and calibration against the model contract; the symptom alone does not identify the cause. |
 | "Goal position clamped" warnings | The requested joint target exceeded the configured per-command limit and was reduced. This does not prove object contact or a successful grasp. If motion is unexpected, stop and inspect calibration, observations and requested targets. |
 | A camera or the motors drop out ("exceeded maximum consecutive read failures", "There is no status packet") | A USB connection dropped. Use a powered USB hub and secure the cables along the arm. |

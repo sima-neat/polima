@@ -33,6 +33,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -278,7 +279,11 @@ def start_compiler(cmd: list[str], env: dict, log) -> int:
 
     limit = int(os.environ.get("POLIMA_COMPILE_HOST_LIMIT", "10"))
     lock = Path(os.environ.get("POLIMA_COMPILE_SLOT_LOCK", "/tmp/polima-compile-slot.lock"))
-    with lock.open("a") as handle:
+    try:
+        handle = lock.open("a")
+    except PermissionError:  # another user's lock file on a shared host: flock only needs to read it
+        handle = lock.open("r")
+    with handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             while host_compilers() + 1 > limit:
@@ -330,13 +335,17 @@ def compile_all(build: Build) -> list[str]:
     import shutil
     import threading
 
-    from polima.compile.toolchain import compiler_env
+    from polima.compile.driver import sdk_version
+    from polima.compile.toolchain import compiler_env, compiler_versions
 
     sdk = Path(build.settings["sdk"])
     out = build.path("compiled")
     (out / "tmp").mkdir(parents=True, exist_ok=True)
     env = compiler_env(sdk.parent, source_root=SRC)
     env.update(CUDA_VISIBLE_DEVICES="", TMPDIR=str(out / "tmp"))
+    tools = compiler_versions(sdk, env, model_sdk=sdk_version(sdk, env))
+    build.settings["tool_versions"] = tools
+    build.path("build.json").write_text(json.dumps(build.settings, indent=2) + "\n")
     shim = str(SRC / "polima/compile/compile_onnx.py")
     results_path = out / "compile_results.json"
     results = json.loads(results_path.read_text()) if results_path.is_file() else {}
@@ -349,7 +358,7 @@ def compile_all(build: Build) -> list[str]:
     def key(job) -> dict:
         return {"source_sha256": _sha(job["onnx"]), "calibration_sha256": _sha(job["calibration"]),
                 "activation": job["activation"], "weights": job["weights"], "layout": job["layout"],
-                "flags": job["flags"], "persistent": job["persistent"]}
+                "flags": job["flags"], "persistent": job["persistent"], "tool_versions": tools}
 
     def one(job) -> dict:
         name, work = job["name"], out / job["name"]
@@ -630,7 +639,7 @@ def make_bundle(build: Build) -> Path:
         spec=spec, elfs=elfs, dataset=s["label"], steps=steps, checkpoint=str(checkpoint), fixtures=fixtures,
         constants=constants, robot_files=robot_files, precisions=precisions, source="polima-compile-groot",
         model_version=family[1:], task_label=s["label"], plan_rewrite=rewrite, extra_graphs=extra,
-        precision_label=label), work)
+        precision_label=label, tool_versions=s.get("tool_versions", {})), work)
     plan = json.loads(bundle.plan_path.read_text())
     sizes = {i["name"]: i["elements"] for g in extra.values() for i in g["persistent_bindings"]["inputs"]}
     for step in plan["steps"]:
@@ -657,27 +666,41 @@ def board_check(build: Build, board: str) -> dict:
     from polima.config import devkits
     from polima.config.base import BoardConfig
     from polima.deploy.smoke import compare_normalized_actions
+    from polima.deploy.ssh import BoardSession
 
     bundle = Path(build.settings["bundle"])
     target = BoardConfig(host=board)
     devkits.apply(target)
-    host, ssh = target.host, ["ssh", *target.ssh_options]
+    host = target.host
     workdir = f"{target.root}/compile-check"
     remote, out = f"{workdir}/bundles/{bundle.name}", f"{workdir}/results/{bundle.name}.f32"
     local = build.path("check", "actions.f32")
     local.parent.mkdir(exist_ok=True)
-    steps = (
-        ([*ssh, host, f"mkdir -p {workdir}/bundles {workdir}/results"], "could not reach {host}"),
-        (["rsync", "-a", "-e", " ".join(ssh), f"{bundle}/", f"{host}:{remote}/"], "could not copy the bundle to {host}"),
-        ([*ssh, host, (f"flock /tmp/polima-bench.lock {target.root}/bin/polima_cli --bundle {remote} "
-                       f"--input-dir {remote}/fixtures/inputs --output {out}")],
-         ("the bundle did not run on {host}; PoLiMa must be installed there and the model server "
-          "stopped while checking (`polima server stop`)")),
-        (["rsync", "-a", "-e", " ".join(ssh), f"{host}:{out}", str(local)], "could not read the result from {host}"),
-    )
-    for argv, problem in steps:
-        if subprocess.run(argv, check=False).returncode:
-            raise StageError(problem.format(host=host))
+    try:
+        with BoardSession(target) as session:
+            session.mkdirs(f"{workdir}/bundles", f"{workdir}/results")
+            try:
+                session.rsync(bundle, remote, delete=True)
+            except (OSError, RuntimeError) as error:
+                raise StageError(f"could not copy the bundle to {host}") from error
+            command = (
+                f"flock /tmp/polima-bench.lock {shlex.quote(target.root + '/bin/polima_cli')} "
+                f"--bundle {shlex.quote(remote)} --input-dir "
+                f"{shlex.quote(remote + '/fixtures/inputs')} --output {shlex.quote(out)}"
+            )
+            if session.run(command, check=False).returncode:
+                raise StageError(
+                    f"the bundle did not run on {host}; PoLiMa must be installed there and the "
+                    "model server stopped while checking (`polima server stop`)"
+                )
+            try:
+                session.fetch(out, local)
+            except (OSError, RuntimeError) as error:
+                raise StageError(f"could not read the result from {host}") from error
+    except StageError:
+        raise
+    except (OSError, RuntimeError) as error:
+        raise StageError(f"could not reach {host}") from error
     plan = json.loads((bundle / "plan.json").read_text())
     horizon, width = plan["wire"]["response_shape"]
     actual = np.fromfile(local, "<f4").reshape(horizon, width)

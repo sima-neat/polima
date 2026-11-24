@@ -272,6 +272,9 @@ OPCODES = (
     "euler",  # loop body xN with x -= dt*v
     "normalize",  # (x - mean) / std
     "denormalize",  # x * std + mean
+    # Graph calls on plan-wide device buffers with uploads/downloads around them
+    # (runtime/include/polima/device_chain.hpp); the native Plan checks them at load.
+    "run_device_chain",
 )
 
 
@@ -301,6 +304,9 @@ class RuntimePlan:
     result: str
     sidecars: tuple[str, ...] = ()
     loops: Mapping[str, int] = field(default_factory=dict)
+    #: Plan-wide BF16 device buffers (name -> elements) that run_device_chain steps
+    #: bind graph inputs and outputs to; they persist across steps.
+    device_buffers: Mapping[str, int] = field(default_factory=dict)
 
     def validate(self, where: str, compile_plan: CompilePlan | None = None) -> None:
         if self.result not in self.buffers:
@@ -506,6 +512,10 @@ class PolicySpec:
     #: because the default is ACT's, and ACT is a small all-BF16 graph whose
     #: MLA output tracks PyTorch far more closely than a quantized VLA's does.
     smoke: SmokeSpec = field(default_factory=SmokeSpec)
+    #: `polima.bundle.device_chain` levels applied to the runtime plan when the
+    #: bundle is packed, so graph-to-graph activations stay on the MLA. The
+    #: per-graph plan from `runtime_plan_builder` stays the source of truth.
+    device_chain: tuple[str, ...] = ()
 
     def graph(self, name: str) -> GraphSpec:
         return self.compile.graph(name)

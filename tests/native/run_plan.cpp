@@ -1,4 +1,5 @@
-// Runs a bundle's plan.json against the CPU llima double (tests/native/llima_mock):
+// Runs a bundle's plan.json against the CPU llima double (tests/native/llima_mock),
+// reading <name>.u8 for uint8 wire tensors and <name>.f32 otherwise:
 //   run_plan <bundle> <inputs_dir> <out.f32> [repeats=2] [dump_dir]
 // Writes the first result; exits non-zero on any Plan error or if a repeated
 // request differs (cached uploads and request isolation).
@@ -19,7 +20,7 @@ int main(int argc, char** argv) {
     std::map<std::string, std::vector<float>> staged;
     std::map<std::string, const float*> inputs;
     for (const auto& [name, elements] : plan.wire().request_tensors) {
-      staged[name] = polima::read_f32(std::filesystem::path(argv[2]) / (name + ".f32"), elements);
+      staged[name] = polima::read_wire_input(argv[2], name, elements, plan.wire());
       inputs[name] = staged[name].data();
     }
     const int repeats = argc > 4 ? std::stoi(argv[4]) : 2;

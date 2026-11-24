@@ -37,6 +37,7 @@ ENV_MAP = {
     "GROOT16_SOURCE": "paths.groot16_source",
     "GROOT17_PYTHON": "paths.groot17_python",
     "GROOT17_SOURCE": "paths.groot17_source",
+    "PI05_PYTHON": "paths.pi05_python",
     "GROOT17_BACKBONE": "paths.groot17_backbone",
     "CONDA_BASE": "conda_base",
     "OFFLINE": "offline",

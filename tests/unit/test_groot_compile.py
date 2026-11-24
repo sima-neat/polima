@@ -213,6 +213,7 @@ def test_a_skipped_check_stays_to_do_and_a_devkit_given_later_is_checked(tmp_pat
 
 
 def test_devkit_check_uses_the_saved_devkit_and_the_installed_runtime(tmp_path, monkeypatch):
+    from polima.deploy import ssh
     key = tmp_path / "key"
     key.write_text("")
     saved = tmp_path / "devkits.json"
@@ -220,26 +221,47 @@ def test_devkit_check_uses_the_saved_devkit_and_the_installed_runtime(tmp_path, 
     monkeypatch.setenv("POLIMA_DEVKITS", str(saved))
     (tmp_path / "build.json").write_text(json.dumps({"bundle": str(tmp_path / "b"), "precision": "mixed"}))
     build = groot.Build(tmp_path)
-    seen = []
+    class Unreachable:
+        def __init__(self, board):
+            assert board.host == "sima@192.0.2.7" and str(key) in board.ssh_options
 
-    class Done:
-        returncode = 1
+        def __enter__(self):
+            raise RuntimeError("unreachable")
 
-    monkeypatch.setattr(groot.subprocess, "run", lambda argv, check: seen.append(argv) or Done())
+        def __exit__(self, *_args):
+            pass
+
+    monkeypatch.setattr(ssh, "BoardSession", Unreachable)
     with pytest.raises(groot.StageError, match="could not reach sima@192.0.2.7"):
         groot.board_check(build, "bench")
-    assert "sima@192.0.2.7" in seen[0] and str(key) in seen[0]
-    assert "mkdir -p /media/nvme/polima/compile-check/bundles" in seen[0][-1]
 
-    class Ok:
-        returncode = 0
+    commands = []
 
-    runs = []
-    monkeypatch.setattr(groot.subprocess, "run",
-                        lambda argv, check: runs.append(argv) or (Done() if len(runs) == 3 else Ok()))
+    class Session:
+        def __init__(self, _board):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def mkdirs(self, *paths):
+            commands.append(("mkdirs", *paths))
+
+        def rsync(self, source, destination, **_kwargs):
+            commands.append(("copy", str(source), destination))
+
+        def run(self, command, **_kwargs):
+            commands.append(("run", command))
+            return type("Done", (), {"returncode": 1})()
+
+    monkeypatch.setattr(ssh, "BoardSession", Session)
     with pytest.raises(groot.StageError, match="polima server stop"):
         groot.board_check(build, "bench")
-    assert "/media/nvme/polima/bin/polima_cli --bundle" in runs[2][-1]
+    assert any("/media/nvme/polima/bin/polima_cli --bundle" in item[-1]
+               for item in commands if item[0] == "run")
 
 
 @pytest.mark.parametrize("local_alias", [False, True])

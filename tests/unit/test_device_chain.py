@@ -241,6 +241,43 @@ def mini_n17(root: Path) -> Path:
                                  "wire": wire}, rng)
 
 
+def mini_act(root: Path) -> Path:
+    """ACT's plan shape (two vision calls, host-packed stem, 3 layers, padded head) at mini scale."""
+    rng = np.random.default_rng(2)
+    (root / "constants").mkdir(parents=True)
+    image, tokens, state, chunk, padded = 96, 4, 3, 5, 16
+    camera = tokens * W
+    stem_in, hidden = (1 + 2 * tokens) * W, (2 + 2 * tokens) * W
+    layout = "compiler"  # ACT's ELFs keep the compiler's external layout
+    graphs = [_graph("vision_backbone", image, camera, layout=layout),
+              _graph("encoder_layer_00_stem", stem_in, hidden, layout=layout)]
+    graphs += [_graph(f"encoder_layer_{i:02d}", hidden, hidden, layout=layout) for i in (1, 2, 3)]
+    graphs += [_graph("decoder_action_tail", hidden, chunk * padded, layout=layout)]
+    steps = [
+        {"op": "run_elf", "out": "cam0", "args": {"graph": "vision_backbone", "in": ["image0"]}},
+        {"op": "run_elf", "out": "cam1", "args": {"graph": "vision_backbone", "in": ["image1"]}},
+        {"op": "pack", "out": "packed", "args": {"size": stem_in, "parts": [
+            {"src": "state", "dst_offset": 0, "count": state},
+            {"src": "cam0", "dst_offset": W, "count": camera},
+            {"src": "cam1", "dst_offset": W + camera, "count": camera}]}},
+        {"op": "run_elf", "out": "hidden", "args": {"graph": "encoder_layer_00_stem", "in": ["packed"]}},
+    ]
+    steps += [{"op": "run_elf", "out": "hidden", "args": {"graph": f"encoder_layer_{i:02d}",
+                                                          "in": ["hidden"]}} for i in (1, 2, 3)]
+    steps += [
+        {"op": "run_elf", "out": "padded", "args": {"graph": "decoder_action_tail", "in": ["hidden"]}},
+        {"op": "gather_strided", "out": "actions",
+         "args": {"src": "padded", "stride": padded, "take": state, "count": chunk}},
+    ]
+    buffers = {"image0": image, "image1": image, "state": state, "cam0": camera, "cam1": camera,
+               "packed": stem_in, "hidden": hidden, "padded": chunk * padded, "actions": chunk * state}
+    wire = {"request_tensors": [{"name": "image0", "elements": image},
+                                {"name": "image1", "elements": image},
+                                {"name": "state", "elements": state}]}
+    return _write(root, graphs, {"buffers": buffers, "steps": steps, "result": "actions",
+                                 "wire": wire}, rng)
+
+
 def _write(root: Path, graphs, plan, rng) -> Path:
     (root / "models").mkdir()
     for graph in graphs:
@@ -260,7 +297,7 @@ CASES = [(mini_n16, ["lm"]), (mini_n16, ["lm", "connector"]), (mini_n16, ["lm", 
          (mini_n16, ["dit"]), (mini_n16, ["lm", "connector", "dit", "denoise"]),
          (mini_n16, ["dit", "denoise"]), (mini_n17, ["lm"]), (mini_n17, ["vision", "lm"]),
          (mini_n17, ["vision", "lm", "dit"]), (mini_n17, ["dit"]),
-         (mini_n17, ["vision", "lm", "dit", "denoise"])]
+         (mini_n17, ["vision", "lm", "dit", "denoise"]), (mini_act, ["act"])]
 
 
 def _load(bundle: Path):
@@ -311,6 +348,41 @@ def test_rewrite_refuses_int8_graphs_and_unexpected_structure(tmp_path):
         rewrite(broken, graphs, ["lm"])
     with pytest.raises(RewriteError, match="already"):
         rewrite(rewrite(plan, graphs, ["lm"]), graphs, ["lm"])
+
+
+def test_act_rewrite_runs_the_network_as_one_program(tmp_path):
+    bundle = mini_act(tmp_path / "b")
+    plan, graphs = _load(bundle)
+    new = rewrite(plan, graphs, ["act"])
+    assert [s["op"] for s in new["steps"]] == ["pack", "run_device_chain", "gather_strided"]
+    program = new["steps"][1]["args"]
+    assert [c["graph"] for c in program["calls"]] == [
+        "vision_backbone", "vision_backbone", "encoder_layer_00_stem",
+        "encoder_layer_01", "encoder_layer_02", "encoder_layer_03", "decoder_action_tail"]
+    assert [d["dst"] for d in program["downloads"]] == ["padded"]
+    assert not {"cam0", "cam1", "packed", "hidden"} & set(new["buffers"])
+
+
+def test_act_reference_check_detects_swapped_cameras(tmp_path):
+    bundle = mini_act(tmp_path / "b")
+    plan, graphs = _load(bundle)
+    swapped = rewrite(plan, graphs, ["act"])
+    calls = swapped["steps"][1]["args"]["calls"]
+    calls[0]["out"], calls[1]["out"] = calls[1]["out"], calls[0]["out"]
+    assert verify_equivalence(bundle, swapped, trials=1)["byte_identical"] == [False, False]
+
+
+def test_act_rewrite_refuses_other_levels_and_extra_readers(tmp_path):
+    bundle = mini_act(tmp_path / "b")
+    plan, graphs = _load(bundle)
+    with pytest.raises(RewriteError, match="only the act level"):
+        rewrite(plan, graphs, ["lm"])
+    leaky = copy.deepcopy(plan)
+    leaky["buffers"]["copy"] = leaky["buffers"]["cam0"]
+    leaky["steps"].append({"op": "slice", "out": "copy", "args": {"src": "cam0", "offset": 0,
+                                                                  "count": leaky["buffers"]["cam0"]}})
+    with pytest.raises(RewriteError, match="readers besides"):
+        rewrite(leaky, graphs, ["act"])
 
 
 # ------------------------------------------------------------- native Plan

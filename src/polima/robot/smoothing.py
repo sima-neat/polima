@@ -27,6 +27,7 @@ import time
 import numpy as np
 
 ENV = "POLIMA_SMOOTH_MOVES"
+CHUNK_ENV = "POLIMA_CHUNK_FILTER"
 ARM_JOINTS = 5  # SO101 order: five arm joints, then the gripper
 # A longer pause starts fresh (startup, return to rest, auto-repeat). Longer than one
 # synchronous inference wait (~0.5 s), so threshold-0 runs are smoothed too.
@@ -53,6 +54,31 @@ def moves_from_env(environ=os.environ) -> int:
     if not 0 <= moves <= 32:
         raise ValueError(f"{ENV} must be an integer number of moves between 0 (off) and 32")
     return moves
+
+
+def chunk_filter_from_env(environ=os.environ) -> str:
+    value = environ.get(CHUNK_ENV, "off").strip().lower() or "off"
+    if value not in ("off", "fir3"):
+        raise ValueError(f"{CHUNK_ENV} must be off or fir3")
+    return value
+
+
+def filter_chunk(actions: np.ndarray, kind: str) -> np.ndarray:
+    """Smooth arm targets inside one predicted plan; preserve endpoints and gripper."""
+    values = np.asarray(actions)
+    if kind == "off":
+        return values
+    if kind != "fir3":
+        raise ValueError(f"unsupported action-chunk filter {kind!r}")
+    if values.ndim != 2 or values.shape[0] < 3 or values.shape[1] < ARM_JOINTS + 1:
+        raise ValueError("action chunk must contain at least three six-joint targets")
+    result = values.copy()
+    result[1:-1, :ARM_JOINTS] = (
+        values[:-2, :ARM_JOINTS]
+        + 4 * values[1:-1, :ARM_JOINTS]
+        + values[2:, :ARM_JOINTS]
+    ) / 6
+    return result
 
 
 def _values(action) -> np.ndarray:

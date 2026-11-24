@@ -118,13 +118,38 @@ struct Step {
   std::string raw;                   // original JSON, for error messages
 };
 
+// A request tensor sent as uint8 (a camera frame) and the float32 value each
+// byte decodes to: table[c * 256 + x] = (x / scale - mean[c]) / std[c] for
+// channel c = index % channels. Same float32 operations, in the same order, as
+// the client-side normalization it replaces (polima.wire.protocol.decode_tensor).
+struct WireDecode {
+  size_t channels = 0;
+  std::vector<float> table;
+
+  void apply(const uint8_t* source, float* destination, size_t count) const {
+    kernels::u8_lookup(source, destination, count, table.data(), channels);
+  }
+};
+
 struct WireDescription {
   uint32_t magic = 0;
   uint32_t version = 1;
   int default_port = 0;
   std::vector<std::pair<std::string, size_t>> request_tensors;  // name -> elements
+  std::map<std::string, WireDecode> decode;  // uint8 request tensors only
   size_t response_elements = 0;
+
+  // Bytes `name` occupies on the wire: 1 per element for uint8, else 4.
+  size_t wire_bytes(const std::string& name, size_t elements) const {
+    return decode.count(name) ? elements : elements * sizeof(float);
+  }
 };
+
+// One request tensor read from a fixture directory, decoded to float32: a uint8
+// tensor from <name>.u8 when present, otherwise (and for float tensors) <name>.f32.
+std::vector<float> read_wire_input(const std::filesystem::path& directory,
+                                   const std::string& name, size_t elements,
+                                   const WireDescription& wire);
 
 // A bundle's plan.json plus the ELF inventory from bundle.json, loaded and
 // wired into live Runners with every buffer allocated up front.

@@ -295,3 +295,53 @@ def test_studio_and_the_cli_export_the_same_manifest(reviewed, tmp_path, capsys)
     written = json.loads(output.read_text())
     assert [r["run_id"] for r in written["runs"]] == [r["run_id"] for r in served["runs"]]
     assert "2 of 5 runs" in capsys.readouterr().out
+
+
+def test_camera_failure_reason_is_saved_in_summary(tmp_path):
+    recorder = run(tmp_path)
+    recorder.event('camera_fault', camera='wrist', message='wrist camera read thread stopped')
+    summary = recorder.finish('failed')
+    assert summary['errors'] == ['wrist camera read thread stopped']
+
+
+def test_summary_consumes_events_once_with_bounded_memory():
+    import tracemalloc
+    def events():
+        yield {"event": "run_started", "t": 1}
+        for i in range(50000):
+            yield {"event": "inference_completed", "model_ms": i, "queue_ms": i + 1}
+            yield {"event": "action_sent", "positions": {"joint": i}}
+        yield {"event": "run_failed", "t": 2, "error": "camera lost"}
+    tracemalloc.start()
+    try:
+        summary = evidence.summary_of(events(), "test", "failed")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 4_000_000
+    assert summary["actions"] == summary["inferences"] == 50000
+    assert summary["latency_ms"]["model"]["max"] == 49999
+    assert summary["ended_at"] == 2
+    assert summary["errors"] == ["camera lost"]
+
+
+def test_finish_and_live_summary_do_not_materialize_event_log(tmp_path, monkeypatch):
+    recorder = run(tmp_path)
+    recorder.event("action_sent", positions={"joint": 1})
+    recorder.handle.flush()
+    monkeypatch.setattr(evidence, "read_events", lambda *a, **k: pytest.fail("whole-log read"))
+    assert evidence.summarize(recorder.folder)["actions"] == 1
+    assert recorder.finish("completed")["actions"] == 1
+
+
+def test_detailed_recording_has_a_size_budget(tmp_path):
+    from polima.robot.evidence import RunRecorder, read_events
+    recorder = RunRecorder(tmp_path, {})
+    recorder.max_bytes = 1024
+    for _ in range(1000):
+        recorder.event('action_sent', positions={'joint.pos': 1.0})
+    summary = recorder.finish('completed')
+    events = read_events(tmp_path)
+    assert (tmp_path / 'events.jsonl').stat().st_size < 2048
+    assert any(e.get('recording_truncated') for e in events)
+    assert summary['status'] == 'completed'

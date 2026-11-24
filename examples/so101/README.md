@@ -1,6 +1,6 @@
-# GR00T on SO-101
+# ACT, GR00T and Pi0.5 on SO-101
 
-Deploy a compiled GR00T N1.6 or N1.7 policy to Modalix, verify inference, then
+Deploy a compiled ACT, GR00T or Pi0.5 policy to Modalix, verify inference, then
 run an SO-101 follower arm. The reference task is placing a grey eraser in a
 white basket. A model trained for this task is not a general-purpose robot policy.
 
@@ -14,34 +14,40 @@ white basket. A model trained for this task is not a general-purpose robot polic
 | Power and mounting | Power supply matched to the installed motor voltage; securely mounted robot base and camera mounts. |
 | Connections | Follower USB serial connection and two USB RGB cameras connected to the DevKit; secure the cables throughout the arm workspace. |
 | Cameras | Logitech C920 overhead and the reference Sonix USB wrist camera described below, capturing 640 × 480 at 30 frames/s. |
-| Host | PoLiMa deployment installation, SSH and rsync; Linux/macOS or Windows through WSL. |
+| Host | PoLiMa deployment installation and SSH; Linux/macOS or Windows through WSL. |
 
 A precompiled bundle does not require the training dataset, PyTorch checkpoint
 or ModelSDK on the customer's host. To compile your own checkpoint, use the
-[compiler guide](../../docs/your-own-model.md#gr00t) first.
+[compiler guide](../../docs/your-own-model.md#3-compile), which has separate
+instructions for ACT, GR00T and Pi0.5.
 
 ## Reference models
 
 These are task-specific SO-101 fine-tunes for placing a grey eraser in a white
-basket. Both deployment bundles use checkpoint step 50,000, 32 output actions and mixed
-precision. N1.7 was trained with a native 40-step architecture and supervised
-32-step targets; the released bundle exposes 32 actions.
+basket. ACT uses checkpoint step 100,000, BF16 and 100 output actions. Both
+GR00T bundles use checkpoint step 50,000, mixed precision and 32 output actions.
+N1.7 was trained with a native 40-step architecture and supervised 32-step
+targets; the released bundle exposes 32 actions. Pi0.5 uses checkpoint step
+20,000, W8A16 with BF16 shared attention, ten denoising steps and 50 actions.
 
 | Model | Compiled model repository |
 |---|---|
+| ACT | [simaai/ACT-SO101-PickPlace](https://huggingface.co/simaai/ACT-SO101-PickPlace) |
 | GR00T N1.6 | [simaai/GR00T-N1.6-SO101-PickPlace](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace) |
 | GR00T N1.7 | [simaai/GR00T-N1.7-SO101-PickPlace](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace) |
+| Pi0.5 | [simaai/Pi0.5-SO101-PickPlace](https://huggingface.co/simaai/Pi0.5-SO101-PickPlace) |
 
-These packages contain compiled models, not training checkpoints or datasets.
-If access is restricted, run `hf auth login` with an authorized Hugging Face
-account before downloading.
+These public packages contain compiled models, not training checkpoints or
+datasets. Downloading them does not require a Hugging Face login.
 
-Uploaded revisions: [N1.6 `dea49322`](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace/commit/dea49322cdc48384da4a34b6ecde5b16d92f99a9)
-and [N1.7 `fc452a54`](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace/commit/fc452a5463eba524c317d9fa5c05f8d9b7cc795c).
+Validated revisions: [ACT `36f6e012`](https://huggingface.co/simaai/ACT-SO101-PickPlace/commit/36f6e012b20d7c486600207ad10df62fa9ffeb8d),
+[N1.6 `7279862b`](https://huggingface.co/simaai/GR00T-N1.6-SO101-PickPlace/commit/7279862b80b1ed906546d33eed74c5e6ac781a7d),
+[N1.7 `af7076f7`](https://huggingface.co/simaai/GR00T-N1.7-SO101-PickPlace/commit/af7076f74e189bd05b1a6200a94fe27d31ff8b11) and
+[Pi0.5 `fcb19a41`](https://huggingface.co/simaai/Pi0.5-SO101-PickPlace/commit/fcb19a410a00c0c00566a83cb5e278b80cf43b79).
 
 ## Reference dataset
 
-Both models were fine-tuned on **SO-101 Grey Eraser Pick-and-Place**, a collection
+All four models were fine-tuned on **SO-101 Grey Eraser Pick-and-Place**, a collection
 of 961 demonstrations of placing the grey eraser in the white basket.
 
 | Split | Demonstrations | Frames |
@@ -51,16 +57,16 @@ of 961 demonstrations of placing the grey eraser in the white basket.
 | Test | 96 | 26,535 |
 | Total | 961 | 272,853 |
 
-The split uses seed 42. N1.6 and N1.7 use model-specific preparations of the
-same training demonstrations, with overhead and wrist RGB video at 30 frames/s.
-These are split counts, not a claim of task success on the held-out data.
-The original recordings are available as
-[Thomison/grey_eraser_961_final](https://huggingface.co/datasets/Thomison/grey_eraser_961_final).
-Training used prepared views of this collection: LeRobot v3 data converted to
-v2.1, camera roles aligned, and the episode split above applied. The original
-collection is not a ready-to-use copy of those model-specific training views.
-The compiled-model release does not include the prepared dataset; running a
-compiled bundle does not require it.
+The split uses seed 42. These are split counts, not a claim of task success on
+the held-out data.
+
+Download the dataset from
+[Priyakarna/SO101-GreyEraser-PickPlace](https://huggingface.co/datasets/Priyakarna/SO101-GreyEraser-PickPlace):
+LeRobot format v3.0, overhead and wrist RGB video at 30 frames/s, with the
+split above in its `splits.json`. ACT trains on it directly. For GR00T, convert
+it to v2.1 and add a `meta/modality.json` (see
+[Preparing your dataset](../../docs/groot.md#preparing-your-dataset)).
+Running a compiled bundle does not require the dataset.
 
 Use an SO-101 with matching geometry, joint order and action units. Calibrating
 a different robot design does not make it compatible with this policy.
@@ -84,29 +90,39 @@ the correct account/key or first-time password setup; it is not a model error.
 
 ## 2. Download and deploy the bundle
 
-Download N1.7 on the host without needing PoLiMa for the download:
+Download a compiled model on the host without needing PoLiMa for the download:
 
 ```bash
 python -m pip install "huggingface_hub>=0.34,<1"
-hf download simaai/GR00T-N1.7-SO101-PickPlace --local-dir GR00T-N1.7-SO101-PickPlace
-cd GR00T-N1.7-SO101-PickPlace
+mkdir -p ~/polima-models
+cd ~/polima-models
+hf download simaai/ACT-SO101-PickPlace \
+  --revision 36f6e012b20d7c486600207ad10df62fa9ffeb8d \
+  --local-dir ACT-SO101-PickPlace
+cd ACT-SO101-PickPlace
 sha256sum --check SHA256SUMS
 ```
 
-For N1.6, replace `N1.7` with `N1.6` in the command and directory name.
+For another model, use its corresponding immutable repository revision:
+
+| Repository | Revision |
+|---|---|
+| `simaai/GR00T-N1.6-SO101-PickPlace` | `7279862b80b1ed906546d33eed74c5e6ac781a7d` |
+| `simaai/GR00T-N1.7-SO101-PickPlace` | `af7076f74e189bd05b1a6200a94fe27d31ff8b11` |
+| `simaai/Pi0.5-SO101-PickPlace` | `fcb19a410a00c0c00566a83cb5e278b80cf43b79` |
+
+Use the repository name as the local directory name, as in the ACT example.
 The deployable bundle is the **`bundle/` subdirectory**, not the download root.
 On macOS, use `shasum -a 256 --check SHA256SUMS` to verify the files.
 
 
-Run in the host terminal (Ubuntu/WSL on Windows). Enter the downloaded bundle
-folder containing `bundle.json` (`./bundle` after the download above), and the
-complete DevKit login when prompted:
+Run in the same host terminal (Ubuntu/WSL on Windows). Set the complete DevKit
+login for your setup; `bundle_dir` points to the downloaded folder containing
+`bundle.json`:
 
 ```bash
-printf "Bundle folder: "
-read -r bundle_dir
-printf "DevKit login (username@address): "
-read -r devkit_login
+bundle_dir="$PWD/bundle"
+devkit_login="sima@<devkit-address>"
 polima deploy --bundle "$bundle_dir" --devkit "$devkit_login" --start
 ```
 
@@ -219,6 +235,12 @@ arm once, following the interactive middle-position and joint-range prompts:
 ```bash
 polima robot calibrate
 ```
+
+The supported LeRobot calibration intentionally omits `wrist_roll` from the
+min/max sweep because it is a full-turn joint. The middle-position step records
+its homing offset, and LeRobot assigns its full encoder range (0–4095). The
+printed table therefore lists the other four arm joints and the gripper. Do not
+add a wrist-roll sweep; keep its camera cable clear through the full rotation.
 
 Calibration belongs to that physical arm. Model normalization statistics,
 compiler calibration samples and motor calibration serve different purposes.

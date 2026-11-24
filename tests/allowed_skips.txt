@@ -1,0 +1,5 @@
+# Skips CI accepts: <test file> | <text in the skip reason>.
+# These need local build trees or imported bundles that no CI machine has.
+tests/unit/test_groot.py | GR00T-N1.6 devkit sources not present
+tests/unit/test_groot.py | GR00T-N1.6 build tree not present
+tests/unit/test_plan.py | no imported bundle

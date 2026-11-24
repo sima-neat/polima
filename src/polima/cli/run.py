@@ -33,6 +33,19 @@ from polima.util.paths import outputs_root
 from polima.wire.client import PolimaSOMClient
 
 
+def latency_summary(values: list[float]) -> dict[str, float]:
+    """Stable latency fields shared by CLI output and release CI."""
+    array = np.asarray(values, dtype=np.float64)
+    return {
+        "min": float(array.min()),
+        "max": float(array.max()),
+        "mean": float(array.mean()),
+        "p50": float(np.percentile(array, 50)),
+        "p95": float(np.percentile(array, 95)),
+        "p99": float(np.percentile(array, 99)),
+    }
+
+
 def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
     parser = argparse.ArgumentParser(prog="polima run")
     parser.add_argument("--bundle", required=True, help="bundle id or path (for fixtures)")
@@ -51,6 +64,8 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
         help="also query this server and compare the two results",
     )
     parser.add_argument("--repeat", type=int, default=1, help="send N times, report latency")
+    parser.add_argument("--warmup", type=int, default=0,
+                        help="discard N requests before the measured repeats")
     parser.add_argument(
         "--task",
         default=None,
@@ -83,6 +98,9 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    for _ in range(max(0, args.warmup)):
+        client.predict_raw(tensors, task_id=task_id)
 
     latencies: list[float] = []
     actions = np.zeros(0, dtype=np.float32)
@@ -146,11 +164,7 @@ def run(argv: list[str], parent: argparse.Namespace | None = None) -> int:
                     "task_id": task_id,
                     "task": bundle.tasks[task_id] if bundle.tasks else None,
                     "elements": int(actions.size),
-                    "latency_ms": {
-                        "min": min(latencies),
-                        "max": max(latencies),
-                        "mean": sum(latencies) / len(latencies),
-                    },
+                    "latency_ms": latency_summary(latencies),
                     "smoke": report.to_dict(),
                 }
             ),
@@ -221,13 +235,15 @@ def _host_of(address: str) -> str:
 def _load_tensors(spec, inputs_dir: Path) -> dict[str, np.ndarray]:
     tensors: dict[str, np.ndarray] = {}
     for tensor in spec.wire.request_tensors:
-        path = inputs_dir / f"{tensor.name}.f32"
+        # A uint8 wire tensor is a raw camera frame: <name>.u8 beside the .f32s.
+        suffix, dtype = (".u8", np.uint8) if tensor.dtype == "uint8" else (".f32", np.dtype("<f4"))
+        path = inputs_dir / f"{tensor.name}{suffix}"
         if not path.is_file():
             raise SystemExit(f"polima run: missing fixture {path}")
-        values = np.fromfile(path, dtype="<f4")
+        values = np.fromfile(path, dtype=dtype)
         if values.size != tensor.elements:
             raise SystemExit(
-                f"polima run: {path.name} holds {values.size} floats, "
+                f"polima run: {path.name} holds {values.size} values, "
                 f"tensor {tensor.name} needs {tensor.elements}"
             )
         tensors[tensor.name] = values
@@ -235,7 +251,7 @@ def _load_tensors(spec, inputs_dir: Path) -> dict[str, np.ndarray]:
 
 
 def _resolve_bundle(reference: str, bundles_root: str | None) -> Bundle:
-    candidate = Path(reference)
+    candidate = Path(reference).expanduser()
     if not candidate.is_dir():
         candidate = Path(bundles_root or (outputs_root() / "bundles")) / reference
     manifest = candidate / "bundle.json"

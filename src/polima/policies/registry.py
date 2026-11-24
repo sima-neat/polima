@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from polima.policies.base import PolicySpec, SpecError
 
 #: Policies shipped with PoLiMa.
-BUILTIN = ("act", "groot")
+BUILTIN = ("act", "groot", "pi05")
 
 _REGISTRY: dict[str, PolicySpec] = {}
 

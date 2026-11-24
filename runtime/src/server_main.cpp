@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "polima/compatibility.hpp"
 #include "polima/plan.hpp"
 #include "polima/socket.hpp"
 
@@ -71,15 +72,18 @@ double elapsed_ms(Clock::time_point start) {
 int main(int argc, char** argv) {
   try {
     polima::Args args(argc, argv);
+    if (args.has("--runtime-info")) return polima::print_runtime_info(std::cout);
     if (args.has("--help") || args.has("-h")) {
       std::cout <<
         "polima-server -- serve a bundle over the policy's TCP wire protocol.\n\n"
         "  --bundle DIR   bundle directory (e.g. /media/nvme/polima/current)\n"
         "  --port N       listen port (default: the policy's wire port)\n"
         "  --verbose      per-step timings on every request\n"
+        "  --runtime-info show native build and installed runtime identities\n"
         "  -h, --help     this message\n";
       return 0;
     }
+    polima::require_runtime_compatibility();
     const std::string bundle = args.get("--bundle");
     const bool verbose = args.has("--verbose");
 
@@ -91,10 +95,22 @@ int main(int argc, char** argv) {
     // Read the socket straight into the plan's own input buffers. Staging them
     // separately would copy the payload twice -- 7.4 MB per request for ACT's
     // two 480x640x3 images.
-    std::vector<std::pair<float*, size_t>> input_slots;
+    // uint8 camera frames are read into a byte staging buffer and decoded into
+    // the input buffer (WireDecode), 4x less socket payload than float32.
+    struct InputSlot {
+      float* destination;
+      size_t elements;
+      const polima::WireDecode* decode;
+      std::vector<uint8_t> bytes;
+    };
+    std::vector<InputSlot> input_slots;
     input_slots.reserve(wire.request_tensors.size());
-    for (const auto& [name, elements] : wire.request_tensors)
-      input_slots.emplace_back(plan.input_buffer(name), elements);
+    for (const auto& [name, elements] : wire.request_tensors) {
+      const auto decode = wire.decode.find(name);
+      const bool frame = decode != wire.decode.end();
+      input_slots.push_back({plan.input_buffer(name), elements, frame ? &decode->second : nullptr,
+                             std::vector<uint8_t>(frame ? elements : 0)});
+    }
 
     install_stop_handlers();
 
@@ -115,8 +131,14 @@ int main(int argc, char** argv) {
         if (header.magic != wire.magic || header.version != wire.version)
           throw std::runtime_error("protocol mismatch");
 
-        for (const auto& [destination, elements] : input_slots)
-          polima::read_all(client, destination, elements * sizeof(float));
+        for (auto& slot : input_slots) {
+          if (!slot.decode) {
+            polima::read_all(client, slot.destination, slot.elements * sizeof(float));
+            continue;
+          }
+          polima::read_all(client, slot.bytes.data(), slot.elements);
+          slot.decode->apply(slot.bytes.data(), slot.destination, slot.elements);
+        }
 
         const auto started = Clock::now();
         const auto& result = plan.execute(header.flags);

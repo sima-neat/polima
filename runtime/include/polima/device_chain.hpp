@@ -63,6 +63,9 @@ struct DeviceGraph {
   std::string external_layout = "compiler";
   bool plain_output = true;
   bool int8 = false;
+  // Separate MLA output bindings, in compiler order (a LLiMa attention-input
+  // graph writes q, K and V). Empty means one output of output_elements.
+  std::vector<size_t> output_bindings = {};
 };
 
 struct DeviceSpan {
@@ -244,15 +247,28 @@ class DeviceChain {
         if (call.inputs[index].count != graph.bindings[index])
           throw std::runtime_error(where + " input " + std::to_string(index) +
                                    " size disagrees with the ELF binding");
-      if (call.outputs.size() != 1 || call.outputs[0].count != graph.output_elements)
-        throw std::runtime_error(where + " output size disagrees with the ELF");
+      const std::vector<size_t> outputs =
+          graph.output_bindings.empty() ? std::vector<size_t>{graph.output_elements}
+                                        : graph.output_bindings;
+      if (call.outputs.size() != outputs.size())
+        throw std::runtime_error(where + " binds " + std::to_string(call.outputs.size()) +
+                                 " outputs but the ELF has " + std::to_string(outputs.size()));
+      for (size_t index = 0; index < outputs.size(); ++index)
+        if (call.outputs[index].count != outputs[index])
+          throw std::runtime_error(where + " output " + std::to_string(index) +
+                                   " size disagrees with the ELF");
       for (const auto& in : call.inputs)
-        if (overlaps(in, call.outputs[0]))
-          throw std::runtime_error(where + " reads and writes the same device span");
+        for (const auto& out : call.outputs)
+          if (overlaps(in, out))
+            throw std::runtime_error(where + " reads and writes the same device span");
+      for (size_t a = 0; a < call.outputs.size(); ++a)
+        for (size_t b = a + 1; b < call.outputs.size(); ++b)
+          if (overlaps(call.outputs[a], call.outputs[b]))
+            throw std::runtime_error(where + " writes two outputs to the same device span");
 
       std::vector<llima::MLABufferSlice> ifms, ofms;
       for (const auto& in : call.inputs) ifms.push_back(slice(in));
-      ofms.push_back(slice(call.outputs[0]));
+      for (const auto& out : call.outputs) ofms.push_back(slice(out));
       models_.push_back(std::make_unique<llima::MLAModelWithBuffer>(graph.elf, ifms, ofms));
       models_.back()->load();
       stage_names_.push_back(call.graph);

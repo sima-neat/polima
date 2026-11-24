@@ -9,6 +9,7 @@ Standard library only, so the build host needs nothing beyond PoLiMa itself.
 from __future__ import annotations
 
 import hmac
+import http.client
 import json
 import os
 import re
@@ -36,7 +37,7 @@ from polima.workbench.jobs import WorkflowJobs, compile_command
 STATIC = Path(__file__).with_name("static")
 LOGO = Path(__file__).resolve().parents[1] / "studio/static/assets/neat-mark.svg"
 SKIP = {".git", ".venv", "node_modules", "__pycache__", "datasets", "wandb", "models", "fixtures"}
-POLICIES = {"act": "ACT", "Gr00tN1d6": "GR00T N1.6", "Gr00tN1d7": "GR00T N1.7"}
+POLICIES = {"act": "ACT", "Gr00tN1d6": "GR00T N1.6", "Gr00tN1d7": "GR00T N1.7", "pi05": "Pi0.5"}
 
 
 def walk(roots: list[Path], marker: str, depth: int = 8, limit: int = 400) -> list[Path]:
@@ -382,17 +383,17 @@ def board(address: str, timeout: float = 2.0) -> dict[str, Any]:
     try:
         snapshot = fetch(f"{url}/api/v1/snapshot", timeout)
         history = fetch(f"{url}/api/v1/history", timeout)
-    except (OSError, ValueError, urllib.error.URLError):
+    except (OSError, ValueError, http.client.HTTPException, urllib.error.URLError):
         return status
     evidence: dict[str, list] = {}
     for key, path in (("benchmarks", "benchmarks"), ("robot_runs", "robot-runs?limit=200")):
         try:  # a board with an older Studio still reports its state
             evidence[key] = fetch(f"{url}/api/v1/{path}", timeout).get("items", [])
-        except (OSError, ValueError, urllib.error.URLError):
+        except (OSError, ValueError, http.client.HTTPException, urllib.error.URLError):
             evidence[key] = []
     try:  # counts only; the manifest itself is fetched when it is downloaded
         manifest = fetch(f"{url}/api/v1/robot-runs/improvement-manifest", timeout).get("counts")
-    except (OSError, ValueError, urllib.error.URLError):
+    except (OSError, ValueError, http.client.HTTPException, urllib.error.URLError):
         manifest = None  # this board's Studio cannot export yet
     bundles = snapshot.get("bundles", [])
     status.update(online=True, state=snapshot.get("state"),

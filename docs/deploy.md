@@ -6,14 +6,17 @@ bundle contains, with a checksum for every model file), test inputs, and the
 robot client. Its name ends in a short hash of the model files, so two bundles
 with the same name hold the same model.
 
-`polima deploy` runs on the host and copies a bundle to the DevKit over `ssh`
-and `rsync`. It also builds PoLiMa's runtime on the DevKit, so the DevKit always
-runs the runtime that matches your PoLiMa version.
+`polima deploy` runs on the host and copies a bundle to the DevKit over SSH.
+It uses `rsync` when the DevKit provides it and otherwise uses `scp` and `tar`,
+which are present on the Palette SDK 3.0 image. A source deployment also updates
+PoLiMa's native runtime. Its build
+cache includes the runtime source, Modalix platform and exact LLiMa development
+and runtime packages, so an SDK upgrade cannot reuse an incompatible binary.
 
 ## Before the first deploy
 
-1. Install PoLiMa on the DevKit once with `./scripts/install_polima_modalix.sh`
-   (see the README).
+1. Install PoLiMa on the DevKit once with
+   `sima-cli neat install polima@main:latest` (see the install guide).
 2. Make sure `ssh sima@<devkit-address>` works from the host without a password
    prompt (use an SSH key).
 3. Tell PoLiMa the address:
@@ -40,11 +43,11 @@ What happens, in order (the command prints each step):
 
 | Step | What it does |
 |---|---|
-| preflight | Checks the DevKit: it is a Modalix, and it has `cmake`, the SiMa runtime development files and `jsoncpp`. Fails before copying anything. |
+| preflight | Checks the DevKit architecture and free space. A source-runtime build also checks `cmake`, the SiMa runtime development files and `jsoncpp`; a published prebuilt runtime does not require them. Fails before copying anything. |
 | layout | Creates the folders under `/media/nvme/polima`. |
 | sync-bundle | Copies the bundle to `/media/nvme/polima/models/<bundle-id>/`. Files that are already there are not copied again. |
 | python-runtime | Copies PoLiMa's Python package to `/media/nvme/polima/python/`, which the robot client uses. |
-| build | Builds `polima_server` and `polima_cli` on the DevKit and installs them in `/media/nvme/polima/bin/`. Skipped when the runtime source has not changed since the last build. Then links them onto the `PATH` where it can. |
+| build | Builds `polima_server` and `polima_cli` from source into `/media/nvme/polima/bin/` and links them onto the `PATH` where it can. Skipped when neither the source nor the DevKit's SDK and LLiMa versions changed, and on a DevKit that runs a packaged PoLiMa runtime. |
 | verify | Checks every model file on the DevKit against its checksum in `bundle.json`. |
 | guard | Checks that the bundle folder on the DevKit holds no archive files. |
 | activate | Points `/media/nvme/polima/current` at the new bundle. `--no-activate` skips this. |
@@ -96,11 +99,9 @@ polima server stop
 Activating a bundle stops a running server first, so the server never reports
 one bundle while running another.
 
-## Accelerator reset and sudo
+## Accelerator recovery
 
-A model load failure (`MLA_LOAD_FAILED`) can require accelerator recovery.
-`polima deploy` attempts recovery and retries once. Recovery restarts shared
-DevKit runtime services and can interrupt other accelerator workloads. End
+A model load failure (`MLA_LOAD_FAILED`) can require platform recovery. End
 robot runs and other accelerator work before recovery.
 
 Studio's system service cannot elevate privileges. In that service, **Reset
@@ -110,21 +111,22 @@ restriction is checked before stopping any running process.
 Server shutdown waits up to 30 seconds for a clean exit. If the server does not
 exit, the stop reports "did not stop cleanly" and leaves the server running.
 
-To recover, stop any robot run, then run on the DevKit:
+On Palette SDK 3.x, the accelerator frees a stopped model's memory itself, so
+PoLiMa does not reset it. If a model fails to load, save the server log, stop
+the server and start it again:
 
 ```bash
-polima server stop                     # if this reports "did not stop cleanly", continue:
-kill -9 "$(cat /media/nvme/polima/var/run/server.pid)"
-sudo /usr/bin/fix_devkit_runtime.sh    # resets the accelerator
+polima deploy --logs 200
+polima server stop
 ```
 
-When the server still stops normally, `polima deploy --reset-mla` from the host
-does the stop and the reset in one step.
+If the model still fails to load, reboot the DevKit. To run your own recovery
+command instead, set `POLIMA_MLA_RESET_CMD` in the shell that runs
+`polima deploy`.
 
-The reset needs `sudo` on the DevKit. PoLiMa does not store a password. Either
-allow passwordless `sudo` for `/usr/bin/fix_devkit_runtime.sh` and
-`/usr/bin/init_mla_memory.sh`, or set the password in the environment of the
-host shell that runs `polima deploy`:
+On SDK 2.1 DevKits, PoLiMa runs the SDK 2.1 recovery steps.
+That path may need passwordless `sudo`, or a password supplied only in the host
+process environment:
 
 ```bash
 export POLIMA_MLA_SUDO_PASSWORD=...

@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import secrets
 import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +59,7 @@ class RunRecorder:
         self.folder, self.clock = folder, clock
         self.lock = threading.Lock()
         self.handle = (folder / "events.jsonl").open("a", encoding="utf-8")
+        self.max_bytes, self.bytes_written, self.truncated = 8 * 1024 * 1024, 0, False
         self.flushed, self.status = 0.0, None
         self.event("run_started", schema=SCHEMA, run_id=folder.name,
                    **{key: metadata.get(key) for key in METADATA})
@@ -72,9 +75,19 @@ class RunRecorder:
         with self.lock:
             if self.handle.closed:
                 return
+            if self.truncated and kind not in ENDINGS:
+                return
+            size = len(line.encode("utf-8")) + 1
+            if self.bytes_written + size > self.max_bytes and kind not in ENDINGS:
+                self.truncated = True
+                line = json.dumps({"t": round(self.clock(), 3), "event": "warning",
+                                   "recording_truncated": True,
+                                   "message": "Recording size limit reached; counts cover only the recorded portion."})
+                size = len(line.encode("utf-8")) + 1
             self.handle.write(line + "\n")
+            self.bytes_written += size
             now = time.monotonic()
-            if now - self.flushed >= 1.0 or kind in ("run_started", "warning", "error"):
+            if now - self.flushed >= 1.0 or kind in ("run_started", "warning", "error", "camera_fault"):
                 self.handle.flush()
                 self.flushed = now
 
@@ -88,42 +101,79 @@ class RunRecorder:
         self.event(ending, **({"error": error} if error else {}))
         with self.lock:
             self.handle.close()
-        summary = summary_of(read_events(self.folder), self.folder.name, status)
+        summary = summary_of(iter_events(self.folder), self.folder.name, status)
         (self.folder / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         return summarize(self.folder)
 
 
-def read_events(folder: Path, limit: int | None = None) -> list[dict[str, Any]]:
-    events = []
+def iter_events(folder: Path):
+    """Stream records, tolerating an incomplete final line after process termination."""
     with (folder / "events.jsonl").open(encoding="utf-8") as handle:
         for line in handle:
             try:
-                events.append(json.loads(line))
+                event = json.loads(line)
             except ValueError:
-                continue  # a line cut short when the process was killed
-            if limit is not None and len(events) >= limit:
-                break
-    return events
+                continue
+            if isinstance(event, dict) and "event" in event:
+                yield event
 
 
-def summary_of(events: list[dict[str, Any]], run_id: str, status: str) -> dict[str, Any]:
-    started = next((e for e in events if e["event"] == "run_started"), {})
-    inferences = [e for e in events if e["event"] == "inference_completed"]
-    ending = next((e for e in reversed(events) if e["event"] in ENDINGS), None)
-    count = lambda kind: sum(1 for e in events if e["event"] == kind)
+def read_events(folder: Path, limit: int | None = None) -> list[dict[str, Any]]:
+    from itertools import islice
+    return list(islice(iter_events(folder), limit))
+
+
+def summary_of(events: Iterable[dict[str, Any]], run_id: str, status: str | None) -> dict[str, Any]:
+    # Reservoir samples bound percentile memory; counts and maxima remain exact.
+    rng = random.Random(0)
+    samples = {"model_ms": [], "queue_ms": []}
+    totals = dict.fromkeys(samples, 0)
+    maxima = dict.fromkeys(samples, float("-inf"))
+    counts = dict.fromkeys(("inference_completed", "action_sent", "cycle_completed", "grasp_detected"), 0)
+    started, ending, last = {}, {}, {}
+    warnings, errors = [], []
+    for event in events:
+        last = event
+        kind = event["event"]
+        if kind == "run_started" and not started:
+            started = event
+        if kind in ENDINGS:
+            ending = event
+        if kind in counts:
+            counts[kind] += 1
+        if kind == "warning" and len(warnings) < 20:
+            warnings.append(event.get("message"))
+        if (kind in ("error", "camera_fault") or (kind == "run_failed" and event.get("error"))) and len(errors) < 20:
+            errors.append(event.get("message") or event.get("error"))
+        if kind == "inference_completed":
+            for key, sample in samples.items():
+                value = event.get(key)
+                if not isinstance(value, int | float):
+                    continue
+                totals[key] += 1
+                maxima[key] = max(maxima[key], value)
+                if len(sample) < 4096:
+                    sample.append(value)
+                else:
+                    index = rng.randrange(totals[key])
+                    if index < len(sample):
+                        sample[index] = value
+    latency = {}
+    for key, name in (("model_ms", "model"), ("queue_ms", "observation_to_queue")):
+        result = percentiles(samples[key])
+        if result is not None:
+            result["max"] = round(maxima[key], 2)
+            if totals[key] > len(samples[key]):
+                result.update(percentiles_approximate=True, sample_size=len(samples[key]))
+        latency[name] = result
     return {
-        "schema": SCHEMA, "run_id": run_id, "status": status,
-        "started_at": started.get("t"), "ended_at": (ending or (events[-1] if events else {})).get("t"),
+        "schema": SCHEMA, "run_id": run_id,
+        "status": status or ENDINGS.get(ending.get("event")),
+        "started_at": started.get("t"), "ended_at": (ending or last).get("t"),
         **{key: started.get(key) for key in METADATA},
-        "inferences": len(inferences), "actions": count("action_sent"),
-        "cycles": count("cycle_completed"), "grasps": count("grasp_detected"),
-        "latency_ms": {
-            "model": percentiles([e.get("model_ms") for e in inferences]),
-            "observation_to_queue": percentiles([e.get("queue_ms") for e in inferences]),
-        },
-        "warnings": [e.get("message") for e in events if e["event"] == "warning"][:20],
-        "errors": [e.get("message") or e.get("error") for e in events
-                   if e["event"] == "error" or (e["event"] == "run_failed" and e.get("error"))][:20],
+        "inferences": counts["inference_completed"], "actions": counts["action_sent"],
+        "cycles": counts["cycle_completed"], "grasps": counts["grasp_detected"],
+        "latency_ms": latency, "warnings": warnings, "errors": errors,
     }
 
 
@@ -141,11 +191,10 @@ def summarize(folder: Path, now: float | None = None) -> dict[str, Any]:
     if stored.is_file():
         summary = json.loads(stored.read_text())
     else:
-        events = read_events(folder)
-        ending = next((e for e in reversed(events) if e["event"] in ENDINGS), None)
-        age = (now or time.time()) - (folder / "events.jsonl").stat().st_mtime
-        status = ENDINGS[ending["event"]] if ending else ("running" if age < STALE_S else "interrupted")
-        summary = summary_of(events, folder.name, status)
+        summary = summary_of(iter_events(folder), folder.name, None)
+        if summary["status"] is None:
+            age = (now or time.time()) - (folder / "events.jsonl").stat().st_mtime
+            summary["status"] = "running" if age < STALE_S else "interrupted"
     review = read_annotation(folder)
     return {**summary, "annotation": review, "outcome": review["outcome"], "notes": review["notes"],
             "failure_tags": review["failure_tags"],

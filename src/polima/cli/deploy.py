@@ -230,7 +230,7 @@ def _manage(args, board, dry_run: bool) -> int:
 
 
 def _resolve_bundle(reference: str, bundles_root: str | None) -> Bundle:
-    candidate = Path(reference)
+    candidate = Path(reference).expanduser()
     if not candidate.is_dir():
         root = Path(bundles_root or (outputs_root() / "bundles"))
         candidate = root / reference

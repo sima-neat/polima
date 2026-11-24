@@ -1,0 +1,31 @@
+# Cross-compile PoLiMa for Modalix inside the Palette SDK container.
+# Adapted from LLiMa's toolchain-sima.cmake.
+
+set(DEFAULT_SYSROOT /opt/toolchain/aarch64/modalix)
+if(DEFINED ENV{SYSROOT})
+  set(SYSROOT $ENV{SYSROOT})
+elseif(EXISTS ${DEFAULT_SYSROOT})
+  set(SYSROOT ${DEFAULT_SYSROOT})
+else()
+  message(FATAL_ERROR "SYSROOT is not set and ${DEFAULT_SYSROOT} does not exist")
+endif()
+
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR aarch64)
+set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
+set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
+set(CMAKE_SYSROOT ${SYSROOT})
+set(CMAKE_FIND_ROOT_PATH ${SYSROOT})
+set(CMAKE_LIBRARY_ARCHITECTURE aarch64-linux-gnu)
+list(PREPEND CMAKE_PREFIX_PATH ${SYSROOT}/usr ${SYSROOT}/usr/lib/aarch64-linux-gnu/cmake)
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+
+set(_polima_link_flags "")
+foreach(dir usr/lib/aarch64-linux-gnu lib/aarch64-linux-gnu)
+  string(APPEND _polima_link_flags " -L${SYSROOT}/${dir} -Wl,-rpath-link,${SYSROOT}/${dir}")
+endforeach()
+string(APPEND CMAKE_EXE_LINKER_FLAGS_INIT "${_polima_link_flags}")
+string(APPEND CMAKE_SHARED_LINKER_FLAGS_INIT "${_polima_link_flags}")
