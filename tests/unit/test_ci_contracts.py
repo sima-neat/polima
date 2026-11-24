@@ -181,8 +181,12 @@ def test_devkit_qualification_does_not_replace_shared_installations():
     steps = workflow("vulcan-ci.yml")["jobs"]["test-devkit"]["steps"]
     commands = "\n".join(step.get("run", "") for step in steps)
     assert "dpkg-query" in commands and "resolved-dependencies.lock.json" in commands
-    assert "cp -a --reflink=auto" in commands
-    assert "/media/nvme/lerobot" in commands
+    assert "/media/nvme/lerobot" not in commands
+    assert commands.count("scripts/ci/prepare_lerobot.sh") == 2
+    assert 'prepare_lerobot.sh --copy "$CANDIDATE_DIR/lerobot"' in commands
+    prepare = (ROOT / "scripts/ci/prepare_lerobot.sh").read_text()
+    assert "/media/nvme/lerobot" in prepare and "cp -a --reflink=auto" in prepare
+    assert "install_lerobot_modalix.sh" in prepare and "SKIP_DIALOUT=1" in prepare
     assert 'rm -rf -- "$CANDIDATE_DIR" "$RESULTS_DIR" "$PACKAGE_DIR"' in commands
 
 
