@@ -183,7 +183,10 @@ def test_devkit_qualification_does_not_replace_shared_installations():
     assert "dpkg-query" in commands and "resolved-dependencies.lock.json" in commands
     assert "/media/nvme/lerobot" not in commands
     assert commands.count("scripts/ci/prepare_lerobot.sh") == 2
-    assert 'prepare_lerobot.sh --copy "$CANDIDATE_DIR/lerobot"' in commands
+    assert 'prepare_lerobot.sh "$CANDIDATE_DIR/lerobot"' in commands
+    # devkit_test.sh imports polima with -I, so the candidate must be in the venv itself.
+    assert "PYTHONPATH=$CANDIDATE_DIR" not in commands and "--target" not in commands
+    assert 'POLIMA_CI_PYTHON=$CANDIDATE_DIR/lerobot/bin/python' in commands
     prepare = (ROOT / "scripts/ci/prepare_lerobot.sh").read_text()
     assert "/media/nvme/lerobot" in prepare and "cp -a --reflink=auto" in prepare
     assert "install_lerobot_modalix.sh" in prepare and "SKIP_DIALOUT=1" in prepare
