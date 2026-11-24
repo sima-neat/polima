@@ -194,13 +194,14 @@ jobs:
             echo "PACKAGE_DIR=${RUNNER_TEMP}/polima-package-${run}"
             echo "CANDIDATE_DIR=${RUNNER_TEMP}/polima-candidate-${run}"
             echo "RESULTS_DIR=${RUNNER_TEMP}/polima-results-${run}"
+            echo "LLIMA_LOCK=${RUNNER_TEMP}/polima-package-${run}/resolved-dependencies.lock.json"
           } >> "$GITHUB_ENV"
       - if: ${{ github.event_name != 'push' }}
         uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4
         with:
           name: polima-release-dist
           path: ${{ runner.temp }}/polima-package-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Install exact published package in an isolated layout
+      - name: Download the exact published package
         if: ${{ github.event_name == 'push' }}
         env:
           NEAT_VULCAN_ENV: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
@@ -215,6 +216,20 @@ jobs:
             'from pathlib import Path; import sys; from resolve_llima import parse_resolution; print(parse_resolution(Path(sys.argv[1]).read_text())["metadata_url"])' \
             "$resolution")"
           curl -fsSL "$metadata_url" -o "$PACKAGE_DIR/metadata.json"
+          # The package's installer refuses a DevKit whose LLiMa differs, so read the lock first.
+          sima-cli neat install --env "$NEAT_VULCAN_ENV" --download-only \
+            -d "$CANDIDATE_DIR/published" "$target"
+          echo "LLIMA_LOCK=$CANDIDATE_DIR/published/resolved-dependencies.lock.json" >> "$GITHUB_ENV"
+      - name: Install the exact LLiMa the package was built against
+        run: scripts/ci/install_exact_llima.sh "$LLIMA_LOCK" "$CANDIDATE_DIR/llima"
+      - name: Install exact published package in an isolated layout
+        if: ${{ github.event_name == 'push' }}
+        env:
+          NEAT_VULCAN_ENV: ${{ needs.resolve-vulcan-config.outputs.vulcan_env }}
+          SIMA_CLI_CHECK_FOR_UPDATE: "0"
+        run: |
+          set -euo pipefail
+          target="polima@${GITHUB_REF_NAME}:${GITHUB_SHA:0:12}"
           scripts/ci/prepare_lerobot.sh "$CANDIDATE_DIR/lerobot"
           POLIMA_ROOT="$CANDIDATE_DIR/polima" \
           LEROBOT_VENV="$CANDIDATE_DIR/lerobot" \
@@ -236,8 +251,6 @@ jobs:
           "$CANDIDATE_DIR/lerobot/bin/python" -m pip install --no-deps --force-reinstall \
             "${wheel[0]}"
           echo "POLIMA_CI_PYTHON=$CANDIDATE_DIR/lerobot/bin/python" >> "$GITHUB_ENV"
-      - name: Install the exact LLiMa the package was built against
-        run: scripts/ci/install_exact_llima.sh "$PACKAGE_DIR" "$CANDIDATE_DIR/llima"
       - name: Verify firmware, package and installed LLiMa identity
         env:
           EXPECTED_FIRMWARE: ${{ needs.resolve-test-runner.outputs.devkit_firmware }}

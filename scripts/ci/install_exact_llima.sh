@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Install on the DevKit the exact LLiMa a PoLiMa package was built against.
 #
-# Usage: install_exact_llima.sh PACKAGE_DIR WORK_DIR
+# Usage: install_exact_llima.sh LOCK_FILE WORK_DIR
 #
 # The shared DevKit pool carries whatever LLiMa build last ran on each board
 # (LLiMa's own CI installs its branch builds system-wide), so qualification
-# cannot assume the release is present. This reads the package's
+# cannot assume the release is present. This reads a package's
 # resolved-dependencies.lock.json and installs that LLiMa's root artifact with
 # sima-cli. LLiMa's installer simulates the apt transaction, refuses to remove
 # packages, allows the downgrade from a branch build, and checks the installed
@@ -14,9 +14,9 @@
 # LLiMa's installer uses passwordless sudo, else DEVKIT_PASSWORD, else the DevKit default.
 set -euo pipefail
 
-package="$(cd -- "${1:?package directory}" && pwd)"
+lock="${1:?resolved-dependencies.lock.json of the package}"
 work="${2:?work directory}"
-lock="$package/resolved-dependencies.lock.json"
+[[ -f "$lock" ]] || { echo "no LLiMa lock at $lock" >&2; exit 1; }
 
 read -r ref spec env version < <(python3 - "$lock" <<'PY'
 import json, sys

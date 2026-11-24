@@ -198,11 +198,20 @@ def test_devkit_qualification_installs_the_llima_the_package_was_built_against()
     steps = workflow("vulcan-ci.yml")["jobs"]["test-devkit"]["steps"]
     names = [step.get("name", "") for step in steps]
     install = names.index("Install the exact LLiMa the package was built against")
+    download = names.index("Download the exact published package")
+    # The package's own installer refuses a DevKit whose LLiMa differs from the build.
+    assert download < install < names.index("Install exact published package in an isolated layout")
     assert install < names.index("Verify firmware, package and installed LLiMa identity")
-    assert install > names.index("Create isolated validation layout")
     step = steps[install]
     assert "if" not in step  # both the push and the dispatch path
-    assert step["run"] == 'scripts/ci/install_exact_llima.sh "$PACKAGE_DIR" "$CANDIDATE_DIR/llima"'
+    assert step["run"] == 'scripts/ci/install_exact_llima.sh "$LLIMA_LOCK" "$CANDIDATE_DIR/llima"'
+    paths = steps[names.index("Prepare run-specific paths")]["run"]
+    assert 'LLIMA_LOCK=${RUNNER_TEMP}/polima-package-${run}/resolved-dependencies.lock.json' in paths
+    fetch = steps[download]
+    assert fetch["if"] == "${{ github.event_name == 'push' }}"
+    assert "--download-only" in fetch["run"]
+    assert '-d "$CANDIDATE_DIR/published" "$target"' in fetch["run"]
+    assert 'LLIMA_LOCK=$CANDIDATE_DIR/published/resolved-dependencies.lock.json' in fetch["run"]
 
 
 LOCK = {"llima": {"ref": "v0.6.2", "resolved_spec": "a5aa79a33322", "environment": "production",
@@ -224,7 +233,8 @@ def _run_install_exact_llima(tmp_path: Path, installed: dict[str, str]):
     for tool in bin_dir.iterdir():
         tool.chmod(0o755)
     result = subprocess.run(
-        [str(ROOT / "scripts/ci/install_exact_llima.sh"), str(package), str(tmp_path / "work")],
+        [str(ROOT / "scripts/ci/install_exact_llima.sh"),
+         str(package / "resolved-dependencies.lock.json"), str(tmp_path / "work")],
         capture_output=True, text=True, check=True,
         env={"PATH": f"{bin_dir}:/usr/bin:/bin"})
     return result.stdout, calls.read_text().splitlines() if calls.exists() else []
@@ -245,6 +255,13 @@ def test_install_exact_llima_leaves_a_matching_installation_alone(tmp_path):
     out, calls = _run_install_exact_llima(tmp_path, dict.fromkeys(
         ("sima-lmm-core", "sima-lmm-cli", "sima-lmm-dev"), "0.6.2"))
     assert "already installed" in out and calls == []
+
+
+def test_install_exact_llima_requires_the_lock(tmp_path):
+    result = subprocess.run([str(ROOT / "scripts/ci/install_exact_llima.sh"),
+                             str(tmp_path / "missing.json"), str(tmp_path / "work")],
+                            check=False, capture_output=True, text=True)
+    assert result.returncode == 1 and "no LLiMa lock" in result.stderr
 
 
 def test_install_exact_llima_installs_when_one_package_differs(tmp_path):
