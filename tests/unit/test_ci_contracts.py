@@ -177,7 +177,7 @@ def test_devkit_qualification_serializes_accelerator_measurements():
     assert script.index(lock) < script.index('"$cli" --runtime-info')
 
 
-def test_devkit_qualification_does_not_replace_shared_installations():
+def test_devkit_qualification_uses_a_private_lerobot_environment():
     steps = workflow("vulcan-ci.yml")["jobs"]["test-devkit"]["steps"]
     commands = "\n".join(step.get("run", "") for step in steps)
     assert "dpkg-query" in commands and "resolved-dependencies.lock.json" in commands
@@ -192,6 +192,64 @@ def test_devkit_qualification_does_not_replace_shared_installations():
     assert "install_lerobot_modalix.sh" in prepare and "SKIP_DIALOUT=1" in prepare
     assert 'rm -rf -- "$CANDIDATE_DIR" "$RESULTS_DIR" "$PACKAGE_DIR"' in commands
 
+
+
+def test_devkit_qualification_installs_the_llima_the_package_was_built_against():
+    steps = workflow("vulcan-ci.yml")["jobs"]["test-devkit"]["steps"]
+    names = [step.get("name", "") for step in steps]
+    install = names.index("Install the exact LLiMa the package was built against")
+    assert install < names.index("Verify firmware, package and installed LLiMa identity")
+    assert install > names.index("Create isolated validation layout")
+    step = steps[install]
+    assert "if" not in step  # both the push and the dispatch path
+    assert step["run"] == 'scripts/ci/install_exact_llima.sh "$PACKAGE_DIR" "$CANDIDATE_DIR/llima"'
+
+
+LOCK = {"llima": {"ref": "v0.6.2", "resolved_spec": "a5aa79a33322", "environment": "production",
+                  "version": "0.6.2"}}
+
+
+def _run_install_exact_llima(tmp_path: Path, installed: dict[str, str]):
+    bin_dir, package = tmp_path / "bin", tmp_path / "package"
+    bin_dir.mkdir()
+    package.mkdir()
+    (package / "resolved-dependencies.lock.json").write_text(json.dumps(LOCK))
+    calls = tmp_path / "sima-cli.calls"
+    versions = " ".join(f"{name}={version}" for name, version in installed.items())
+    (bin_dir / "dpkg-query").write_text(
+        "#!/usr/bin/env bash\n"
+        f'for pair in {versions}; do [[ "${{pair%%=*}}" == "${{@: -1}}" ]] && '
+        'printf %s "${pair#*=}" && exit 0; done; exit 1\n')
+    (bin_dir / "sima-cli").write_text(f'#!/usr/bin/env bash\necho "$*" >> {calls}\n')
+    for tool in bin_dir.iterdir():
+        tool.chmod(0o755)
+    result = subprocess.run(
+        [str(ROOT / "scripts/ci/install_exact_llima.sh"), str(package), str(tmp_path / "work")],
+        capture_output=True, text=True, check=True,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin"})
+    return result.stdout, calls.read_text().splitlines() if calls.exists() else []
+
+
+def test_install_exact_llima_replaces_a_branch_build_with_the_locked_release(tmp_path):
+    out, calls = _run_install_exact_llima(tmp_path, {
+        "sima-lmm-core": "0.6.2+develop.99e0439552fb", "sima-lmm-cli": "0.6.2+develop.99e0439552fb",
+        "sima-lmm-dev": "0.6.2+develop.99e0439552fb"})
+    assert "Installing LLiMa 0.6.2 from llima@v0.6.2:a5aa79a33322" in out
+    assert calls == [
+        "neat install --env production --json llima@v0.6.2:a5aa79a33322",
+        f"neat install --env production -d {tmp_path / 'work'} llima@v0.6.2:a5aa79a33322",
+    ]
+
+
+def test_install_exact_llima_leaves_a_matching_installation_alone(tmp_path):
+    out, calls = _run_install_exact_llima(tmp_path, dict.fromkeys(
+        ("sima-lmm-core", "sima-lmm-cli", "sima-lmm-dev"), "0.6.2"))
+    assert "already installed" in out and calls == []
+
+
+def test_install_exact_llima_installs_when_one_package_differs(tmp_path):
+    _, calls = _run_install_exact_llima(tmp_path, {"sima-lmm-core": "0.6.2", "sima-lmm-dev": "0.6.2"})
+    assert len(calls) == 2
 
 def test_model_compiler_release_and_develop_lanes_are_vulcan_jobs():
     job = workflow("vulcan-ci.yml")["jobs"]["compiler"]
