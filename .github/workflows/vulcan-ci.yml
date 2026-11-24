@@ -215,7 +215,7 @@ jobs:
             'from pathlib import Path; import sys; from resolve_llima import parse_resolution; print(parse_resolution(Path(sys.argv[1]).read_text())["metadata_url"])' \
             "$resolution")"
           curl -fsSL "$metadata_url" -o "$PACKAGE_DIR/metadata.json"
-          cp -a --reflink=auto /media/nvme/lerobot "$CANDIDATE_DIR/lerobot"
+          scripts/ci/prepare_lerobot.sh "$CANDIDATE_DIR/lerobot"
           POLIMA_ROOT="$CANDIDATE_DIR/polima" \
           LEROBOT_VENV="$CANDIDATE_DIR/lerobot" \
           POLIMA_INSTALL_LINKS=0 POLIMA_INSTALL_SERVICE=0 SKIP_LEROBOT=1 \
@@ -229,14 +229,15 @@ jobs:
         if: ${{ github.event_name != 'push' }}
         run: |
           set -euo pipefail
-          mkdir -p "$CANDIDATE_DIR/python" "$RESULTS_DIR"
+          mkdir -p "$RESULTS_DIR"
           wheel=("$PACKAGE_DIR"/polima-*.whl)
-          /media/nvme/lerobot/bin/python -m pip install --no-deps \
-            --target "$CANDIDATE_DIR/python" "${wheel[0]}"
-          {
-            echo "POLIMA_CI_PYTHON=/media/nvme/lerobot/bin/python"
-            echo "PYTHONPATH=$CANDIDATE_DIR/python"
-          } >> "$GITHUB_ENV"
+          scripts/ci/prepare_lerobot.sh "$CANDIDATE_DIR/lerobot"
+          # Into the venv itself: devkit_test.sh imports polima with -I, which ignores PYTHONPATH.
+          "$CANDIDATE_DIR/lerobot/bin/python" -m pip install --no-deps --force-reinstall \
+            "${wheel[0]}"
+          echo "POLIMA_CI_PYTHON=$CANDIDATE_DIR/lerobot/bin/python" >> "$GITHUB_ENV"
+      - name: Install the exact LLiMa the package was built against
+        run: scripts/ci/install_exact_llima.sh "$PACKAGE_DIR" "$CANDIDATE_DIR/llima"
       - name: Verify firmware, package and installed LLiMa identity
         env:
           EXPECTED_FIRMWARE: ${{ needs.resolve-test-runner.outputs.devkit_firmware }}
