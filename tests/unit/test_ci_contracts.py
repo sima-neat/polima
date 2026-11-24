@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +39,10 @@ def test_manifest_uses_the_formats_core_and_the_sysroot_resolver_accept():
     assert set(manifest["llima"]) == {"ref", "spec"}
     assert re.fullmatch(r"v\d+\.\d+\.\d+", manifest["llima"]["ref"])
     assert re.fullmatch(r"[0-9a-f]{12}", manifest["llima"]["spec"])
+    # NEAT Core release reinstalled on DevKits whose NEAT branch build pins another LLiMa.
+    assert set(manifest["neat-core"]) == {"ref", "spec"}
+    assert manifest["neat-core"]["ref"] == manifest["llima"]["ref"]  # matching release trains
+    assert re.fullmatch(r"[0-9a-f]{12}", manifest["neat-core"]["spec"])
     compiler = manifest["model-compiler"]
     assert compiler["repository"] == "model-compiler/arm64"
     assert compiler["release"] == {"ref": "v3.0.0.2", "spec": "6b2d138d1927"}
@@ -198,58 +204,159 @@ def test_devkit_qualification_installs_the_llima_the_package_was_built_against()
     steps = workflow("vulcan-ci.yml")["jobs"]["test-devkit"]["steps"]
     names = [step.get("name", "") for step in steps]
     install = names.index("Install the exact LLiMa the package was built against")
+    download = names.index("Download the exact published package")
+    # The package's own installer refuses a DevKit whose LLiMa differs from the build.
+    assert download < install < names.index("Install exact published package in an isolated layout")
     assert install < names.index("Verify firmware, package and installed LLiMa identity")
-    assert install > names.index("Create isolated validation layout")
     step = steps[install]
     assert "if" not in step  # both the push and the dispatch path
-    assert step["run"] == 'scripts/ci/install_exact_llima.sh "$PACKAGE_DIR" "$CANDIDATE_DIR/llima"'
+    assert step["run"] == 'scripts/ci/install_exact_llima.sh "$LLIMA_LOCK" "$CANDIDATE_DIR/devkit-deps"'
+    paths = steps[names.index("Prepare run-specific paths")]["run"]
+    assert 'LLIMA_LOCK=${RUNNER_TEMP}/polima-package-${run}/resolved-dependencies.lock.json' in paths
+    fetch = steps[download]
+    assert fetch["if"] == "${{ github.event_name == 'push' }}"
+    assert "--download-only" in fetch["run"]
+    assert '-d "$CANDIDATE_DIR/published" "$target"' in fetch["run"]
+    assert 'LLIMA_LOCK=$CANDIDATE_DIR/published/resolved-dependencies.lock.json' in fetch["run"]
 
 
 LOCK = {"llima": {"ref": "v0.6.2", "resolved_spec": "a5aa79a33322", "environment": "production",
                   "version": "0.6.2"}}
+BRANCH = "0.6.2+refactor-301-runtime-execution.d38bf74eb8b3"
+LMM = ("sima-lmm-core", "sima-lmm-cli", "sima-lmm-dev")
+NEAT_BRANCH = ("sima-neat", "0.6.2+refactor-301-runtime-execution.ccb5bedb1404",
+               f"sima-lmm-core (= {BRANCH})")
+needs_dpkg = pytest.mark.skipif(not shutil.which("dpkg"), reason="dpkg compares Debian versions")
 
 
-def _run_install_exact_llima(tmp_path: Path, installed: dict[str, str]):
+def _run_install_exact_llima(tmp_path: Path, installed: dict[str, str],
+                             others: tuple[tuple[str, str, str], ...] = (),
+                             core_brings: str = "0.6.2"):
+    """Run the helper against a fake dpkg database that the fake sima-cli updates."""
     bin_dir, package = tmp_path / "bin", tmp_path / "package"
     bin_dir.mkdir()
     package.mkdir()
     (package / "resolved-dependencies.lock.json").write_text(json.dumps(LOCK))
-    calls = tmp_path / "sima-cli.calls"
-    versions = " ".join(f"{name}={version}" for name, version in installed.items())
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"neat-core": {"ref": "v0.6.2", "spec": "b1f9556caec1"}}))
+    state, listing, calls = tmp_path / "state", tmp_path / "listing", tmp_path / "sima-cli.calls"
+    state.write_text("".join(f"{name}={version}\n" for name, version in installed.items()))
+    listing.write_text("".join(f"ii \t{n}\t{v}\t{d}\n" for n, v, d in others))
     (bin_dir / "dpkg-query").write_text(
         "#!/usr/bin/env bash\n"
-        f'for pair in {versions}; do [[ "${{pair%%=*}}" == "${{@: -1}}" ]] && '
-        'printf %s "${pair#*=}" && exit 0; done; exit 1\n')
-    (bin_dir / "sima-cli").write_text(f'#!/usr/bin/env bash\necho "$*" >> {calls}\n')
+        f'if [[ "$3" == *Status-Abbrev* ]]; then cat {listing}; exit 0; fi\n'
+        f'v="$(sed -n "s/^${{@: -1}}=//p" {state})"; [[ -n "$v" ]] && printf %s "$v"\n')
+    # Installing NEAT Core replaces its branch build and brings its LLiMa; LLiMa's own
+    # root artifact installs the locked release.
+    (bin_dir / "sima-cli").write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$* skills=$NEAT_INSTALLER_INSTALL_CODEX_SKILL,$NEAT_INSTALLER_INSTALL_CLAUDE_SKILL'
+        f' sync=$NEAT_INSTALLER_SKIP_DEVKIT_SYNC" >> {calls}\n'
+        'case "$*" in\n'
+        f'  *core@*) printf "%s\\n" {" ".join(f"{n}={core_brings}" for n in LMM)} > {state}; : > {listing} ;;\n'
+        f'  *"-d "*llima@*) printf "%s\\n" {" ".join(f"{n}=0.6.2" for n in LMM)} > {state} ;;\n'
+        "esac\n")
     for tool in bin_dir.iterdir():
         tool.chmod(0o755)
     result = subprocess.run(
-        [str(ROOT / "scripts/ci/install_exact_llima.sh"), str(package), str(tmp_path / "work")],
-        capture_output=True, text=True, check=True,
-        env={"PATH": f"{bin_dir}:/usr/bin:/bin"})
-    return result.stdout, calls.read_text().splitlines() if calls.exists() else []
+        [str(ROOT / "scripts/ci/install_exact_llima.sh"),
+         str(package / "resolved-dependencies.lock.json"), str(tmp_path / "work"), str(manifest)],
+        capture_output=True, text=True, check=False, env={"PATH": f"{bin_dir}:/usr/bin:/bin"})
+    lines = calls.read_text().splitlines() if calls.exists() else []
+    return result, [line.split(" skills=")[0] for line in lines], lines
 
 
+LLIMA_CALLS = ["neat install --env production --json llima@v0.6.2:a5aa79a33322",
+               "neat install --env production -d {work}/llima llima@v0.6.2:a5aa79a33322"]
+
+
+@needs_dpkg
 def test_install_exact_llima_replaces_a_branch_build_with_the_locked_release(tmp_path):
-    out, calls = _run_install_exact_llima(tmp_path, {
-        "sima-lmm-core": "0.6.2+develop.99e0439552fb", "sima-lmm-cli": "0.6.2+develop.99e0439552fb",
-        "sima-lmm-dev": "0.6.2+develop.99e0439552fb"})
-    assert "Installing LLiMa 0.6.2 from llima@v0.6.2:a5aa79a33322" in out
-    assert calls == [
-        "neat install --env production --json llima@v0.6.2:a5aa79a33322",
-        f"neat install --env production -d {tmp_path / 'work'} llima@v0.6.2:a5aa79a33322",
-    ]
+    result, calls, _ = _run_install_exact_llima(tmp_path, dict.fromkeys(LMM, BRANCH))
+    assert result.returncode == 0, result.stderr
+    assert "Installing LLiMa 0.6.2 from llima@v0.6.2:a5aa79a33322" in result.stdout
+    assert calls == [c.format(work=tmp_path / "work") for c in LLIMA_CALLS]
 
 
 def test_install_exact_llima_leaves_a_matching_installation_alone(tmp_path):
-    out, calls = _run_install_exact_llima(tmp_path, dict.fromkeys(
-        ("sima-lmm-core", "sima-lmm-cli", "sima-lmm-dev"), "0.6.2"))
-    assert "already installed" in out and calls == []
+    result, calls, _ = _run_install_exact_llima(tmp_path, dict.fromkeys(LMM, "0.6.2"))
+    assert result.returncode == 0 and "already installed" in result.stdout and calls == []
 
 
+@needs_dpkg
 def test_install_exact_llima_installs_when_one_package_differs(tmp_path):
-    _, calls = _run_install_exact_llima(tmp_path, {"sima-lmm-core": "0.6.2", "sima-lmm-dev": "0.6.2"})
-    assert len(calls) == 2
+    result, calls, _ = _run_install_exact_llima(tmp_path, {"sima-lmm-core": "0.6.2",
+                                                           "sima-lmm-dev": "0.6.2"})
+    assert result.returncode == 0 and len(calls) == 2
+
+
+@needs_dpkg
+def test_install_exact_llima_reinstalls_neat_core_that_pins_a_branch_llima(tmp_path):
+    result, calls, raw = _run_install_exact_llima(
+        tmp_path, {"sima-lmm-core": BRANCH, "sima-lmm-cli": BRANCH}, others=(NEAT_BRANCH,))
+    assert result.returncode == 0, result.stderr
+    assert f"sima-neat {NEAT_BRANCH[1]} requires sima-lmm-core (= {BRANCH})" in result.stdout
+    assert calls == [(f"install --neat --env production -d {tmp_path / 'work/neat-core'} "
+                      "core@v0.6.2:b1f9556caec1 -t all")]
+    assert raw[0].endswith("skills=OFF,OFF sync=ON")
+    assert "LLiMa 0.6.2 installed with NEAT Core v0.6.2" in result.stdout
+
+
+@needs_dpkg
+def test_install_exact_llima_falls_back_when_neat_core_brings_another_llima(tmp_path):
+    result, calls, _ = _run_install_exact_llima(
+        tmp_path, dict.fromkeys(LMM, BRANCH), others=(NEAT_BRANCH,), core_brings="0.6.1")
+    assert result.returncode == 0, result.stderr
+    assert calls[0].startswith("install --neat") and calls[1:] == [
+        c.format(work=tmp_path / "work") for c in LLIMA_CALLS]
+
+
+@needs_dpkg
+def test_install_exact_llima_never_replaces_other_packages(tmp_path):
+    result, calls, _ = _run_install_exact_llima(
+        tmp_path, dict.fromkeys(LMM, BRANCH),
+        others=(("someone-elses-app", "1.0", f"sima-lmm-core (= {BRANCH})"),))
+    assert result.returncode == 1 and calls == []
+    assert "refusing to replace someone-elses-app" in result.stderr
+
+
+def test_install_exact_llima_requires_the_lock(tmp_path):
+    result = subprocess.run([str(ROOT / "scripts/ci/install_exact_llima.sh"),
+                             str(tmp_path / "missing.json"), str(tmp_path / "work")],
+                            check=False, capture_output=True, text=True)
+    assert result.returncode == 1 and "no LLiMa lock" in result.stderr
+
+
+def _llima_conflicts():
+    spec = importlib.util.spec_from_file_location(
+        "llima_conflicts", ROOT / "scripts/ci/llima_conflicts.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@needs_dpkg
+@pytest.mark.parametrize(("depends", "blocks"), [
+    (f"libc6, sima-lmm-core (= {BRANCH})", True),            # NEAT Core branch build
+    ("sima-lmm-core (= 0.6.2), sima-lmm-dev (= 0.6.2)", False),  # the matching release
+    ("sima-lmm-core (>= 0.6.0)", False),
+    (f"sima-lmm-core (>= {BRANCH})", True),                  # 0.6.2 sorts before 0.6.2+…
+    ("sima-lmm-core (<< 0.6.2)", True),
+    ("sima-lmm-core", False),                                # unversioned
+    (f"other-llima | sima-lmm-core (= {BRANCH})", False),    # satisfiable by another package
+    ("libc6 (>= 2.36)", False),
+])
+def test_llima_conflicts_compares_sima_lmm_relations_with_dpkg(depends, blocks):
+    listing = f"ii \tsima-neat\t1\t{depends}\n"
+    assert bool(_llima_conflicts().conflicts(listing, "0.6.2")) is blocks
+
+
+@needs_dpkg
+def test_llima_conflicts_ignores_removed_packages_and_llima_itself():
+    listing = (f"rc \tsima-neat\t1\tsima-lmm-core (= {BRANCH})\n"
+               f"ii \tsima-lmm-cli\t{BRANCH}\tsima-lmm-core (= {BRANCH})\n")
+    assert _llima_conflicts().conflicts(listing, "0.6.2") == []
+
 
 def test_model_compiler_release_and_develop_lanes_are_vulcan_jobs():
     job = workflow("vulcan-ci.yml")["jobs"]["compiler"]
