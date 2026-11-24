@@ -221,7 +221,7 @@ jobs:
             -d "$CANDIDATE_DIR/published" "$target"
           echo "LLIMA_LOCK=$CANDIDATE_DIR/published/resolved-dependencies.lock.json" >> "$GITHUB_ENV"
       - name: Install the exact LLiMa the package was built against
-        run: scripts/ci/install_exact_llima.sh "$LLIMA_LOCK" "$CANDIDATE_DIR/llima"
+        run: scripts/ci/install_exact_llima.sh "$LLIMA_LOCK" "$CANDIDATE_DIR/devkit-deps"
       - name: Install exact published package in an isolated layout
         if: ${{ github.event_name == 'push' }}
         env:
