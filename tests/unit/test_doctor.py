@@ -163,6 +163,38 @@ def test_a_compiler_older_than_the_documented_one_is_noticed():
     assert not doctor._older_than("main-abc123", "2.1.3")
 
 
+@pytest.mark.parametrize(
+    ("lmm_version", "expected"),
+    [("0.6.1", table.OK), ("0.5.0", table.FAIL)],
+)
+def test_compiler_requires_its_bundled_llima(tmp_path, monkeypatch, lmm_version, expected):
+    compiler_bin = tmp_path / "model-compiler" / "bin"
+    compiler_bin.mkdir(parents=True)
+    monkeypatch.setattr(doctor, "_find_compiler_bin", lambda config: str(compiler_bin))
+    monkeypatch.setattr(doctor.toolchain, "find_activation", lambda path: None)
+
+    def capture(command):
+        source = command[-1]
+        if "sys.version" in source:
+            return "3.12.12\n"
+        if "sima-frontend" in source:
+            return "3.0.0.dev0+master.403\n"
+        if "sima-lmm" in source:
+            return f"{lmm_version}\n/compiler/sima_lmm/host/compile_lmm.py\n"
+        raise AssertionError(command)
+
+    monkeypatch.setattr(doctor, "_capture", capture)
+    report = doctor.Doctor(json_output=True)
+
+    doctor.check_compiler(report, None)
+
+    result = next(
+        item for item in report.results
+        if item["check"] == "sima_lmm.host.compile_lmm"
+    )
+    assert result["status"] == expected
+
+
 def test_import_probe_does_not_expose_foreign_site_packages(tmp_path, monkeypatch):
     import shutil
     from pathlib import Path

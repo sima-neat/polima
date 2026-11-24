@@ -67,9 +67,11 @@ def test_release_versions_are_consistent_across_runtime_and_customer_guides():
     install = (ROOT / "docs/install.md").read_text()
 
     assert 'MODELSDK_VERSION = "3.0.0.2"' in compatibility
+    assert 'COMPILER_LLIMA_VERSION = "0.6.1"' in compatibility
     assert 'LLIMA_VERSION = "0.6.2"' in compatibility
     assert 'set(POLIMA_PLATFORM_VERSION "3.0.1"' in cmake
-    assert "ModelSDK 3.0.0.2 with LLiMa 0.6.2" in guide
+    assert "Model Compiler 3.0.0.2" in guide
+    assert "DevKit runtime uses LLiMa 0.6.2" in guide
     assert "| 3.0.0.2 | 3.0.1 | 0.6.2 |" in install
 
 
